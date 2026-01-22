@@ -1,8 +1,20 @@
 <testsuites name="results">
   <testsuite name="all" package="all">
-    <property name="random_seed" value="1769042955" />
-    <testcase name="test_uart_loopback_check" classname="test_uart_top" file="/workspaces/FPGA-Matrix-Multiplication-Accelerator/tb/test_uart_top.py" lineno="162" time="0.3935208320617676" sim_time_ns="358892.0" ratio_time="912002.5441084345" />
-    <testcase name="test_single_gesture" classname="test_uart_top" file="/workspaces/FPGA-Matrix-Multiplication-Accelerator/tb/test_uart_top.py" lineno="185" time="44.67200827598572" sim_time_ns="39095158.001" ratio_time="875160.0724880851" />
-    <testcase name="test_all_gestures_uart" classname="test_uart_top" file="/workspaces/FPGA-Matrix-Multiplication-Accelerator/tb/test_uart_top.py" lineno="245" time="199.86409854888916" sim_time_ns="140139275.001" ratio_time="701172.8270283631" />
+    <property name="random_seed" value="1769062274" />
+    <testcase name="test_right_gesture" classname="test_gesture" file="/workspaces/FPGA-Matrix-Multiplication-Accelerator/tb/test_gesture.py" lineno="75" time="0.00030303001403808594" sim_time_ns="0.0" ratio_time="0.0">
+      <failure message="Test failed with RANDOM_SEED=1769062274" />
+    </testcase>
+    <testcase name="test_left_gesture" classname="test_gesture" file="/workspaces/FPGA-Matrix-Multiplication-Accelerator/tb/test_gesture.py" lineno="98" time="0.0003018379211425781" sim_time_ns="0.001" ratio_time="3.3130363349131122">
+      <failure message="Test failed with RANDOM_SEED=1769062274" />
+    </testcase>
+    <testcase name="test_up_gesture" classname="test_gesture" file="/workspaces/FPGA-Matrix-Multiplication-Accelerator/tb/test_gesture.py" lineno="119" time="0.00019502639770507812" sim_time_ns="0.001" ratio_time="5.1275110024449875">
+      <failure message="Test failed with RANDOM_SEED=1769062274" />
+    </testcase>
+    <testcase name="test_down_gesture" classname="test_gesture" file="/workspaces/FPGA-Matrix-Multiplication-Accelerator/tb/test_gesture.py" lineno="140" time="0.0001914501190185547" sim_time_ns="0.001" ratio_time="5.223292652552927">
+      <failure message="Test failed with RANDOM_SEED=1769062274" />
+    </testcase>
+    <testcase name="test_all_gestures_sequence" classname="test_gesture" file="/workspaces/FPGA-Matrix-Multiplication-Accelerator/tb/test_gesture.py" lineno="161" time="0.00019121170043945312" sim_time_ns="0.001" ratio_time="5.229805486284289">
+      <failure message="Test failed with RANDOM_SEED=1769062274" />
+    </testcase>
   </testsuite>
 </testsuites>
