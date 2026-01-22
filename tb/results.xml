@@ -1,17 +1,8 @@
 <testsuites name="results">
   <testsuite name="all" package="all">
-    <property name="random_seed" value="1768955095" />
-    <testcase name="test_dvs_gesture_up" classname="dvs_gesture_testbench" file="/workspaces/FPGA-Matrix-Multiplication-Accelerator/tb/dvs_gesture_testbench.py" lineno="36" time="0.25270771980285645" sim_time_ns="12730.0" ratio_time="50374.400947984446">
-      <failure message="Test failed with RANDOM_SEED=1768955095" />
-    </testcase>
-    <testcase name="test_dvs_gesture_down" classname="dvs_gesture_testbench" file="/workspaces/FPGA-Matrix-Multiplication-Accelerator/tb/dvs_gesture_testbench.py" lineno="69" time="0.28823232650756836" sim_time_ns="12740.001" ratio_time="44200.45854802992">
-      <failure message="Test failed with RANDOM_SEED=1768955095" />
-    </testcase>
-    <testcase name="test_dvs_gesture_left" classname="dvs_gesture_testbench" file="/workspaces/FPGA-Matrix-Multiplication-Accelerator/tb/dvs_gesture_testbench.py" lineno="102" time="0.24051642417907715" sim_time_ns="12740.001" ratio_time="52969.35975779516">
-      <failure message="Test failed with RANDOM_SEED=1768955095" />
-    </testcase>
-    <testcase name="test_dvs_gesture_right" classname="dvs_gesture_testbench" file="/workspaces/FPGA-Matrix-Multiplication-Accelerator/tb/dvs_gesture_testbench.py" lineno="135" time="0.24171137809753418" sim_time_ns="12740.000999999997" ratio_time="52707.49395528751">
-      <failure message="Test failed with RANDOM_SEED=1768955095" />
-    </testcase>
+    <property name="random_seed" value="1769042955" />
+    <testcase name="test_uart_loopback_check" classname="test_uart_top" file="/workspaces/FPGA-Matrix-Multiplication-Accelerator/tb/test_uart_top.py" lineno="162" time="0.3935208320617676" sim_time_ns="358892.0" ratio_time="912002.5441084345" />
+    <testcase name="test_single_gesture" classname="test_uart_top" file="/workspaces/FPGA-Matrix-Multiplication-Accelerator/tb/test_uart_top.py" lineno="185" time="44.67200827598572" sim_time_ns="39095158.001" ratio_time="875160.0724880851" />
+    <testcase name="test_all_gestures_uart" classname="test_uart_top" file="/workspaces/FPGA-Matrix-Multiplication-Accelerator/tb/test_uart_top.py" lineno="245" time="199.86409854888916" sim_time_ns="140139275.001" ratio_time="701172.8270283631" />
   </testsuite>
 </testsuites>

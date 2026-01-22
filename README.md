@@ -1,73 +1,100 @@
-# DVS Gesture Detector - Matrix Multiplication Accelerator
+# DVS Gesture Accelerator for Ice40 FPGA
 
-FPGA-based gesture recognition using matrix multiplication for Dynamic Vision Sensor (DVS) event streams.
+A lightweight matrix multiplication accelerator for classifying gesture movements from Dynamic Vision Sensor (DVS) event data. Includes UART interface for testing without real DVS hardware.
 
-## Features
+## Overview
 
-- **Event-driven processing**: Accepts DVS events (x, y, polarity)
-- **Activity map with decay**: Single 2D map with periodic decay
-- **Matrix multiplication classifier**: Learned weight matrices for gesture detection
-- **4 Matmul cores**: Parallel classification for UP, DOWN, LEFT, RIGHT
-- **Cocotb testbench**: Python-based simulation tests
+This accelerator processes DVS events (x, y, polarity) and classifies them into 4 gestures: **UP**, **DOWN**, **LEFT**, **RIGHT**.
 
-## Architecture
+### How It Works
+
+1. **Event Accumulation**: DVS events are accumulated over a window of N events
+   - Each event contributes its position weighted by polarity (+1 for ON, -1 for OFF)
+   - Tracks sum of weighted positions: `sum_x += x * polarity`, `sum_y += y * polarity`
+
+2. **Delta Computation**: After N events, compute movement delta
+   - `delta_x = sum_x - previous_sum_x`
+   - `delta_y = sum_y - previous_sum_y`
+
+3. **Matrix Multiplication**: Multiply delta vector by weight matrix
+   ```
+   [score_up   ]   [ 0   64] [delta_x]
+   [score_down ] = [ 0  -64] [delta_y]
+   [score_left ]   [-64   0]
+   [score_right]   [64    0]
+   ```
+
+4. **Classification**: Output gesture with highest score (argmax)
+
+## File Structure
 
 ```
-DVS Events → Event Buffer → Activity Map (with decay) → Matmul Classifier (4×64 weights) → Gesture Output
+├── README.md
+├── rtl/
+│   ├── uart_gesture_top.sv     # Top module with UART
+│   ├── uart_rx.sv              # UART receiver
+│   ├── uart_tx.sv              # UART transmitter
+│   ├── dvs_gesture_accel.sv    # Gesture accelerator
+│   ├── event_accumulator.sv    # Event accumulation
+│   └── gesture_classifier.sv   # Matrix multiply + argmax
+├── tb/
+│   ├── test_gesture.py         # Cocotb testbench
+│   └── Makefile
+├── synth/
+│   ├── Makefile                # Ice40 synthesis
+│   └── icebreaker.pcf          # Pin constraints
+└── validate_ice40.py           # Hardware validation script
 ```
 
-### Activity Map
-- Single 2D array of signed counters (8×8 pixels)
-- Increment/decrement on each event based on polarity
-- Global decay: periodic right-shift of all values
+## UART Protocol
 
-### Matmul Classifier
-- **4 parallel matmul cores** (one per gesture class)
-- **Learned weight matrix**: 4 gestures × 64 pixels (directional kernels)
-- Each core computes: `score[g] = Σ(activity[i] × weight[g][i])`
-- Outputs gesture with maximum score + confidence
+**Baud Rate**: 115200, 8N1
+
+**Send Event to FPGA** (4 bytes):
+| Byte | Description |
+|------|-------------|
+| 0 | X coordinate (0-127) |
+| 1 | Y coordinate (0-127) |
+| 2 | Polarity (1=ON, 0=OFF) |
+| 3 | Timestamp (unused, can be 0) |
+
+**Receive from FPGA** (1 byte when gesture detected):
+| Bits | Description |
+|------|-------------|
+| [7:4] | Marker (0xA) |
+| [1:0] | Gesture: 0=UP, 1=DOWN, 2=LEFT, 3=RIGHT |
 
 ## Quick Start
 
-### Simulation
-
+### 1. Simulation
 ```bash
-# Run cocotb tests (cocotb/pytest installed in devcontainer)
-make sim
+cd tb
+make
 ```
 
-### Synthesis (iCEBreaker)
-
+### 2. Synthesis
 ```bash
-make synth
+cd synth
+make
 ```
 
-## Parameters
-
-- `WIDTH_P`, `HEIGHT_P`: Sensor resolution (default: 8×8)
-- `COUNTER_WIDTH_P`: Activity counter bit width (default: 8)
-- `CLASSIFY_INTERVAL_P`: Cycles between classifications (default: 1000)
-
-## Gesture Mapping
-
-- `0`: UP (more activity in top half)
-- `1`: DOWN (more activity in bottom half)
-- `2`: LEFT (more activity in left half)
-- `3`: RIGHT (more activity in right half)
-
-## Directory Structure
-
+### 3. Program iCEBreaker
+```bash
+cd synth
+make prog
 ```
-├── rtl/                              # RTL source files
-│   ├── ram_1r1w_sync.sv             # RAM primitive
-│   ├── fifo_1r1w_sync.sv            # FIFO primitive
-│   ├── dvs_event_buffer.sv          # Event input buffer
-│   ├── activity_map.sv              # 2D activity map with decay
-│   ├── matmul_core.sv               # MAC unit for matrix multiply
-│   ├── matmul_gesture_classifier.sv # Matmul-based classifier (4 cores)
-│   └── dvs_gesture_detector_top.sv  # Top-level module
-├── tb/                               # Cocotb testbenches
-│   ├── dvs_gesture_testbench.py     # Python tests
-│   └── Makefile                     # Cocotb build
-└── Makefile                          # Top-level build
+
+### 4. Validate on Hardware
+```bash
+python validate_ice40.py /dev/ttyUSB0
 ```
+
+## Resource Usage (Ice40 UP5K)
+
+- ~500 LUTs
+- ~250 FFs
+- 0 BRAM
+
+## License
+
+MIT

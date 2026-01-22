@@ -1,0 +1,17 @@
+# Pin constraints for iCEBreaker FPGA board
+# DVS Gesture Accelerator with UART interface
+#
+# CRITICAL: Uses internal power-on reset - no external reset pin needed
+# This matches the proven working design pattern
+
+# Clock (12MHz oscillator)
+set_io clk 35
+
+# UART (onboard FTDI USB-UART)
+# FPGA RX = Pin 6 (receives from PC/FTDI TX)
+# FPGA TX = Pin 9 (transmits to PC/FTDI RX)
+set_io uart_rx 6
+set_io uart_tx 9
+
+# Heartbeat LED to show FPGA is alive (accent LED, active low)
+set_io led_heartbeat 39
