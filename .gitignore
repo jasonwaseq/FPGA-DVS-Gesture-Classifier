@@ -10,6 +10,20 @@
 # Generated Verilog/SystemVerilog
 #*.sv2v.v
 
+# Python
+.venv/
+__pycache__/
+*.pyc
+*.pyo
+.pytest_cache/
+
+# OSS CAD Suite (downloaded by setup script)
+oss-cad-suite/
+
+# Cocotb simulation
+tb/sim_build/
+tb/results.xml
+
 # OS-specific files
 .DS_Store
 Thumbs.db
@@ -24,3 +38,7 @@ Thumbs.db
 # Temporary files
 *.tmp
 *.bak
+
+# Generated activation script
+activate.ps1
+activate.sh
