@@ -18,7 +18,6 @@ Author: DVS Gesture Classifier Project
 import cocotb
 from cocotb.clock import Clock
 from cocotb.triggers import RisingEdge, ClockCycles, Timer
-from cocotb.result import TestFailure
 import random
 import math
 
@@ -143,7 +142,7 @@ async def send_event_stream(dut, events, log=False):
 async def setup_test(dut, fast_sim=True):
     """Initialize clock, reset, and configure for fast simulation"""
     # Start clock (83ns period = 12MHz)
-    clock = Clock(dut.clk, 83, units="ns")
+    clock = Clock(dut.clk, 83, unit="ns")
     cocotb.start_soon(clock.start())
     
     # Initialize inputs
@@ -257,11 +256,10 @@ async def test_uart_status(dut):
     assert response is not None, "No status response received"
     assert (response & 0xF0) == 0xB0, f"Expected status byte 0xBx, got 0x{response:02X}"
     
-    state = (response >> 2) & 0x07
-    fifo_full = (response >> 1) & 0x01
+    state = (response >> 1) & 0x07
     fifo_empty = response & 0x01
     
-    dut._log.info(f"Status: state={state}, fifo_full={fifo_full}, fifo_empty={fifo_empty}")
+    dut._log.info(f"Status: state={state}, fifo_empty={fifo_empty}")
     dut._log.info("UART Status Test PASSED")
 
 

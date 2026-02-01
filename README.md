@@ -2,6 +2,8 @@
 
 FPGA-based real-time gesture recognition accelerator for Dynamic Vision Sensor (DVS) events on iCE40 UP5K.
 
+**One-Script Workflow**: Single `setup.py` handles environment setup, cocotb verification, synthesis, and FPGA programming across all platforms (Windows/Linux/macOS).
+
 ## Features
 
 - **Asynchronous Event-Driven Processing**: Each DVS event processed individually as it arrives
@@ -16,63 +18,64 @@ FPGA-based real-time gesture recognition accelerator for Dynamic Vision Sensor (
 
 ## Quick Start
 
-### Option 1: Use Dev Container (Recommended for Codespaces)
+### Setup (All Platforms)
 
-1. Open in GitHub Codespaces or VS Code with Dev Containers extension
-2. Click "Reopen in Container" when prompted
-3. All tools are pre-installed and ready to use
-
-### Option 2: Local Setup (Windows)
-
-```powershell
-# Clone the repo
-git clone https://github.com/jasonwaseq/FPGA-DVS-Gesture-Classifier.git
-cd FPGA-DVS-Gesture-Classifier
-
-# Run setup script (downloads ~300MB FPGA tools)
-.\setup.ps1
-
-# Activate environment
-. .\activate.ps1
-
-# Test the camera emulator
-cd tools
-python dvs_camera_emulator.py --preview
-```
-
-### Option 3: Local Setup (Linux/macOS)
+The project uses a unified Python setup script that works identically on Windows, Linux, and macOS. The script:
+- Creates a Python virtual environment
+- Installs dependencies (cocotb, pytest, numpy, opencv-python, pyserial)
+- Detects or downloads OSS CAD Suite (Yosys, nextpnr, Icarus Verilog)
+- Configures the complete toolchain automatically
 
 ```bash
 # Clone the repo
 git clone https://github.com/jasonwaseq/FPGA-DVS-Gesture-Classifier.git
 cd FPGA-DVS-Gesture-Classifier
 
-# Run setup script (downloads ~1GB FPGA tools on Linux)
-chmod +x setup.sh
-./setup.sh
+# Run setup - automatically detects existing OSS CAD Suite or downloads it
+python setup.py
 
-# Activate environment
-source ./activate.sh
-
-# Test the camera emulator
-cd tools
-python dvs_camera_emulator.py --preview
+# That's it! Now run tests or synthesis directly:
+python setup.py test    # Run cocotb verification
+python setup.py synth   # Synthesize for iCE40
+python setup.py flash   # Program FPGA
 ```
 
-### Option 4: Manual Setup
+**Note**: You don't need to manually activate the virtual environment or source OSS CAD Suite environment scripts - `setup.py` handles all environment configuration internally.
 
-If you already have tools installed:
+### Run Verification Tests (cocotb)
 
 ```bash
-# Python dependencies only
-pip install opencv-python numpy pyserial cocotb pytest
-
-# FPGA tools (install separately):
-# - Yosys: https://github.com/YosysHQ/yosys
-# - nextpnr: https://github.com/YosysHQ/nextpnr
-# - Icarus Verilog: https://github.com/steveicarus/iverilog
-# Or use OSS CAD Suite: https://github.com/YosysHQ/oss-cad-suite-build
+python setup.py test
 ```
+
+### Synthesize for iCE40 UP5K
+
+```bash
+python setup.py synth
+```
+
+### Flash to FPGA
+
+```bash
+python setup.py flash
+```
+
+### All Commands
+
+| Command | Description |
+|---------|-------------|
+| `python setup.py` | Initial setup - creates venv, installs packages, detects/downloads OSS CAD Suite |
+| `python setup.py --skip-fpga` | Setup without downloading OSS CAD Suite (use existing installation) |
+| `python setup.py test` | Run cocotb verification tests (compiles RTL with iverilog, runs testbench) |
+| `python setup.py synth` | Full synthesis flow (Yosys → nextpnr → icepack) |
+| `python setup.py flash` | Program bitstream to connected FPGA via iceprog |
+| `python setup.py clean` | Remove build artifacts (sim_build, synthesis outputs) |
+
+**Environment Handling**: All commands automatically configure the OSS CAD Suite environment (PATH, DLL paths, SSL certs, etc.) - no need to source environment scripts manually.
+
+### Dev Container (Alternative)
+
+For GitHub Codespaces or VS Code Dev Containers, open the project and click "Reopen in Container" when prompted.
 
 ## Architecture Overview
 
@@ -315,85 +318,125 @@ python fpga_gesture_validator.py --port COM3 --continuous --duration 60
 ## File Structure
 
 ```
-├── rtl/                        # RTL source files
+├── rtl/                        # RTL source files (SystemVerilog)
 │   ├── uart_gesture_top.sv     # Top-level module (UART + accelerator)
 │   ├── dvs_gesture_accel.sv    # Asynchronous spatiotemporal classifier
+│   ├── InputFIFO.sv            # 16-entry event FIFO
+│   ├── SpatialCompressor.sv    # 320×320 → 16×16 spatial mapping
+│   ├── TemporalAccumulator.sv  # Dual-window accumulation
+│   ├── MotionComputer.sv       # Motion vector extraction
+│   ├── GestureClassifier.sv    # Threshold-based classification
+│   ├── OutputRegister.sv       # Persistence filter & output
 │   ├── uart_rx.sv              # UART receiver (8N1)
 │   └── uart_tx.sv              # UART transmitter (8N1)
 │
-├── tb/                         # Testbenches
-│   ├── Makefile                # Cocotb simulation makefile
-│   ├── test_spatiotemporal_classifier.py  # Main cocotb testbench
+├── tb/                         # Cocotb testbenches
+│   ├── test_spatiotemporal_classifier.py  # Main cocotb testbench (18 tests)
 │   ├── test_dvs_gesture.py     # Legacy testbench
-│   └── sim_build/              # Simulation build artifacts
+│   ├── Makefile                # Legacy make-based cocotb runner (superseded by setup.py)
+│   └── sim_build/              # Iverilog compilation artifacts (auto-generated)
 │
-├── synth/                      # Synthesis files
-│   ├── Makefile                # Yosys + nextpnr flow
+├── synth/                      # FPGA synthesis
 │   ├── icebreaker.pcf          # iCEBreaker pin constraints
-│   └── uart_gesture_top.bit    # Generated bitstream
+│   ├── Makefile                # Legacy make-based synthesis (superseded by setup.py)
+│   ├── uart_gesture_top.json   # Yosys output (auto-generated)
+│   ├── uart_gesture_top.asc    # nextpnr output (auto-generated)
+│   └── uart_gesture_top.bit    # Final bitstream (auto-generated)
 │
-├── tools/                      # Python tools
-│   ├── dvs_camera_emulator.py  # Webcam → DVS emulator
-│   ├── dvs_event_player.py     # Replay saved events
+├── tools/                      # Python utilities
+│   ├── dvs_camera_emulator.py  # Webcam → DVS event converter
+│   ├── dvs_event_player.py     # Replay saved DVS events
+│   ├── fpga_gesture_validator.py  # Hardware test & validation
 │   └── README.md               # Tools documentation
 │
-├── .devcontainer/              # VS Code Dev Container config
-│   ├── Dockerfile              # Container with all tools
-│   └── devcontainer.json       # Dev container settings
+├── .devcontainer/              # VS Code Dev Container
+│   ├── Dockerfile              # Pre-configured environment
+│   └── devcontainer.json       # Container settings
 │
-├── setup.ps1                   # Windows setup script
-├── setup.sh                    # Linux/macOS setup script
-├── validate_ice40.py           # Hardware validation script
+├── setup.py                    # **Unified workflow script** (setup/test/synth/flash)
 └── README.md                   # This file
 ```
 
-## Quick Start
+**Workflow Philosophy**: The legacy Makefiles in `tb/` and `synth/` are preserved for reference but superseded by `setup.py`, which provides a consistent cross-platform interface to the same tools (cocotb + Icarus Verilog for verification, Yosys + nextpnr for synthesis).
 
-### Simulate with Cocotb
+## Running Tests and Synthesis
 
-```bash
-cd tb
-make clean
-make
-```
+All verification and synthesis tasks are managed through the unified `setup.py` script, which automatically configures the toolchain environment.
 
-This runs all tests including:
-- UART echo test
-- Status query test
-- Coordinate range test
-- All four gesture tests (UP, DOWN, LEFT, RIGHT)
-- Burst event handling
-- Temporal binning verification
-
-### Synthesize for iCE40
-
+### Run Cocotb Tests
 
 ```bash
-cd synth
-
-# Using Makefile (requires sv2v)
-make clean && make
-
-# Or directly with Yosys (no sv2v needed)
-yosys -p "read_verilog -sv ../rtl/*.sv; synth_ice40 -top uart_gesture_top -json uart_gesture_top.json"
-nextpnr-ice40 --up5k --package sg48 --json uart_gesture_top.json --pcf icebreaker.pcf --asc uart_gesture_top.asc
-icepack uart_gesture_top.asc uart_gesture_top.bit
+python setup.py test
 ```
 
-### Program iCEBreaker
+**What happens:**
+1. Detects OSS CAD Suite installation and configures environment
+2. Compiles all RTL files with Icarus Verilog (iverilog)
+3. Runs cocotb testbench with VPI interface
+4. Executes 18 verification tests:
+   - UART echo test
+   - Status query test
+   - Config query test
+   - Event injection test
+   - FIFO backpressure test
+   - Soft reset test
+   - Coordinate range tests
+   - All four gesture tests (UP, DOWN, LEFT, RIGHT)
+   - Burst event handling
+   - Temporal window verification
+5. Reports pass/fail status for each test
+
+### Synthesize for iCE40 UP5K
 
 ```bash
-# Linux
-iceprog uart_gesture_top.bit
-
-# Windows with WSL (attach USB first)
-usbipd attach --wsl --busid <BUS_ID>
-wsl -e iceprog uart_gesture_top.bit
+python setup.py synth
 ```
+
+**What happens:**
+1. Configures OSS CAD Suite environment (sets PATH, SSL_CERT_FILE, Qt paths, etc.)
+2. Runs **Yosys** synthesis:
+   - Reads all SystemVerilog sources
+   - Performs logic synthesis
+   - Maps to iCE40 primitives (LUTs, DFFs, BRAMs, carries)
+   - Outputs JSON netlist
+3. Runs **nextpnr-ice40** place and route:
+   - Reads JSON netlist and pin constraints (icebreaker.pcf)
+   - Places cells and routes signals
+   - Optimizes timing for 12 MHz clock
+   - Outputs ASCII bitstream (.asc)
+4. Runs **icepack** bitstream generation:
+   - Converts .asc to binary bitstream (.bit)
+   - Final output: `synth/uart_gesture_top.bit`
+
+**Resource Usage** (from last synthesis):
+- Logic Cells: 1163/5280 (22%)
+- Block RAM: 2/30 (6%)
+- Max Frequency: 42.76 MHz (>3× headroom at 12 MHz target)
+
+### Flash to iCEBreaker FPGA
+
+```bash
+python setup.py flash
+```
+
+**What happens:**
+1. Checks for bitstream at `synth/uart_gesture_top.bit`
+2. Runs **iceprog** to program via USB
+3. FPGA immediately boots with new configuration
+
+**Note**: Requires FPGA to be connected via USB and drivers installed (FTDI on Windows/Linux, libusb on macOS).
 
 ### Run DVS Camera Emulator
 
+The camera emulator requires the virtual environment's Python packages (opencv-python, numpy, pyserial):
+
 ```bash
+# Activate virtual environment first (only needed for tools, not for setup.py commands)
+# Windows:
+.venv\Scripts\activate
+# Linux/macOS:
+source .venv/bin/activate
+
 cd tools
 
 # Preview mode (no FPGA needed)
@@ -410,14 +453,17 @@ python dvs_camera_emulator.py --port COM3 --preview            # Windows
 ### Validate on Hardware
 
 ```bash
-python validate_ice40.py /dev/ttyUSB0
+# Use the validator tool for comprehensive FPGA testing
+cd tools
+python fpga_gesture_validator.py --port COM3 --test all
+
+# Other validation options:
+python fpga_gesture_validator.py --port COM3 --test echo        # Quick connectivity test
+python fpga_gesture_validator.py --port COM3 --interactive      # Manual control
+python fpga_gesture_validator.py --list-ports                   # Find serial ports
 ```
 
-Options:
-- `-v`: Verbose output
-- `-n 500`: Use 500 events per gesture test
-- `--echo-only`: Quick UART connectivity test
-- `--reset`: Toggle DTR to reset FPGA
+**Why activate venv for tools?** The `setup.py` commands manage their own environment internally, but standalone Python scripts in `tools/` need the venv activated to access installed packages.
 
 ## Target Hardware
 

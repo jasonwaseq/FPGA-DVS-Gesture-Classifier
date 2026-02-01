@@ -19,6 +19,8 @@
 //       confidence: 0-15
 // =============================================================================
 
+`timescale 1ns/1ps
+
 module uart_gesture_top #(
     parameter CLK_FREQ       = 12_000_000,
     parameter BAUD_RATE      = 115200,
@@ -173,13 +175,15 @@ module uart_gesture_top #(
     // TX State Machine
     // =========================================================================
     
-    typedef enum logic [2:0] {
+    typedef enum logic [3:0] {
         TX_IDLE, 
         TX_ECHO, 
         TX_STATUS, 
         TX_GESTURE_CMD,
+        TX_GESTURE_CMD_WAIT,
         TX_GESTURE_CONF,
         TX_CONFIG_1,
+        TX_CONFIG_1_WAIT,
         TX_CONFIG_2
     } tx_state_t;
     
@@ -310,8 +314,9 @@ module uart_gesture_top #(
                 
                 TX_STATUS: begin
                     if (!tx_busy) begin
-                        // Status byte: 0xB0 | state[2:0] | fifo_status[1:0]
-                        tx_data  <= {4'hB, pending_state, debug_fifo_full, debug_fifo_empty};
+                        // Status byte: 0xB0 | state[2:0] | fifo_empty
+                        // Bits: [7:4]=0xB, [3:1]=state, [0]=fifo_empty
+                        tx_data  <= {4'hB, pending_state, debug_fifo_empty};
                         tx_valid <= 1'b1;
                         tx_state <= TX_IDLE;
                     end
@@ -322,8 +327,14 @@ module uart_gesture_top #(
                         // Gesture command byte: 0xA0 | gesture[1:0]
                         tx_data  <= {4'hA, 2'b00, pending_gesture};
                         tx_valid <= 1'b1;
-                        tx_state <= TX_GESTURE_CONF;
+                        tx_state <= TX_GESTURE_CMD_WAIT;
                     end
+                end
+                
+                TX_GESTURE_CMD_WAIT: begin
+                    // Wait for UART TX to assert busy before sending next byte
+                    if (tx_busy)
+                        tx_state <= TX_GESTURE_CONF;
                 end
                 
                 TX_GESTURE_CONF: begin
@@ -339,8 +350,14 @@ module uart_gesture_top #(
                     if (!tx_busy) begin
                         tx_data  <= MIN_EVENT_THRESH[7:0];
                         tx_valid <= 1'b1;
-                        tx_state <= TX_CONFIG_2;
+                        tx_state <= TX_CONFIG_1_WAIT;
                     end
+                end
+                
+                TX_CONFIG_1_WAIT: begin
+                    // Wait for UART TX to assert busy before sending next byte
+                    if (tx_busy)
+                        tx_state <= TX_CONFIG_2;
                 end
                 
                 TX_CONFIG_2: begin
