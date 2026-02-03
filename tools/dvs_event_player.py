@@ -6,6 +6,7 @@ This script reads events saved by dvs_camera_emulator.py and replays them
 to the FPGA at a configurable rate.
 
 Usage:
+    python dvs_event_player.py events.bin                         # Auto-detect port
     python dvs_event_player.py events.bin --port /dev/ttyUSB0
     python dvs_event_player.py events.bin --port /dev/ttyUSB0 --speed 2.0
     python dvs_event_player.py events.bin --preview  # Visualize only
@@ -27,6 +28,7 @@ except ImportError:
 
 try:
     import serial
+    import serial.tools.list_ports
     HAS_SERIAL = True
 except ImportError:
     HAS_SERIAL = False
@@ -116,13 +118,49 @@ def visualize_events(
     return vis
 
 
+def auto_detect_port() -> str:
+    """Automatically detect an FPGA serial port.
+    
+    Returns:
+        Port device name if found, None otherwise
+    """
+    if not HAS_SERIAL:
+        return None
+    
+    ports = serial.tools.list_ports.comports()
+    
+    if not ports:
+        return None
+    
+    # Prefer common FPGA/FTDI devices
+    ftdi_keywords = ['ftdi', 'ft232', 'ft2232', 'usb serial', 'icebreaker', 'ice40']
+    
+    # First pass: look for FTDI or FPGA-related devices
+    for port in ports:
+        desc_lower = port.description.lower()
+        if any(keyword in desc_lower for keyword in ftdi_keywords):
+            print(f"Auto-detected port: {port.device} ({port.description})")
+            return port.device
+    
+    # Second pass: if only one port available, use it
+    if len(ports) == 1:
+        print(f"Auto-detected port: {ports[0].device} ({ports[0].description})")
+        return ports[0].device
+    
+    # Multiple ports and no clear match
+    print("Multiple serial ports found, please specify with --port:")
+    for port in ports:
+        print(f"  {port.device}: {port.description}")
+    return None
+
+
 def main():
     parser = argparse.ArgumentParser(
         description='Replay saved DVS events to FPGA via UART'
     )
     parser.add_argument('input', help='Input event file (.bin)')
     parser.add_argument('--port', type=str, default=None,
-                        help='Serial port for UART output')
+                        help='Serial port for UART output (auto-detects if not specified)')
     parser.add_argument('--baud', type=int, default=115200,
                         help='UART baud rate')
     parser.add_argument('--speed', type=float, default=1.0,
@@ -153,6 +191,14 @@ def main():
     
     if args.info:
         sys.exit(0)
+    
+    # Auto-detect port if not specified but needed for serial output
+    port = args.port
+    if port is None and not args.preview:
+        # Try to auto-detect when no preview mode (preview-only doesn't need port)
+        port = auto_detect_port()
+        if port:
+            args.port = port
     
     # Open serial port if specified
     ser = None

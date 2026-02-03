@@ -78,7 +78,15 @@ module MotionComputer #(
     // -------------------------------------------------------------------------
     // Pipeline Stage 2: Compute absolute values
     // -------------------------------------------------------------------------
-    // Two's complement absolute value: if negative, invert and add 1
+    // Compute absolute values using conditional assignment
+    
+    wire [ACC_SUM_BITS-1:0] abs_diff_x;
+    wire [ACC_SUM_BITS-1:0] abs_diff_y;
+    
+    // Compute absolute values combinatorially
+    // Absolute value is always non-negative, so must be UNSIGNED
+    assign abs_diff_x = (diff_x < 0) ? (-diff_x) : diff_x;
+    assign abs_diff_y = (diff_y < 0) ? (-diff_y) : diff_y;
     
     always_ff @(posedge clk) begin
         if (rst) begin
@@ -94,9 +102,9 @@ module MotionComputer #(
                 // Pass through signed deltas
                 delta_x      <= diff_x;
                 delta_y      <= diff_y;
-                // Compute unsigned absolute values
-                abs_delta_x  <= (diff_x < 0) ? (~diff_x + 1'b1) : diff_x;
-                abs_delta_y  <= (diff_y < 0) ? (~diff_y + 1'b1) : diff_y;
+                // Register the computed absolute values
+                abs_delta_x  <= abs_diff_x;
+                abs_delta_y  <= abs_diff_y;
                 // Pass through total count
                 total_events <= sum_count;
             end

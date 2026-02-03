@@ -29,7 +29,7 @@ module uart_gesture_top #(
     parameter SENSOR_RES     = 320,
     parameter MIN_EVENT_THRESH  = 20,          // Minimum events for gesture
     parameter MOTION_THRESH     = 8,           // Minimum motion magnitude
-    parameter PERSISTENCE_COUNT = 2,           // Consecutive windows needed
+    parameter PERSISTENCE_COUNT = 1,           // Consecutive windows needed
     parameter CYCLES_PER_BIN = 600             // For simulation override
 )(
     input  logic clk,
@@ -94,6 +94,8 @@ module uart_gesture_top #(
     logic        event_polarity;
     logic [15:0] event_ts;
 
+    logic        accel_temporal_phase;
+
     dvs_gesture_accel #(
         .CLK_FREQ_HZ(CLK_FREQ),
         .WINDOW_MS(WINDOW_MS),
@@ -117,7 +119,8 @@ module uart_gesture_top #(
         .debug_event_count(debug_event_count),
         .debug_state(debug_state),
         .debug_fifo_empty(debug_fifo_empty),
-        .debug_fifo_full(debug_fifo_full)
+        .debug_fifo_full(debug_fifo_full),
+        .debug_temporal_phase(accel_temporal_phase)
     );
 
     // =========================================================================
@@ -314,9 +317,8 @@ module uart_gesture_top #(
                 
                 TX_STATUS: begin
                     if (!tx_busy) begin
-                        // Status byte: 0xB0 | state[2:0] | fifo_empty
-                        // Bits: [7:4]=0xB, [3:1]=state, [0]=fifo_empty
-                        tx_data  <= {4'hB, pending_state, debug_fifo_empty};
+                        // Status byte: [1,0,1,1, temporal_phase, fifo_full, fifo_empty, 0]
+                        tx_data  <= {4'b1011, accel_temporal_phase, debug_fifo_full, debug_fifo_empty, 1'b0};
                         tx_valid <= 1'b1;
                         tx_state <= TX_IDLE;
                     end

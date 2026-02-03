@@ -78,13 +78,13 @@ def print_step(step, msg):
     print(f"\n[{step}] {msg}")
 
 def print_success(msg):
-    print(f"  ✓ {msg}")
+    print(f"  [+] {msg}")
 
 def print_warning(msg):
-    print(f"  ⚠ {msg}")
+    print(f"  [!] {msg}")
 
 def print_error(msg):
-    print(f"  ✗ {msg}")
+    print(f"  [x] {msg}")
 
 def get_platform_info():
     """Get OS and architecture."""
@@ -432,6 +432,25 @@ def run_synthesis():
     print_header("Synthesis Complete")
     return 0
 
+def find_ftdi_device():
+    """Find FTDI device info for FPGA programming."""
+    try:
+        import serial.tools.list_ports
+        ports = serial.tools.list_ports.comports()
+        for port in ports:
+            # Look for FTDI devices (0x0403) commonly used in iCE40 boards
+            if port.vid == 0x0403 and port.pid in [0x6010, 0x6014]:
+                return {
+                    'port': port.device,
+                    'vid': port.vid,
+                    'pid': port.pid,
+                    'serial': port.serial_number,
+                    'description': port.description
+                }
+    except:
+        pass
+    return None
+
 def flash_fpga():
     """Flash bitstream to FPGA."""
     print_header("Flashing FPGA")
@@ -452,15 +471,148 @@ def flash_fpga():
         print_error("Failed to set up OSS CAD Suite environment")
         return 1
     
-    print(f"Flashing {bitfile}...")
-    result = subprocess.run(["iceprog", str(bitfile)], env=env)
-    
-    if result.returncode == 0:
-        print_success("FPGA programmed successfully")
+    # Find FTDI device
+    device_info = find_ftdi_device()
+    if device_info:
+        print(f"Found FPGA: {device_info['description']}")
+        print(f"  Port: {device_info['port']}")
+        print(f"  USB ID: {device_info['vid']:04x}:{device_info['pid']:04x}")
+        if device_info['serial']:
+            print(f"  Serial: {device_info['serial']}")
     else:
-        print_error("Flash failed - check FPGA connection")
+        print_warning("No FTDI device detected")
     
-    return result.returncode
+    print(f"\nFlashing {bitfile.name}...")
+    
+    # Get tool paths
+    iceprog_available = shutil.which("iceprog", path=str(oss_root / "bin"))
+    openfpgaloader_available = shutil.which("openFPGALoader", path=str(oss_root / "bin"))
+    
+    # Method 1: Try openFPGALoader with board type (worked after Zadig fix)
+    if openfpgaloader_available:
+        for board in ["ice40_generic", "icebreaker"]:
+            print(f"Method 1: openFPGALoader --board {board}...")
+            result = subprocess.run(
+                ["openFPGALoader", "-b", board, str(bitfile)],
+                env=env,
+                capture_output=True,
+                text=True
+            )
+            
+            if result.returncode == 0:
+                print_success("FPGA programmed successfully!")
+                return 0
+        print_warning("Failed")
+
+    # Method 2: Try openFPGALoader with FTDI serial number (most reliable on Windows)
+    if openfpgaloader_available and device_info and device_info.get('serial'):
+        print("Method 2: openFPGALoader with serial number...")
+        result = subprocess.run(
+            ["openFPGALoader", 
+             "--ftdi-serial", device_info['serial'],
+             str(bitfile)],
+            env=env,
+            capture_output=True,
+            text=True
+        )
+        
+        if result.returncode == 0:
+            print_success("FPGA programmed successfully!")
+            return 0
+        print_warning("Failed")
+
+    # Method 3: Try openFPGALoader with cable type
+    if openfpgaloader_available:
+        print("Method 3: openFPGALoader with cable type...")
+        result = subprocess.run(
+            ["openFPGALoader", "--cable", "ft2232", str(bitfile)],
+            env=env,
+            capture_output=True,
+            text=True
+        )
+        if result.returncode == 0:
+            print_success("FPGA programmed successfully!")
+            return 0
+        print_warning("Failed")
+
+    # Method 4: Try openFPGALoader with explicit VID/PID (works better on Windows)
+    if openfpgaloader_available and device_info:
+        print("Method 4: openFPGALoader with VID/PID...")
+        result = subprocess.run(
+            ["openFPGALoader", 
+             "--vid", f"0x{device_info['vid']:04x}",
+             "--pid", f"0x{device_info['pid']:04x}",
+             str(bitfile)],
+            env=env,
+            capture_output=True,
+            text=True
+        )
+        
+        if result.returncode == 0:
+            print_success("FPGA programmed successfully!")
+            return 0
+        print_warning("Failed")
+    
+    # Method 5: Try iceprog with device index
+    if iceprog_available:
+        for dev_idx in [0, 1]:
+            print(f"Method 5: iceprog -d {dev_idx}...")
+            result = subprocess.run(
+                ["iceprog", "-d", str(dev_idx), str(bitfile)],
+                env=env,
+                capture_output=True,
+                text=True
+            )
+            
+            if result.returncode == 0:
+                print_success("FPGA programmed successfully!")
+                return 0
+        print_warning("Failed")
+    
+    # Method 6: Try iceprog default
+    if iceprog_available:
+        print("Method 6: iceprog (default)...")
+        result = subprocess.run(
+            ["iceprog", str(bitfile)],
+            env=env,
+            capture_output=True,
+            text=True
+        )
+        
+        if result.returncode == 0:
+            print_success("FPGA programmed successfully!")
+            return 0
+        print_warning("Failed")
+
+    # Method 7: Try iceprog with full path (for Windows admin scenarios)
+    if iceprog_available and sys.platform == "win32":
+        print("Method 7: iceprog with full bitfile path...")
+        result = subprocess.run(
+            ["iceprog", str(bitfile.resolve())],
+            env=env,
+            capture_output=True,
+            text=True
+        )
+        if result.returncode == 0:
+            print_success("FPGA programmed successfully!")
+            return 0
+        print_warning("Failed")
+    
+    # All methods failed
+    print_error("\nAll programming methods failed")
+    print("\nQuick fixes to try:")
+    print("  1. Close this terminal and run PowerShell as Administrator, then retry")
+    print("  2. Unplug the FPGA, wait 3 seconds, plug it back in, then retry")
+    print("  3. Close any serial monitor programs (Arduino IDE, PuTTY, etc.)")
+    print("  4. Check Task Manager for any program using COM ports")
+    
+    if sys.platform == "win32" and device_info:
+        print(f"\nWindows-specific solution:")
+        print(f"  The FPGA is showing as COM port, but needs FTDI driver access.")
+        print(f"  Try this command in Administrator PowerShell:")
+        print(f"     iceprog synth\\uart_gesture_top.bit")
+    
+    return 1
 
 # =============================================================================
 # Clean Function

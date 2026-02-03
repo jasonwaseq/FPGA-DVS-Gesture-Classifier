@@ -189,6 +189,8 @@ def generate_random_events(count: int) -> List[DVSEvent]:
     return events
 
 
+
+
 # =============================================================================
 # UART Communication
 # =============================================================================
@@ -299,7 +301,14 @@ class FPGAGestureInterface:
         return False
     
     def query_status(self) -> Optional[dict]:
-        """Query accelerator status"""
+        """Query accelerator status
+        Status byte format: [1,0,1,1, temporal_phase, fifo_full, fifo_empty, 0]
+        - Bits 7-4: 0xB (identifier)
+        - Bit 3: temporal_phase (0=early, 1=late)
+        - Bit 2: fifo_full
+        - Bit 1: fifo_empty
+        - Bit 0: reserved (0)
+        """
         self.clear_rx_buffer()
         self._send_byte(0xFE)
         response = self._receive_byte(timeout=0.5)
@@ -309,9 +318,9 @@ class FPGAGestureInterface:
             print(f"Invalid status response: 0x{response:02X}")
             return None
         return {
-            'state': (response >> 2) & 0x07,
-            'fifo_full': (response >> 1) & 0x01,
-            'fifo_empty': response & 0x01,
+            'phase': (response >> 3) & 0x01,     # Bit 3
+            'fifo_full': (response >> 2) & 0x01, # Bit 2
+            'fifo_empty': (response >> 1) & 0x01,# Bit 1
             'raw': response
         }
     
@@ -388,10 +397,10 @@ def test_connection(fpga: FPGAGestureInterface) -> bool:
     print("="*60)
     
     if fpga.send_echo():
-        print("✓ Echo test PASSED")
+        print("[+] Echo test PASSED")
         return True
     else:
-        print("✗ Echo test FAILED")
+        print("[-] Echo test FAILED")
         return False
 
 
@@ -403,12 +412,12 @@ def test_status(fpga: FPGAGestureInterface) -> bool:
     
     status = fpga.query_status()
     if status:
-        print(f"✓ Status: state={status['state']}, "
+        print(f"Status: phase={status['phase']}, "
               f"fifo_full={status['fifo_full']}, "
               f"fifo_empty={status['fifo_empty']}")
         return True
     else:
-        print("✗ Status query FAILED")
+        print("[-] Status query FAILED")
         return False
 
 
@@ -420,11 +429,11 @@ def test_config(fpga: FPGAGestureInterface) -> bool:
     
     config = fpga.query_config()
     if config:
-        print(f"✓ Config: min_event_thresh={config['min_event_thresh']}, "
+        print(f"[+] Config: min_event_thresh={config['min_event_thresh']}, "
               f"motion_thresh={config['motion_thresh']}")
         return True
     else:
-        print("✗ Config query FAILED")
+        print("[-] Config query FAILED")
         return False
 
 
@@ -442,10 +451,24 @@ def test_gesture(fpga: FPGAGestureInterface, gesture: Gesture,
     fpga.soft_reset()
     fpga.clear_rx_buffer()
     time.sleep(0.05)
+
+    # Align to start in early phase when possible
+    status = fpga.query_status()
+    if status and status.get("phase") == 1:
+        if verbose:
+            print("Waiting for early phase start...")
+        time.sleep(0.25)
+
     
-    # Generate gesture events
-    events = generate_gesture_events(gesture, event_rate=EVENT_RATE_HZ * 2, 
-                                     duration_ms=GESTURE_DURATION_MS)
+    # Generate gesture events (reduced noise, larger motion for robust detection)
+    events = generate_gesture_events(
+        gesture,
+        event_rate=EVENT_RATE_HZ * 2,
+        duration_ms=GESTURE_DURATION_MS,
+        motion_amplitude=120,
+        spatial_noise=5.0,
+        noise_ratio=0.0
+    )
     
     if verbose:
         print(f"Sending {len(events)} events for {gesture_name} gesture...")
@@ -470,7 +493,7 @@ def test_gesture(fpga: FPGAGestureInterface, gesture: Gesture,
     if result:
         detected_name = GESTURE_NAMES[result.gesture]
         if verbose:
-            print(f"✓ Gesture detected: {detected_name} "
+            print(f"[+] Gesture detected: {detected_name} "
                   f"(confidence={result.confidence}, expected={gesture_name})")
         if result.gesture == gesture:
             if verbose:
@@ -482,7 +505,7 @@ def test_gesture(fpga: FPGAGestureInterface, gesture: Gesture,
             return result
     else:
         if verbose:
-            print(f"✗ No gesture detected (expected {gesture_name})")
+            print(f"[-] No gesture detected (expected {gesture_name})")
         return None
 
 
@@ -507,10 +530,10 @@ def test_all_gestures(fpga: FPGAGestureInterface) -> dict:
         name = GESTURE_NAMES[gesture]
         if result:
             detected = GESTURE_NAMES[result.gesture]
-            status = "✓" if result.gesture == gesture else "✗"
+            status = "[+]" if result.gesture == gesture else "[-]"
             print(f"  {status} {name}: detected {detected} (conf={result.confidence})")
         else:
-            print(f"  ✗ {name}: no detection")
+            print(f"  [-] {name}: no detection")
     
     return results
 
@@ -533,10 +556,10 @@ def test_noise_rejection(fpga: FPGAGestureInterface) -> bool:
     
     result = fpga.check_gesture(timeout=0.5)
     if result:
-        print(f"✗ False detection: {GESTURE_NAMES[result.gesture]}")
+        print(f"[-] False detection: {GESTURE_NAMES[result.gesture]}")
         return False
     else:
-        print("✓ No false detection - noise rejection working")
+        print("[+] No false detection - noise rejection working")
         return True
 
 

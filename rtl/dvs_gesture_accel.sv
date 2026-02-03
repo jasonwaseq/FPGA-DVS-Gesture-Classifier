@@ -66,7 +66,8 @@ module dvs_gesture_accel #(
     output logic [7:0]  debug_event_count,       // Events processed in current window
     output logic [2:0]  debug_state,             // Current FSM state
     output logic        debug_fifo_empty,        // InputFIFO empty flag
-    output logic        debug_fifo_full          // InputFIFO full flag
+    output logic        debug_fifo_full,         // InputFIFO full flag
+    output logic        debug_temporal_phase     // Current temporal window phase (0=early, 1=late)
 );
 
     // =========================================================================
@@ -182,6 +183,7 @@ module dvs_gesture_accel #(
     
     assign debug_fifo_empty = fifo_empty;
     assign debug_fifo_full  = fifo_full;
+    assign debug_temporal_phase = window_phase;
 
     // =========================================================================
     // Module: SpatialCompressor
