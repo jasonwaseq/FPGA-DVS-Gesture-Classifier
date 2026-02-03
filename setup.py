@@ -106,21 +106,30 @@ def get_pip_cmd():
 
 def get_oss_cad_bin():
     """Get path to OSS CAD Suite binaries."""
-    # Check project-local installation first
-    if OSS_CAD_PATH.exists():
-        return OSS_CAD_PATH
-    
-    # Check common user locations
+    # Check common user locations first (prefer system-wide installations)
     common_paths = [
         Path.home() / "Documents" / "oss-cad-suite",
         Path.home() / "Documents" / "oss-cad-suite-windows",
         Path.home() / "oss-cad-suite",
         Path("C:/oss-cad-suite"),
+        Path.home() / "Documents" / "oss-cad-suite" / "oss-cad-suite",
     ]
     
     for p in common_paths:
         if p.exists() and (p / "bin").exists():
-            return p
+            # Verify it has the key tools
+            if (p / "bin" / "iverilog.exe" if sys.platform == "win32" else p / "bin" / "iverilog").exists():
+                return p
+    
+    # Check project-local installation last (nested structure on Windows)
+    if OSS_CAD_PATH.exists():
+        nested = OSS_CAD_PATH / "oss-cad-suite"
+        if nested.exists() and (nested / "bin").exists():
+            if (nested / "bin" / "iverilog.exe" if sys.platform == "win32" else nested / "bin" / "iverilog").exists():
+                return nested
+        if (OSS_CAD_PATH / "bin").exists():
+            if (OSS_CAD_PATH / "bin" / "iverilog.exe" if sys.platform == "win32" else OSS_CAD_PATH / "bin" / "iverilog").exists():
+                return OSS_CAD_PATH
     
     return None
 
@@ -134,12 +143,13 @@ def get_oss_cad_env():
     oss_bin = oss_root / "bin"
     oss_lib = oss_root / "lib"
     
-    # Set PATH with lib first (for DLLs), then bin
-    env["PATH"] = f"{oss_lib}{os.pathsep}{oss_bin}{os.pathsep}{env.get('PATH', '')}"
+    # Set PATH with bin and lib (for Windows DLLs)
+    env["PATH"] = f"{oss_bin}{os.pathsep}{oss_lib}{os.pathsep}{env.get('PATH', '')}"
     
-    # Set OSS CAD Suite environment variables (from environment.ps1)
+    # Set OSS CAD Suite environment variables (from environment.bat)
     env["YOSYSHQ_ROOT"] = str(oss_root) + os.sep
-    env["SSL_CERT_FILE"] = str(oss_root / "etc" / "cacert.pem")
+    if (oss_root / "etc" / "cacert.pem").exists():
+        env["SSL_CERT_FILE"] = str(oss_root / "etc" / "cacert.pem")
     env["PYTHON_EXECUTABLE"] = str(oss_lib / "python3.exe") if sys.platform == "win32" else str(oss_lib / "python3")
     env["QT_PLUGIN_PATH"] = str(oss_lib / "qt5" / "plugins")
     env["QT_LOGGING_RULES"] = "*=false"
@@ -334,9 +344,13 @@ def run_tests(test_module="test_spatiotemporal_classifier"):
         "-DMOTION_THRESH=2",
     ] + sources
     
-    result = subprocess.run(compile_cmd, env=env, cwd=sim_build)
+    result = subprocess.run(compile_cmd, env=env, cwd=sim_build, capture_output=True, text=True)
     if result.returncode != 0:
         print_error("Compilation failed")
+        if result.stderr:
+            print(result.stderr)
+        if result.stdout:
+            print(result.stdout)
         return 1
     print_success("Compilation successful")
     
