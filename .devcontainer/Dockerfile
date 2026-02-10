@@ -5,9 +5,7 @@ ARG INSTALL_ZSH="true"
 ARG TARGETARCH
 
 # Remove Yarn APT repo to avoid GPG issues in base image
-RUN rm -f /etc/apt/sources.list.d/yarn.list
-
-RUN apt-get update
+RUN rm -f /etc/apt/sources.list.d/yarn.list && apt-get update
 RUN apt-get -y install \
     wget \
     unzip \
