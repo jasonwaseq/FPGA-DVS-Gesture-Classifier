@@ -1,0 +1,10 @@
+rtl/dvs_gesture_accel.sv
+rtl/GestureClassifier.sv
+rtl/InputFIFO.sv
+rtl/MotionComputer.sv
+rtl/OutputRegister.sv
+rtl/SpatialCompressor.sv
+rtl/TemporalAccumulator.sv
+rtl/uart_gesture_top.sv
+rtl/uart_rx.sv
+rtl/uart_tx.sv
