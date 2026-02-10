@@ -1,4 +1,4 @@
-FROM mcr.microsoft.com/vscode/devcontainers/base:ubuntu
+FROM mcr.microsoft.com/devcontainers/python:1-3.11
 
 ENV LANG C.UTF-8
 ARG INSTALL_ZSH="true" 
@@ -12,8 +12,8 @@ RUN apt-get -y install \
     git \
     build-essential \
     libgmp-dev \
-    python3 \
-    python3-pip \
+    libusb-1.0-0 \
+    udev \
     gtkwave \
     iverilog
 
@@ -24,6 +24,14 @@ RUN cd /opt && \
     rm oss-cad-suite-linux-x64-20241121.tgz
     
 ENV PATH="/opt/oss-cad-suite/bin:${PATH}"
+
+# Make OSS CAD Suite discoverable by setup.py
+RUN mkdir -p /home/vscode/Documents && \
+    ln -s /opt/oss-cad-suite /home/vscode/Documents/oss-cad-suite && \
+    chown -h vscode:vscode /home/vscode/Documents/oss-cad-suite
+
+# Allow access to serial/USB devices for flashing and UART tools
+RUN groupadd -f dialout && usermod -a -G dialout vscode
 
 # install sv2v
 RUN if [ "$TARGETARCH" = "amd64" ]; then \

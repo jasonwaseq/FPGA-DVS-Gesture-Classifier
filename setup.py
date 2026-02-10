@@ -4,12 +4,12 @@ DVS Gesture Accelerator - Universal Setup Script
 Works on Windows, Linux, and macOS
 
 Usage:
-    python setup.py              # Full setup (venv + dependencies + FPGA tools)
-    python setup.py --skip-fpga  # Skip OSS CAD Suite download
-    python setup.py test         # Run cocotb verification tests
-    python setup.py synth        # Synthesize for iCE40
-    python setup.py flash        # Flash bitstream to FPGA
-    python setup.py clean        # Clean build artifacts
+    python setup.py                       # Full setup (venv + dependencies + FPGA tools)
+    python setup.py --skip-fpga           # Skip OSS CAD Suite download
+    python setup.py test                  # Run cocotb verification tests
+    python setup.py synth                 # Synthesize for iCE40
+    python setup.py flash                 # Flash bitstream to FPGA (iceprog only)
+    python setup.py clean                 # Clean build artifacts
 """
 
 import os
@@ -432,26 +432,48 @@ def run_synthesis():
     print_header("Synthesis Complete")
     return 0
 
-def find_ftdi_device():
-    """Find FTDI device info for FPGA programming."""
+def list_ftdi_devices():
+    """List FTDI devices suitable for FPGA programming."""
+    devices = []
     try:
         import serial.tools.list_ports
         ports = serial.tools.list_ports.comports()
         for port in ports:
             # Look for FTDI devices (0x0403) commonly used in iCE40 boards
             if port.vid == 0x0403 and port.pid in [0x6010, 0x6014]:
-                return {
+                devices.append({
                     'port': port.device,
                     'vid': port.vid,
                     'pid': port.pid,
                     'serial': port.serial_number,
                     'description': port.description
-                }
+                })
     except:
         pass
-    return None
+    return devices
 
-def flash_fpga():
+def find_ftdi_device(preferred_port=None, preferred_serial=None, preferred_vid=None, preferred_pid=None):
+    """Find FTDI device info for FPGA programming, honoring user preference."""
+    devices = list_ftdi_devices()
+
+    if preferred_port:
+        for dev in devices:
+            if dev['port'].lower() == preferred_port.lower():
+                return dev
+
+    if preferred_serial:
+        for dev in devices:
+            if dev['serial'] and dev['serial'].lower() == preferred_serial.lower():
+                return dev
+
+    if preferred_vid is not None and preferred_pid is not None:
+        for dev in devices:
+            if dev['vid'] == preferred_vid and dev['pid'] == preferred_pid:
+                return dev
+
+    return devices[0] if devices else None
+
+def flash_fpga(port=None, serial=None, vid=None, pid=None):
     """Flash bitstream to FPGA."""
     print_header("Flashing FPGA")
     
@@ -471,8 +493,17 @@ def flash_fpga():
         print_error("Failed to set up OSS CAD Suite environment")
         return 1
     
-    # Find FTDI device
-    device_info = find_ftdi_device()
+    if any([port, serial, vid, pid]):
+        print_warning("Port/serial/VID/PID options are ignored when using iceprog.")
+
+    # Find FTDI device (best-effort info only for user feedback)
+    device_info = find_ftdi_device(
+        preferred_port=port,
+        preferred_serial=serial,
+        preferred_vid=vid,
+        preferred_pid=pid
+    )
+
     if device_info:
         print(f"Found FPGA: {device_info['description']}")
         print(f"  Port: {device_info['port']}")
@@ -486,92 +517,10 @@ def flash_fpga():
     
     # Get tool paths
     iceprog_available = shutil.which("iceprog", path=str(oss_root / "bin"))
-    openfpgaloader_available = shutil.which("openFPGALoader", path=str(oss_root / "bin"))
-    
-    # Method 1: Try openFPGALoader with board type (worked after Zadig fix)
-    if openfpgaloader_available:
-        for board in ["ice40_generic", "icebreaker"]:
-            print(f"Method 1: openFPGALoader --board {board}...")
-            result = subprocess.run(
-                ["openFPGALoader", "-b", board, str(bitfile)],
-                env=env,
-                capture_output=True,
-                text=True
-            )
-            
-            if result.returncode == 0:
-                print_success("FPGA programmed successfully!")
-                return 0
-        print_warning("Failed")
 
-    # Method 2: Try openFPGALoader with FTDI serial number (most reliable on Windows)
-    if openfpgaloader_available and device_info and device_info.get('serial'):
-        print("Method 2: openFPGALoader with serial number...")
-        result = subprocess.run(
-            ["openFPGALoader", 
-             "--ftdi-serial", device_info['serial'],
-             str(bitfile)],
-            env=env,
-            capture_output=True,
-            text=True
-        )
-        
-        if result.returncode == 0:
-            print_success("FPGA programmed successfully!")
-            return 0
-        print_warning("Failed")
-
-    # Method 3: Try openFPGALoader with cable type
-    if openfpgaloader_available:
-        print("Method 3: openFPGALoader with cable type...")
-        result = subprocess.run(
-            ["openFPGALoader", "--cable", "ft2232", str(bitfile)],
-            env=env,
-            capture_output=True,
-            text=True
-        )
-        if result.returncode == 0:
-            print_success("FPGA programmed successfully!")
-            return 0
-        print_warning("Failed")
-
-    # Method 4: Try openFPGALoader with explicit VID/PID (works better on Windows)
-    if openfpgaloader_available and device_info:
-        print("Method 4: openFPGALoader with VID/PID...")
-        result = subprocess.run(
-            ["openFPGALoader", 
-             "--vid", f"0x{device_info['vid']:04x}",
-             "--pid", f"0x{device_info['pid']:04x}",
-             str(bitfile)],
-            env=env,
-            capture_output=True,
-            text=True
-        )
-        
-        if result.returncode == 0:
-            print_success("FPGA programmed successfully!")
-            return 0
-        print_warning("Failed")
-    
-    # Method 5: Try iceprog with device index
+    # Method 1: Try iceprog default
     if iceprog_available:
-        for dev_idx in [0, 1]:
-            print(f"Method 5: iceprog -d {dev_idx}...")
-            result = subprocess.run(
-                ["iceprog", "-d", str(dev_idx), str(bitfile)],
-                env=env,
-                capture_output=True,
-                text=True
-            )
-            
-            if result.returncode == 0:
-                print_success("FPGA programmed successfully!")
-                return 0
-        print_warning("Failed")
-    
-    # Method 6: Try iceprog default
-    if iceprog_available:
-        print("Method 6: iceprog (default)...")
+        print("Method 1: iceprog (default)...")
         result = subprocess.run(
             ["iceprog", str(bitfile)],
             env=env,
@@ -579,20 +528,6 @@ def flash_fpga():
             text=True
         )
         
-        if result.returncode == 0:
-            print_success("FPGA programmed successfully!")
-            return 0
-        print_warning("Failed")
-
-    # Method 7: Try iceprog with full path (for Windows admin scenarios)
-    if iceprog_available and sys.platform == "win32":
-        print("Method 7: iceprog with full bitfile path...")
-        result = subprocess.run(
-            ["iceprog", str(bitfile.resolve())],
-            env=env,
-            capture_output=True,
-            text=True
-        )
         if result.returncode == 0:
             print_success("FPGA programmed successfully!")
             return 0
@@ -655,6 +590,44 @@ def clean():
 def print_usage():
     print(__doc__)
 
+def parse_args(raw_args):
+    options = {
+        "skip_fpga": False,
+        "port": None,
+        "serial": None,
+        "vid": None,
+        "pid": None,
+    }
+    positional = []
+
+    i = 0
+    while i < len(raw_args):
+        arg = raw_args[i]
+        if arg == "--skip-fpga":
+            options["skip_fpga"] = True
+            i += 1
+            continue
+        if arg in ["--port", "--serial", "--vid", "--pid"]:
+            if i + 1 >= len(raw_args):
+                print_error(f"Missing value for {arg}")
+                return None, None
+            value = raw_args[i + 1]
+            if arg == "--port":
+                options["port"] = value
+            elif arg == "--serial":
+                options["serial"] = value
+            elif arg == "--vid":
+                options["vid"] = int(value, 0)
+            elif arg == "--pid":
+                options["pid"] = int(value, 0)
+            i += 2
+            continue
+
+        positional.append(arg)
+        i += 1
+
+    return positional, options
+
 def main():
     args = sys.argv[1:]
     
@@ -664,8 +637,10 @@ def main():
         return 0
     
     # Parse flags
-    skip_fpga = "--skip-fpga" in args
-    args = [a for a in args if not a.startswith("--")]
+    args, options = parse_args(args)
+    if args is None:
+        return 1
+    skip_fpga = options["skip_fpga"]
     
     if not args:
         # Full setup
@@ -699,7 +674,12 @@ def main():
     elif command in ["synth", "synthesis", "build"]:
         return run_synthesis()
     elif command in ["flash", "program", "prog"]:
-        return flash_fpga()
+        return flash_fpga(
+            port=options["port"],
+            serial=options["serial"],
+            vid=options["vid"],
+            pid=options["pid"],
+        )
     elif command == "clean":
         return clean()
     elif command in ["help", "-h", "--help"]:

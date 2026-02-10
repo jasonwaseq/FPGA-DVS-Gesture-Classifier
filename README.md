@@ -11,9 +11,9 @@ cd FPGA-DVS-Gesture-Classifier
 python setup.py
 
 # Verify, synthesize, flash
-python setup.py test    # Run 18 cocotb tests
-python setup.py synth   # Synthesize to bitstream
-python setup.py flash   # Program FPGA
+python setup.py test              # Run 18 cocotb tests
+python setup.py synth             # Synthesize to bitstream
+python setup.py flash             # Program FPGA via iceprog
 ```
 
 ## Commands
@@ -23,7 +23,7 @@ python setup.py flash   # Program FPGA
 | `python setup.py` | Setup venv, install packages, detect OSS CAD Suite |
 | `python setup.py test` | Run verification tests (iverilog + cocotb) |
 | `python setup.py synth` | Synthesize (Yosys → nextpnr → icepack) |
-| `python setup.py flash` | Program FPGA via iceprog |
+| `python setup.py flash` | Program FPGA via iceprog (auto-detect) |
 | `python setup.py clean` | Remove build artifacts |
 
 ## Architecture
@@ -103,19 +103,19 @@ The `tools/fpga_gesture_validator.py` script validates the FPGA implementation:
 python fpga_gesture_validator.py --list-ports
 
 # Basic connection test
-python fpga_gesture_validator.py --port COM3 --test echo
+python fpga_gesture_validator.py --port /dev/ttyUSB# --test echo
 
 # Test all gestures
-python fpga_gesture_validator.py --port COM3 --test all
+python fpga_gesture_validator.py --port /dev/ttyUSB# --test all
 
 # Send specific gesture
-python fpga_gesture_validator.py --port COM3 --gesture right
+python fpga_gesture_validator.py --port /dev/ttyUSB# --gesture right
 
 # Interactive mode
-python fpga_gesture_validator.py --port COM3 --interactive
+python fpga_gesture_validator.py --port /dev/ttyUSB# --interactive
 
 # Continuous monitoring
-python fpga_gesture_validator.py --port COM3 --continuous --duration 60
+python fpga_gesture_validator.py --port /dev/ttyUSB# --continuous --duration 60
 ```
 
 ### Tips for Best Gesture Detection
