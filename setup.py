@@ -284,22 +284,31 @@ def run_tests(test_module="test_spatiotemporal_classifier"):
     """Run cocotb verification tests."""
     print_header("Running cocotb Verification Tests")
     
-    # Check for required tools
-    oss_root = get_oss_cad_bin()
-    if oss_root is None:
-        print_error("OSS CAD Suite not found. Run 'python setup.py' first.")
-        return 1
+    # Prefer system Icarus to avoid OSS CAD Suite GLIBC conflicts
+    system_iverilog = Path("/usr/bin/iverilog")
+    system_vvp = Path("/usr/bin/vvp")
+    use_system_iverilog = system_iverilog.exists() and system_vvp.exists()
+    if use_system_iverilog:
+        env = os.environ.copy()
+        iverilog_cmd = str(system_iverilog)
+        vvp_cmd = str(system_vvp)
+    else:
+        oss_root = get_oss_cad_bin()
+        if oss_root is None:
+            print_error("OSS CAD Suite not found. Run 'python setup.py' first.")
+            return 1
+        env = get_oss_cad_env()
+        if env is None:
+            print_error("Failed to set up OSS CAD Suite environment")
+            return 1
+        iverilog_cmd = "iverilog"
+        vvp_cmd = "vvp"
     
     python = get_python_cmd()
     if not python.exists():
         print_error("Python venv not found. Run 'python setup.py' first.")
         return 1
-    
-    # Build environment with OSS CAD Suite properly initialized
-    env = get_oss_cad_env()
-    if env is None:
-        print_error("Failed to set up OSS CAD Suite environment")
-        return 1
+    env["PYGPI_PYTHON_BIN"] = str(python)
     
     # Get cocotb libs path
     result = run_cmd(
@@ -311,12 +320,23 @@ def run_tests(test_module="test_spatiotemporal_classifier"):
         return 1
     cocotb_path = Path(result.stdout.strip())
     cocotb_libs = cocotb_path / "libs"
+    vpi_module = cocotb_libs / "cocotbvpi_icarus.vpi"
+    vpi_fallback = cocotb_libs / "libcocotbvpi_icarus.vpl"
+    if not vpi_module.exists() and vpi_fallback.exists():
+        # Some cocotb wheels ship the Icarus VPI as .vpl; vvp expects .vpi
+        try:
+            vpi_module.symlink_to(vpi_fallback.name)
+        except OSError:
+            shutil.copyfile(vpi_fallback, vpi_module)
     
     # Set up cocotb environment
     env["COCOTB_TEST_MODULES"] = test_module
     env["TOPLEVEL"] = "uart_gesture_top"
     env["TOPLEVEL_LANG"] = "verilog"
     env["PYTHONPATH"] = str(TB_DIR)
+    if sys.platform.startswith("linux") and not use_system_iverilog:
+        # Keep system glibc ahead when forced to use OSS CAD Suite Icarus
+        env["LD_LIBRARY_PATH"] = "/lib/x86_64-linux-gnu:/usr/lib/x86_64-linux-gnu"
     
     # Python lib for cocotb
     if sys.platform == "win32":
@@ -336,7 +356,7 @@ def run_tests(test_module="test_spatiotemporal_classifier"):
     sources = [str(RTL_DIR / f) for f in RTL_FILES]
     
     compile_cmd = [
-        "iverilog", "-g2012",
+        iverilog_cmd, "-g2012",
         "-s", "uart_gesture_top",
         "-o", str(vvp_file),
         "-DCLKS_PER_BIT=4",
@@ -357,7 +377,7 @@ def run_tests(test_module="test_spatiotemporal_classifier"):
     # Run simulation
     print("\nRunning simulation...")
     sim_cmd = [
-        "vvp",
+        vvp_cmd,
         "-M", str(cocotb_libs),
         "-m", "cocotbvpi_icarus",
         str(vvp_file)

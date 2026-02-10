@@ -9,15 +9,52 @@ Real-time gesture recognition (UP, DOWN, LEFT, RIGHT) using Dynamic Vision Senso
 git clone https://github.com/jasonwaseq/FPGA-DVS-Gesture-Classifier.git
 cd FPGA-DVS-Gesture-Classifier
 sudo apt update
-sudo apt install -y python3.12-venv
+sudo apt install -y python3.12-venv libgl1 libglib2.0-0 libusb-1.0-0 iverilog
 python3 -m venv .venv
 .venv/bin/python -m pip install --upgrade pip
 python setup.py
 
 # Verify, synthesize, flash
-python setup.py test              # Run 18 cocotb tests
-python setup.py synth             # Synthesize to bitstream
-python setup.py flash             # Program FPGA via iceprog
+.venv/bin/python setup.py test     # Run 18 cocotb tests
+.venv/bin/python setup.py synth    # Synthesize to bitstream
+sudo .venv/bin/python setup.py flash  # Program FPGA via iceprog
+```
+
+## Devcontainer Notes
+
+These commands are verified for the devcontainer in this repo. They ensure all
+Python tools can run (tests, synth, flash, and utility scripts):
+
+```bash
+sudo apt update
+sudo apt install -y python3-venv libgl1 libglib2.0-0 libusb-1.0-0 iverilog
+python3 -m venv .venv
+.venv/bin/python -m pip install --upgrade pip
+.venv/bin/python setup.py
+```
+
+Run verification, synthesis, and flashing:
+
+```bash
+.venv/bin/python setup.py test
+.venv/bin/python setup.py synth
+sudo .venv/bin/python setup.py flash
+```
+
+Run the Python tools with the venv interpreter so dependencies resolve:
+
+```bash
+.venv/bin/python tools/dvs_camera_emulator.py --simulate --preview
+.venv/bin/python tools/dvs_event_player.py events.bin --preview
+.venv/bin/python tools/fpga_gesture_validator.py --list-ports
+.venv/bin/python tools/fpga_diagnostic.py
+```
+
+If you need serial port access without sudo, add your user to the `dialout`
+group and restart the container:
+
+```bash
+sudo usermod -a -G dialout $USER
 ```
 
 ## Commands

@@ -6,7 +6,13 @@ Helps debug why gestures aren't being detected
 
 import time
 import sys
+from pathlib import Path
 import serial.tools.list_ports
+
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
+
 from tools.fpga_gesture_validator import FPGAGestureInterface, Gesture, GESTURE_NAMES
 
 def auto_detect_port():
