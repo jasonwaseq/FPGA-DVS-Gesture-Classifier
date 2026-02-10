@@ -151,31 +151,3 @@ python fpga_gesture_validator.py --port /dev/ttyUSB# --interactive
 # Continuous monitoring
 python fpga_gesture_validator.py --port /dev/ttyUSB# --continuous --duration 60
 ```
-
-### Tips for Best Gesture Detection
-
-- Use consistent, even lighting
-- Plain background reduces noise events
-- Move hand across ~1/3 of the frame
-- Moderate speed (not too fast or slow)
-- Adjust `--threshold` if too many/few events
-
-## Project Structure
-
-```
-rtl/          # SystemVerilog modules
-tb/           # Cocotb testbenches (18 tests)
-synth/        # Synthesis outputs & constraints
-tools/        # Python utilities (camera emulator, validator)
-setup.py      # Main workflow script
-```
-
-## Hardware
-
-**Target**: iCEBreaker (iCE40 UP5K)  
-**UART**: 115200 baud, pins 6 (RX), 9 (TX)  
-**Protocol**: 5-byte events `[X_HI, X_LO, Y_HI, Y_LO, POL]`, 2-byte gestures `[0xA0|gesture, confidence]`
-
-## License
-
-MIT
