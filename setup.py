@@ -196,7 +196,8 @@ def setup_venv():
         print_success("Virtual environment already exists")
         return True
     
-    result = run_cmd([sys.executable, "-m", "venv", str(VENV_PATH)])
+    # result = run_cmd([sys.executable, "-m", "venv", str(VENV_PATH)])
+    result = run_cmd([sys.executable, "-m", "venv", str(VENV_PATH), "--upgrade-deps"])
     if result is None:
         print_error("Failed to create virtual environment")
         return False
