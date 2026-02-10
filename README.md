@@ -62,11 +62,88 @@ Run the Python tools with the venv interpreter so dependencies resolve:
 
 ## Architecture
 
-**Pipeline**: DVS Events (320×320) → FIFO → Spatial Compression (16×16) → Dual Accumulators → Motion Vector → Gesture Classification
+### End‑to‑End Dataflow
+The FPGA implements a streaming, single‑pass pipeline that converts raw DVS events into a discrete gesture label. Events arrive over UART as $(x,y,polarity)$ tuples with $x,y\in[0,319]$. Each event is processed in order and never revisited. The pipeline runs on a single clock domain and is designed to sustain continuous input with bounded latency.
 
-**Algorithm**: Compares early vs. late event centroids in a sliding window to extract motion direction.
+**High‑level pipeline**: DVS Events (320×320) → Input FIFO → Spatial Compression (16×16) → Temporal Accumulation (early/late windows) → Motion Vector → Gesture Classification → UART Response
 
-**Hardware**: 1163 LCs (22%), 2 BRAM (6%), 42.76 MHz max freq on iCE40 UP5K
+### Module‑Level Architecture
+
+#### 1) Input Capture + FIFO
+- **UART RX** deserializes the 5‑byte event packet and emits a valid event when the packet is complete and the polarity bit is valid.
+- **Input FIFO** buffers events to decouple UART bursts from internal processing. The FIFO provides `full`/`empty` status for flow control and reporting in the status byte. The FIFO depth is sized to absorb short bursts without stalling UART reception.
+
+**Key behavior**:
+- Events are accepted as soon as a full packet is decoded.
+- When FIFO is full, additional events are dropped and `full` is asserted to make overflow observable.
+
+#### 2) Spatial Compression (320×320 → 16×16)
+Each event’s $(x,y)$ coordinate is down‑sampled into a coarse 16×16 grid by discarding lower coordinate bits. Conceptually:
+$$
+x_c = \left\lfloor\frac{x}{20}\right\rfloor,\quad y_c = \left\lfloor\frac{y}{20}\right\rfloor
+$$
+This yields a fixed‑size spatial binning that reduces memory and arithmetic cost while preserving motion direction at gesture scale. The output is a compressed coordinate $(x_c,y_c)$ and its polarity.
+
+#### 3) Temporal Accumulation (Dual Windows)
+The system maintains two independent accumulators over a sliding event window:
+- **Early window**: counts events from the first half of the window.
+- **Late window**: counts events from the second half of the window.
+
+Each window accumulates into a 16×16 grid of counters. When an event with compressed coordinate $(x_c,y_c)$ arrives, the corresponding counter in the active window is incremented. Windows advance based on event count, not wall‑clock time, which makes the algorithm robust to variable event rates.
+
+**Windowing details**:
+- A global event counter tracks the position inside the window.
+- At the midpoint, the accumulator toggles from early to late.
+- At the end of the window, both accumulators are frozen for analysis and then cleared for the next window.
+
+#### 4) Motion Vector Computation
+At window completion, the design computes the centroid of activity for both early and late windows:
+$$
+\vec{c}_{early} = \left(\frac{\sum x_c\,N_{early}(x_c,y_c)}{\sum N_{early}},\ \frac{\sum y_c\,N_{early}(x_c,y_c)}{\sum N_{early}}\right)
+$$
+$$
+\vec{c}_{late} = \left(\frac{\sum x_c\,N_{late}(x_c,y_c)}{\sum N_{late}},\ \frac{\sum y_c\,N_{late}(x_c,y_c)}{\sum N_{late}}\right)
+$$
+The **motion vector** is then:
+$$
+\Delta\vec{c} = \vec{c}_{late} - \vec{c}_{early}
+$$
+In hardware, the centroid is computed via integer accumulations of $x_c$ and $y_c$ weighted by event counts, followed by integer division by total events. Division is performed once per window, so it does not limit per‑event throughput.
+
+#### 5) Gesture Classification
+The classifier uses the sign and magnitude of $\Delta x$ and $\Delta y$ to determine direction:
+- If $|\Delta x| > |\Delta y|$ and $\Delta x > T_{motion}$ → **RIGHT**
+- If $|\Delta x| > |\Delta y|$ and $\Delta x < -T_{motion}$ → **LEFT**
+- If $|\Delta y| > |\Delta x|$ and $\Delta y > T_{motion}$ → **DOWN**
+- If $|\Delta y| > |\Delta x|$ and $\Delta y < -T_{motion}$ → **UP**
+
+Two thresholds gate the decision:
+- **MIN_EVENT_THRESH**: minimum total events required in the window to consider a gesture valid.
+- **MOTION_THRESH**: minimum centroid displacement to reject small jitter or stationary activity.
+
+If thresholds are not met, no gesture is emitted and the system advances to the next window.
+
+#### 6) UART Response + Status
+When a gesture is detected, a 2‑byte response is generated containing the gesture ID and a compact confidence indicator derived from event count and centroid displacement. Status and configuration bytes are available via query commands, allowing the host to monitor FIFO health and active thresholds.
+
+### Timing, Throughput, and Latency
+- **Throughput**: One event accepted per cycle when FIFO is not empty and internal logic is ready; per‑event logic is constant time.
+- **Latency**: Gesture output is produced once per window, so latency is bounded by the event count needed to fill the window plus a small fixed analysis time.
+- **Determinism**: The event‑count windowing makes detection independent of absolute time, which is desirable for DVS data with variable activity.
+
+### Hardware Footprint (iCE40 UP5K)
+The design fits within the UP5K budget with headroom for UART, FIFO, and control logic.
+- **Utilization**: 1163 LCs (22%), 2 BRAM (6%)
+- **Max Frequency**: 42.76 MHz
+
+### RTL Mapping (for reference)
+The pipeline is implemented across these RTL modules:
+- Input and UART: [rtl/uart_rx.sv](rtl/uart_rx.sv), [rtl/InputFIFO.sv](rtl/InputFIFO.sv)
+- Spatial compression and event routing: [rtl/SpatialCompressor.sv](rtl/SpatialCompressor.sv)
+- Temporal accumulation and window control: [rtl/TemporalAccumulator.sv](rtl/TemporalAccumulator.sv)
+- Motion computation: [rtl/MotionComputer.sv](rtl/MotionComputer.sv)
+- Gesture decision and output: [rtl/GestureClassifier.sv](rtl/GestureClassifier.sv), [rtl/OutputRegister.sv](rtl/OutputRegister.sv)
+- Top‑level integration: [rtl/uart_gesture_top.sv](rtl/uart_gesture_top.sv)
 
 ## UART Protocol
 
