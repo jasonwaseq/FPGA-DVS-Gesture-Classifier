@@ -63,7 +63,7 @@ Run the Python tools with the venv interpreter so dependencies resolve:
 ## Architecture
 
 ### End‑to‑End Dataflow
-The FPGA implements a streaming, single‑pass pipeline that converts raw DVS events into a discrete gesture label. Events arrive over UART as $(x,y,polarity)$ tuples with $x,y\in[0,319]$. Each event is processed in order and never revisited. The pipeline runs on a single clock domain and is designed to sustain continuous input with bounded latency.
+The FPGA implements a streaming, single‑pass pipeline that converts raw DVS events into a discrete gesture label. Events arrive over UART as an X coordinate, Y coordinate, and polarity. Each event is processed in order and never revisited. The pipeline runs on a single clock domain and is designed to sustain continuous input with bounded latency.
 
 **High‑level pipeline**: DVS Events (320×320) → Input FIFO → Spatial Compression (16×16) → Temporal Accumulation (early/late windows) → Motion Vector → Gesture Classification → UART Response
 
@@ -78,50 +78,31 @@ The FPGA implements a streaming, single‑pass pipeline that converts raw DVS ev
 - When FIFO is full, additional events are dropped and `full` is asserted to make overflow observable.
 
 #### 2) Spatial Compression (320×320 → 16×16)
-Each event’s $(x,y)$ coordinate is down‑sampled into a coarse 16×16 grid by discarding lower coordinate bits. Conceptually:
-$$
-x_c = \left\lfloor\frac{x}{20}\right\rfloor,\quad y_c = \left\lfloor\frac{y}{20}\right\rfloor
-$$
-This yields a fixed‑size spatial binning that reduces memory and arithmetic cost while preserving motion direction at gesture scale. The output is a compressed coordinate $(x_c,y_c)$ and its polarity.
+This stage maps each high‑resolution event into a lower‑resolution grid by grouping pixels into fixed‑size tiles. The hardware strips the lower coordinate bits, effectively binning events into a 16×16 map. This reduces memory usage and arithmetic complexity while preserving the gross motion direction needed for gesture recognition. The output is the compressed grid coordinate plus the original event polarity.
 
 #### 3) Temporal Accumulation (Dual Windows)
-The system maintains two independent accumulators over a sliding event window:
-- **Early window**: counts events from the first half of the window.
-- **Late window**: counts events from the second half of the window.
+This block keeps two independent spatial heatmaps over a fixed‑length event window. The first heatmap (early) captures where activity happened at the beginning of the window; the second heatmap (late) captures where activity happened at the end.
 
-Each window accumulates into a 16×16 grid of counters. When an event with compressed coordinate $(x_c,y_c)$ arrives, the corresponding counter in the active window is incremented. Windows advance based on event count, not wall‑clock time, which makes the algorithm robust to variable event rates.
+For each incoming event, the compressed coordinate indexes a counter in the active heatmap, incrementing the event count for that grid cell. The window position advances based on the number of events processed, not elapsed time, which makes the system resilient to changes in event rate and scene activity.
 
 **Windowing details**:
 - A global event counter tracks the position inside the window.
-- At the midpoint, the accumulator toggles from early to late.
-- At the end of the window, both accumulators are frozen for analysis and then cleared for the next window.
+- At the midpoint, accumulation switches from the early heatmap to the late heatmap.
+- At the end of the window, both heatmaps are frozen for analysis and then cleared for the next window.
 
 #### 4) Motion Vector Computation
-At window completion, the design computes the centroid of activity for both early and late windows:
-$$
-\vec{c}_{early} = \left(\frac{\sum x_c\,N_{early}(x_c,y_c)}{\sum N_{early}},\ \frac{\sum y_c\,N_{early}(x_c,y_c)}{\sum N_{early}}\right)
-$$
-$$
-\vec{c}_{late} = \left(\frac{\sum x_c\,N_{late}(x_c,y_c)}{\sum N_{late}},\ \frac{\sum y_c\,N_{late}(x_c,y_c)}{\sum N_{late}}\right)
-$$
-The **motion vector** is then:
-$$
-\Delta\vec{c} = \vec{c}_{late} - \vec{c}_{early}
-$$
-In hardware, the centroid is computed via integer accumulations of $x_c$ and $y_c$ weighted by event counts, followed by integer division by total events. Division is performed once per window, so it does not limit per‑event throughput.
+When a window completes, this block summarizes each heatmap into a centroid representing the average location of activity. It does this by accumulating weighted sums of the X and Y bin indices and dividing by the total event count in the window. Two centroids are produced: one for early activity and one for late activity.
+
+The motion estimate is the difference between these two centroids. A positive shift to the right indicates rightward motion; a positive shift downward indicates downward motion, and so on. All arithmetic is integer‑based and computed once per window, so the per‑event datapath remains lightweight and fast.
 
 #### 5) Gesture Classification
-The classifier uses the sign and magnitude of $\Delta x$ and $\Delta y$ to determine direction:
-- If $|\Delta x| > |\Delta y|$ and $\Delta x > T_{motion}$ → **RIGHT**
-- If $|\Delta x| > |\Delta y|$ and $\Delta x < -T_{motion}$ → **LEFT**
-- If $|\Delta y| > |\Delta x|$ and $\Delta y > T_{motion}$ → **DOWN**
-- If $|\Delta y| > |\Delta x|$ and $\Delta y < -T_{motion}$ → **UP**
+The classifier compares the horizontal and vertical motion magnitudes to decide whether the gesture is predominantly left/right or up/down. It then checks the sign of the dominant axis to determine the direction.
 
 Two thresholds gate the decision:
-- **MIN_EVENT_THRESH**: minimum total events required in the window to consider a gesture valid.
-- **MOTION_THRESH**: minimum centroid displacement to reject small jitter or stationary activity.
+- **MIN_EVENT_THRESH**: ensures a minimum amount of activity was observed in the window, preventing false positives from noise.
+- **MOTION_THRESH**: requires a minimum centroid displacement so small jitter does not trigger a gesture.
 
-If thresholds are not met, no gesture is emitted and the system advances to the next window.
+If either threshold is not met, no gesture is emitted and the pipeline proceeds to the next window.
 
 #### 6) UART Response + Status
 When a gesture is detected, a 2‑byte response is generated containing the gesture ID and a compact confidence indicator derived from event count and centroid displacement. Status and configuration bytes are available via query commands, allowing the host to monitor FIFO health and active thresholds.
