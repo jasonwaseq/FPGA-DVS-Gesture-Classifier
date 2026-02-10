@@ -1,11 +1,10 @@
-FROM mcr.microsoft.com/devcontainers/python:1-3.11
+FROM mcr.microsoft.com/vscode/devcontainers/base:ubuntu
 
 ENV LANG C.UTF-8
 ARG INSTALL_ZSH="true" 
 ARG TARGETARCH
 
-# Remove Yarn APT repo to avoid GPG issues in base image
-RUN rm -f /etc/apt/sources.list.d/yarn.list && apt-get update
+RUN apt-get update
 RUN apt-get -y install \
     wget \
     unzip \
@@ -13,8 +12,8 @@ RUN apt-get -y install \
     git \
     build-essential \
     libgmp-dev \
-    libusb-1.0-0 \
-    udev \
+    python3 \
+    python3-pip \
     gtkwave \
     iverilog
 
@@ -25,14 +24,6 @@ RUN cd /opt && \
     rm oss-cad-suite-linux-x64-20241121.tgz
     
 ENV PATH="/opt/oss-cad-suite/bin:${PATH}"
-
-# Make OSS CAD Suite discoverable by setup.py
-RUN mkdir -p /home/vscode/Documents && \
-    ln -s /opt/oss-cad-suite /home/vscode/Documents/oss-cad-suite && \
-    chown -h vscode:vscode /home/vscode/Documents/oss-cad-suite
-
-# Allow access to serial/USB devices for flashing and UART tools
-RUN groupadd -f dialout && usermod -a -G dialout vscode
 
 # install sv2v
 RUN if [ "$TARGETARCH" = "amd64" ]; then \
@@ -57,4 +48,3 @@ ENV PATH="/opt/sv2v/bin:${PATH}"
 RUN python3 -m pip install --break-system-packages cocotb pytest
 
 USER vscode
-

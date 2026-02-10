@@ -1,9 +1,6 @@
+
 {
   "build": { "dockerfile": "Dockerfile" },
-  "runArgs": [
-    "--device=/dev/bus/usb"
-  ],
-  "postCreateCommand": "python setup.py",
   "features": {
     "ghcr.io/devcontainers/features/desktop-lite:1": {}
   },
