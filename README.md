@@ -8,6 +8,10 @@ Real-time gesture recognition (UP, DOWN, LEFT, RIGHT) using Dynamic Vision Senso
 # Clone and setup
 git clone https://github.com/jasonwaseq/FPGA-DVS-Gesture-Classifier.git
 cd FPGA-DVS-Gesture-Classifier
+sudo apt update
+sudo apt install -y python3.12-venv
+python3 -m venv .venv
+.venv/bin/python -m pip install --upgrade pip
 python setup.py
 
 # Verify, synthesize, flash
