@@ -17,7 +17,7 @@ python setup.py
 # Verify, synthesize, flash
 .venv/bin/python setup.py test     # Run 18 cocotb tests
 .venv/bin/python setup.py synth    # Synthesize to bitstream
-sudo .venv/bin/python setup.py flash  # Program FPGA via iceprog
+.venv/bin/python setup.py flash  # Program FPGA via iceprog
 ```
 
 ## Devcontainer Notes
@@ -38,7 +38,7 @@ Run verification, synthesis, and flashing:
 ```bash
 .venv/bin/python setup.py test
 .venv/bin/python setup.py synth
-sudo .venv/bin/python setup.py flash
+.venv/bin/python setup.py flash
 ```
 
 Run the Python tools with the venv interpreter so dependencies resolve:
@@ -48,13 +48,6 @@ Run the Python tools with the venv interpreter so dependencies resolve:
 .venv/bin/python tools/dvs_event_player.py events.bin --preview
 .venv/bin/python tools/fpga_gesture_validator.py --list-ports
 .venv/bin/python tools/fpga_diagnostic.py
-```
-
-If you need serial port access without sudo, add your user to the `dialout`
-group and restart the container:
-
-```bash
-sudo usermod -a -G dialout $USER
 ```
 
 ## Commands
