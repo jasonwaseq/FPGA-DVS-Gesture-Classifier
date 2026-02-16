@@ -13,7 +13,8 @@ RTL_FILES = $(RTL_DIR)/bram_256x16.sv \
             $(RTL_DIR)/evt2_decoder.sv \
             $(RTL_DIR)/time_surface_memory.sv \
             $(RTL_DIR)/feature_extractor.sv \
-            $(RTL_DIR)/uart_tx.sv \
+			$(RTL_DIR)/uart_tx.sv \
+			$(RTL_DIR)/uart_rx.sv \
             $(RTL_DIR)/uart_debug.sv \
             $(RTL_DIR)/gesture_top.sv
 

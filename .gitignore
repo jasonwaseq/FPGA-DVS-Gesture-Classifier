@@ -1,28 +1,39 @@
 
 # Build artifacts
-#synth/build/
-#synth/icestorm_icebreaker/build/
-#*.json
-#*.asc
-#*.bit
-#*.log
+synth/build/
+synth/icestorm_icebreaker/build/
+synth/*.json
+synth/*.asc
+synth/*.bit
+synth/*.log
+synth/*.rpt
+synth/*.v
 
 # Generated Verilog/SystemVerilog
-#*.sv2v.v
+*.sv2v.v
 
 # Python
 .venv/
+.wsl-venv/
 __pycache__/
 *.pyc
 *.pyo
 .pytest_cache/
+
+# Python packaging
+build/
+dist/
+*.egg-info/
 
 # OSS CAD Suite (downloaded by setup script)
 oss-cad-suite/
 
 # Cocotb simulation
 tb/sim_build/
+tb/sim_build_gesture/
 tb/results.xml
+tb/**/results.xml
+*.vvp
 
 # OS-specific files
 .DS_Store

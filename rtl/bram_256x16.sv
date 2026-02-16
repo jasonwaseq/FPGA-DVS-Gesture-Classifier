@@ -36,6 +36,15 @@ module bram_256x16 (
     // Memory Array (infers BRAM on iCE40)
     // -------------------------------------------------------------------------
     (* ram_style = "block" *) logic [15:0] mem [0:255];
+
+`ifndef SYNTHESIS
+    integer init_i;
+    initial begin
+        for (init_i = 0; init_i < 256; init_i = init_i + 1) begin
+            mem[init_i] = 16'h8000;
+        end
+    end
+`endif
     
     // -------------------------------------------------------------------------
     // Port A: Synchronous Read/Write

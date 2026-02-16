@@ -46,19 +46,20 @@ PYTHON_PACKAGES = [
 RTL_FILES = [
     "uart_rx.sv",
     "uart_tx.sv",
-    "InputFIFO.sv",
-    "SpatialCompressor.sv",
-    "TemporalAccumulator.sv",
-    "MotionComputer.sv",
-    "GestureClassifier.sv",
-    "OutputRegister.sv",
-    "dvs_gesture_accel.sv",
-    "uart_gesture_top.sv",
+    "old_architecture/InputFIFO.sv",
+    "old_architecture/SpatialCompressor.sv",
+    "old_architecture/TemporalAccumulator.sv",
+    "old_architecture/MotionComputer.sv",
+    "old_architecture/GestureClassifier.sv",
+    "old_architecture/OutputRegister.sv",
+    "old_architecture/dvs_gesture_accel.sv",
+    "old_architecture/uart_gesture_top.sv",
 ]
 
 # RTL files for new Time-Surface gesture architecture
 RTL_FILES_GESTURE = [
     "uart_tx.sv",
+    "uart_rx.sv",
     "bram_256x16.sv",
     "input_fifo.sv",
     "evt2_decoder.sv",

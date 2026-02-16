@@ -67,6 +67,7 @@ def main():
         os.path.join(rtl_dir, "time_surface_memory.sv"),
         os.path.join(rtl_dir, "feature_extractor.sv"),
         os.path.join(rtl_dir, "uart_tx.sv"),
+        os.path.join(rtl_dir, "uart_rx.sv"),
         os.path.join(rtl_dir, "uart_debug.sv"),
         os.path.join(rtl_dir, "gesture_top.sv"),
     ]

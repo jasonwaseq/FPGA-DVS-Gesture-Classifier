@@ -28,6 +28,18 @@ EVT_CD_OFF = 0x0
 EVT_CD_ON = 0x1
 EVT_TIME_HIGH = 0x8
 
+# Feature extractor FSM states
+S_IDLE = 0
+S_SCAN_WAIT = 1
+S_SCAN = 2
+S_COMPUTE = 3
+S_CLASSIFY = 4
+S_OUTPUT = 5
+
+# Time-surface decay parameters (match RTL defaults)
+DECAY_SHIFT = 6
+MAX_VALUE = 255
+
 # ============================================================================
 # Helper Functions
 # ============================================================================
@@ -48,6 +60,7 @@ def make_evt2_time_high(time_high):
 
 async def reset_dut(dut):
     """Reset the DUT"""
+    dut.uart_rx.value = 1
     dut.rst_n.value = 0
     await ClockCycles(dut.clk, 10)
     dut.rst_n.value = 1
@@ -103,6 +116,34 @@ async def uart_receive_byte(dut, timeout_cycles=50000):
     # Wait for stop bit
     await ClockCycles(dut.clk, CLKS_PER_BIT)
     return byte_val
+
+
+def get_int(signal):
+    """Safely convert a signal to int."""
+    return int(signal.value)
+
+
+async def wait_for_state(dut, target_state, timeout_cycles=200000):
+    """Wait for feature extractor FSM to reach a state."""
+    for _ in range(timeout_cycles):
+        if get_int(dut.u_feature_extractor.debug_state) == target_state:
+            return True
+        await RisingEdge(dut.clk)
+    return False
+
+
+async def wait_for_scan_start(dut, timeout_cycles=200000):
+    """Wait for scan to start (S_SCAN)."""
+    return await wait_for_state(dut, S_SCAN, timeout_cycles)
+
+
+async def wait_for_gesture_valid(dut, timeout_cycles=200000):
+    """Wait for a gesture_valid pulse."""
+    for _ in range(timeout_cycles):
+        if get_int(dut.u_feature_extractor.gesture_valid) == 1:
+            return True
+        await RisingEdge(dut.clk)
+    return False
 
 
 # ============================================================================
@@ -535,4 +576,330 @@ async def test_full_integration(dut):
             dut._log.warning(f"  No gesture detected for {gesture_name}")
     
     dut._log.info("Full integration test completed")
+
+
+# ============================================================================
+# Test: Sweep FSM Timing & Addressing
+# ============================================================================
+
+@cocotb.test()
+async def test_sweep_fsm_and_addressing(dut):
+    """Verify FSM transitions and scan address iteration."""
+    dut._log.info("=== Sweep FSM and Addressing Test ===")
+
+    clock = Clock(dut.clk, 2, unit="step")
+    cocotb.start_soon(clock.start())
+
+    dut.evt_data.value = 0
+    dut.evt_valid.value = 0
+    dut.rst_n.value = 1
+
+    await reset_dut(dut)
+
+    assert await wait_for_state(dut, S_SCAN_WAIT), "FSM did not reach S_SCAN_WAIT"
+    await RisingEdge(dut.clk)
+    assert get_int(dut.u_feature_extractor.debug_state) == S_SCAN, "FSM did not enter S_SCAN"
+
+    scan_cycles = 0
+    prev_addr = None
+
+    while get_int(dut.u_feature_extractor.debug_state) == S_SCAN:
+        addr = get_int(dut.u_feature_extractor.ts_read_addr)
+        if prev_addr is not None:
+            assert addr == ((prev_addr + 1) & 0xFF), "ts_read_addr did not increment sequentially"
+        prev_addr = addr
+
+        assert get_int(dut.u_feature_extractor.ts_read_enable) == 1, "ts_read_enable should be high during scan"
+
+        scan_cycles += 1
+        await RisingEdge(dut.clk)
+
+    assert scan_cycles == 256, f"Scan length mismatch: {scan_cycles} cycles"
+    assert get_int(dut.u_feature_extractor.debug_state) == S_COMPUTE, "FSM did not enter S_COMPUTE"
+
+    await RisingEdge(dut.clk)
+    assert get_int(dut.u_feature_extractor.debug_state) == S_CLASSIFY, "FSM did not enter S_CLASSIFY"
+
+    await RisingEdge(dut.clk)
+    assert get_int(dut.u_feature_extractor.debug_state) == S_OUTPUT, "FSM did not enter S_OUTPUT"
+
+    await RisingEdge(dut.clk)
+    assert get_int(dut.u_feature_extractor.debug_state) == S_IDLE, "FSM did not return to S_IDLE"
+
+    dut._log.info("Sweep FSM and addressing test PASSED")
+
+
+# ============================================================================
+# Test: EVT2 Downsampling Mapping
+# ============================================================================
+
+@cocotb.test()
+async def test_evt2_downsampling_mapping(dut):
+    """Verify downsampling of sensor coordinates to grid."""
+    dut._log.info("=== EVT2 Downsampling Mapping Test ===")
+
+    clock = Clock(dut.clk, 2, unit="step")
+    cocotb.start_soon(clock.start())
+
+    dut.evt_data.value = 0
+    dut.evt_valid.value = 0
+    dut.rst_n.value = 1
+
+    await reset_dut(dut)
+
+    # Send a TIME_HIGH packet to stabilize timestamp reconstruction
+    await send_evt2_word(dut, make_evt2_time_high(0x10))
+
+    evt = make_evt2_cd_event(x=319, y=319, timestamp_lsb=0x01, polarity=1)
+    await send_evt2_word(dut, evt)
+
+    expected_x = (319 >> 5) & 0xF
+    expected_y = (319 >> 5) & 0xF
+
+    for _ in range(1000):
+        await RisingEdge(dut.clk)
+        if get_int(dut.decoded_valid) == 1:
+            actual_x = get_int(dut.decoded_x)
+            actual_y = get_int(dut.decoded_y)
+            dut._log.info(f"Decoded grid: x={actual_x}, y={actual_y}")
+            assert actual_x == expected_x, f"Downsampling X=319 should map to grid X={expected_x}"
+            assert actual_y == expected_y, f"Downsampling Y=319 should map to grid Y={expected_y}"
+            break
+    else:
+        assert False, "Decoder did not produce a valid event"
+
+    dut._log.info("EVT2 downsampling mapping test PASSED")
+
+
+# ============================================================================
+# Test: Decay Math Corner Cases
+# ============================================================================
+
+@cocotb.test()
+async def test_decay_math_corner_cases(dut):
+    """Verify decay math for fresh, old, and rollover cases."""
+    dut._log.info("=== Decay Math Corner Cases Test ===")
+
+    clock = Clock(dut.clk, 2, unit="step")
+    cocotb.start_soon(clock.start())
+
+    dut.evt_data.value = 0
+    dut.evt_valid.value = 0
+    dut.rst_n.value = 1
+
+    await reset_dut(dut)
+
+    # Seed a fresh event near the start of the scan
+    for i in range(4):
+        evt = make_evt2_cd_event(x=0, y=0, timestamp_lsb=i & 0x3F, polarity=1)
+        await send_evt2_word(dut, evt)
+        await RisingEdge(dut.clk)
+
+    assert await wait_for_scan_start(dut), "Scan did not start"
+
+    fresh_ok = False
+    old_ok = False
+    rollover_ok = False
+
+    prev_ts_raw = None
+
+    for _ in range(1024):
+        await RisingEdge(dut.clk)
+        if get_int(dut.u_feature_extractor.debug_state) != S_SCAN:
+            continue
+
+        ts_raw_val = dut.u_time_surface.read_ts_raw.value
+        read_val = dut.u_time_surface.read_value.value
+        t_now_val = dut.global_timestamp.value
+
+        if not (ts_raw_val.is_resolvable and read_val.is_resolvable and t_now_val.is_resolvable):
+            continue
+
+        ts_raw = int(ts_raw_val)
+        t_now = int(t_now_val)
+
+        expected_match = False
+        expected_used_ts = ts_raw
+
+        delta_t_curr = (t_now - ts_raw) & 0xFFFF
+        decay_amount_curr = delta_t_curr >> DECAY_SHIFT
+        expected_curr = 0 if decay_amount_curr >= MAX_VALUE else (MAX_VALUE - decay_amount_curr)
+
+        if int(read_val) == expected_curr:
+            expected_match = True
+            expected_used_ts = ts_raw
+
+        if prev_ts_raw is not None and not expected_match:
+            delta_t_prev = (t_now - prev_ts_raw) & 0xFFFF
+            decay_amount_prev = delta_t_prev >> DECAY_SHIFT
+            expected_prev = 0 if decay_amount_prev >= MAX_VALUE else (MAX_VALUE - decay_amount_prev)
+
+            if int(read_val) == expected_prev:
+                expected_match = True
+                expected_used_ts = prev_ts_raw
+
+        assert expected_match, "Decay calculation mismatch"
+
+        if not fresh_ok and int(read_val) > 0:
+            fresh_ok = True
+        if not old_ok and int(read_val) == 0:
+            old_ok = True
+        if not rollover_ok and expected_used_ts > t_now:
+            rollover_ok = True
+
+        prev_ts_raw = ts_raw
+
+        if fresh_ok and old_ok and rollover_ok:
+            break
+
+    assert fresh_ok, "Did not observe a fresh event decay case"
+    assert old_ok, "Did not observe an old event decay case"
+    assert rollover_ok, "Did not observe rollover decay case"
+
+    dut._log.info("Decay math corner cases test PASSED")
+
+
+# ============================================================================
+# Test: Write During Scan (Dual-Port BRAM)
+# ============================================================================
+
+@cocotb.test()
+async def test_write_during_scan_integrity(dut):
+    """Verify read behavior remains valid when writes occur during scan."""
+    dut._log.info("=== Write During Scan Integrity Test ===")
+
+    clock = Clock(dut.clk, 2, unit="step")
+    cocotb.start_soon(clock.start())
+
+    dut.evt_data.value = 0
+    dut.evt_valid.value = 0
+    dut.rst_n.value = 1
+
+    await reset_dut(dut)
+
+    assert await wait_for_scan_start(dut), "Scan did not start"
+
+    # Send an event targeting the address currently being scanned
+    addr = get_int(dut.u_feature_extractor.ts_read_addr)
+    target_x = addr & 0x0F
+    target_y = (addr >> 4) & 0x0F
+    raw_x = target_x << 5
+    raw_y = target_y << 5
+    evt = make_evt2_cd_event(x=raw_x, y=raw_y, timestamp_lsb=0x22, polarity=1)
+    await send_evt2_word(dut, evt)
+
+    # Allow a few cycles for read/write to settle
+    resolved = False
+    for _ in range(16):
+        await RisingEdge(dut.clk)
+        read_val = dut.u_time_surface.read_value.value
+        if read_val.is_resolvable:
+            assert 0 <= int(read_val) <= MAX_VALUE, "Read value out of range during write-during-scan"
+            resolved = True
+            break
+
+    assert resolved, "Read value should be resolvable during write-during-scan"
+
+    dut._log.info("Write during scan integrity test PASSED")
+
+
+# ============================================================================
+# Test: Sweep Completion and Valid Pulse
+# ============================================================================
+
+@cocotb.test()
+async def test_sweep_valid_pulse_once(dut):
+    """Verify gesture_valid pulses once per sweep."""
+    dut._log.info("=== Sweep Valid Pulse Test ===")
+
+    clock = Clock(dut.clk, 2, unit="step")
+    cocotb.start_soon(clock.start())
+
+    dut.evt_data.value = 0
+    dut.evt_valid.value = 0
+    dut.rst_n.value = 1
+
+    await reset_dut(dut)
+
+    # Ensure at least one fresh event contributes to mass
+    for i in range(16):
+        x = random.randint(0, 319)
+        y = random.randint(0, 319)
+        evt = make_evt2_cd_event(x=x, y=y, timestamp_lsb=(0x20 + i) & 0x3F, polarity=1)
+        await send_evt2_word(dut, evt)
+        await RisingEdge(dut.clk)
+
+    assert await wait_for_gesture_valid(dut), "gesture_valid did not assert"
+    assert get_int(dut.u_feature_extractor.gesture_valid) == 1, "gesture_valid should be high on pulse"
+    await RisingEdge(dut.clk)
+    assert get_int(dut.u_feature_extractor.gesture_valid) == 0, "gesture_valid should be one-cycle pulse"
+
+    # Ensure no extra pulses in the remainder of the frame
+    for _ in range(2000):
+        await RisingEdge(dut.clk)
+        assert get_int(dut.u_feature_extractor.gesture_valid) == 0, "gesture_valid should not reassert in same frame"
+
+    dut._log.info("Sweep valid pulse test PASSED")
+
+
+# ============================================================================
+# Test: Throughput Under Scan Load
+# ============================================================================
+
+@cocotb.test()
+async def test_throughput_fifo_during_scan(dut):
+    """Verify FIFO does not overflow during scan with bursty input."""
+    dut._log.info("=== Throughput FIFO During Scan Test ===")
+
+    clock = Clock(dut.clk, 2, unit="step")
+    cocotb.start_soon(clock.start())
+
+    dut.evt_data.value = 0
+    dut.evt_valid.value = 0
+    dut.rst_n.value = 1
+
+    await reset_dut(dut)
+
+    assert await wait_for_scan_start(dut), "Scan did not start"
+
+    for i in range(80):
+        x = random.randint(0, 319)
+        y = random.randint(0, 319)
+        evt = make_evt2_cd_event(x=x, y=y, timestamp_lsb=i & 0x3F, polarity=1)
+        await send_evt2_word(dut, evt)
+        assert get_int(dut.fifo_full) == 0, "FIFO overflowed during scan burst"
+
+    dut._log.info("Throughput FIFO during scan test PASSED")
+
+
+# ============================================================================
+# Test: Correct Gesture Classification
+# ============================================================================
+
+@cocotb.test()
+async def test_gesture_classification_correctness(dut):
+    """Verify classifier returns expected gesture for a clear pattern."""
+    dut._log.info("=== Gesture Classification Correctness Test ===")
+
+    clock = Clock(dut.clk, 2, unit="step")
+    cocotb.start_soon(clock.start())
+
+    dut.evt_data.value = 0
+    dut.evt_valid.value = 0
+    dut.rst_n.value = 1
+
+    await reset_dut(dut)
+
+    # Strong UP pattern (events near top of frame) injected before scan
+    for i in range(32):
+        x = random.randint(40, 280)
+        y = random.randint(0, 80)
+        evt = make_evt2_cd_event(x=x, y=y, timestamp_lsb=i & 0x3F, polarity=1)
+        await send_evt2_word(dut, evt)
+        await RisingEdge(dut.clk)
+
+    assert await wait_for_gesture_valid(dut), "No gesture_valid pulse after UP pattern"
+    assert get_int(dut.u_feature_extractor.gesture_class) == 0, "Expected UP gesture classification"
+
+    dut._log.info("Gesture classification correctness test PASSED")
 

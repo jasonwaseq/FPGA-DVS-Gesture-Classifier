@@ -26,7 +26,8 @@ module gesture_top #(
     parameter BAUD_RATE       = 115200,      // UART baud rate
     parameter FRAME_PERIOD_MS = 10,          // Classification period (ms)
     parameter DECAY_SHIFT     = 6,           // Time surface decay rate
-    parameter MIN_MASS_THRESH = 100          // Minimum mass for valid gesture
+    parameter MIN_MASS_THRESH = 100,         // Minimum mass for valid gesture
+    parameter UART_RX_ENABLE  = 1'b0         // Enable UART mock event input
 )(
     input  logic        clk,                // System clock
     input  logic        rst_n,              // Active-low reset
@@ -36,8 +37,9 @@ module gesture_top #(
     input  logic        evt_valid,          // Data valid strobe
     output logic        evt_ready,          // Ready to accept data
     
-    // UART Debug Output
-    output logic        uart_tx,            // UART transmit
+    // UART Interface
+    input  logic        uart_rx,            // UART receive (event input)
+    output logic        uart_tx,            // UART transmit (debug output)
     
     // LED Indicators
     output logic        led_heartbeat,      // Heartbeat blink
@@ -73,12 +75,104 @@ module gesture_top #(
     end
     
     // -------------------------------------------------------------------------
+    // UART RX (5-byte legacy event protocol)
+    // -------------------------------------------------------------------------
+    localparam EVT_CD_OFF = 4'h0;
+    localparam EVT_CD_ON  = 4'h1;
+
+    logic [7:0] uart_rx_data;
+    logic       uart_rx_valid;
+    logic [2:0] uart_byte_idx;
+    logic [7:0] uart_x_hi, uart_x_lo;
+    logic [7:0] uart_y_hi, uart_y_lo;
+    logic [7:0] uart_pol;
+    logic [31:0] uart_evt_word;
+    logic       uart_evt_pending;
+
+    wire [10:0] uart_x = {uart_x_hi[0], uart_x_lo};
+    wire [10:0] uart_y = {uart_y_hi[0], uart_y_lo};
+    wire [5:0]  uart_ts_lsb = global_timestamp[5:0];
+
+    generate
+        if (UART_RX_ENABLE) begin : gen_uart_rx
+            uart_rx #(
+                .CLKS_PER_BIT(CLK_FREQ_HZ / BAUD_RATE)
+            ) u_uart_rx (
+                .clk   (clk),
+                .rst   (rst),
+                .rx    (uart_rx),
+                .data  (uart_rx_data),
+                .valid (uart_rx_valid)
+            );
+
+            always_ff @(posedge clk) begin
+                if (rst) begin
+                    uart_byte_idx   <= 3'd0;
+                    uart_x_hi       <= 8'd0;
+                    uart_x_lo       <= 8'd0;
+                    uart_y_hi       <= 8'd0;
+                    uart_y_lo       <= 8'd0;
+                    uart_pol        <= 8'd0;
+                    uart_evt_word   <= 32'd0;
+                    uart_evt_pending <= 1'b0;
+                end else begin
+                    if (uart_rx_valid) begin
+                        case (uart_byte_idx)
+                            3'd0: uart_x_hi <= uart_rx_data;
+                            3'd1: uart_x_lo <= uart_rx_data;
+                            3'd2: uart_y_hi <= uart_rx_data;
+                            3'd3: uart_y_lo <= uart_rx_data;
+                            3'd4: begin
+                                uart_pol <= uart_rx_data;
+                                if (!uart_evt_pending) begin
+                                    uart_evt_word <= {uart_rx_data[0] ? EVT_CD_ON : EVT_CD_OFF, uart_ts_lsb, uart_x, uart_y};
+                                    uart_evt_pending <= 1'b1;
+                                end
+                            end
+                        endcase
+
+                        if (uart_byte_idx == 3'd4)
+                            uart_byte_idx <= 3'd0;
+                        else
+                            uart_byte_idx <= uart_byte_idx + 1'b1;
+                    end
+
+                    if (uart_evt_pending && !fifo_full)
+                        uart_evt_pending <= 1'b0;
+                end
+            end
+        end else begin : gen_uart_rx_off
+            always_comb begin
+                uart_rx_data = 8'd0;
+                uart_rx_valid = 1'b0;
+            end
+
+            always_ff @(posedge clk) begin
+                if (rst) begin
+                    uart_byte_idx   <= 3'd0;
+                    uart_x_hi       <= 8'd0;
+                    uart_x_lo       <= 8'd0;
+                    uart_y_hi       <= 8'd0;
+                    uart_y_lo       <= 8'd0;
+                    uart_pol        <= 8'd0;
+                    uart_evt_word   <= 32'd0;
+                    uart_evt_pending <= 1'b0;
+                end else begin
+                    uart_evt_pending <= 1'b0;
+                end
+            end
+        end
+    endgenerate
+
+    // -------------------------------------------------------------------------
     // Input FIFO (EVT 2.0 buffering)
     // -------------------------------------------------------------------------
     logic        fifo_rd_en;
     logic [31:0] fifo_rd_data;
     logic        fifo_empty;
     logic        fifo_full;
+    logic        fifo_wr_en;
+    logic [31:0] fifo_wr_data;
     
     input_fifo #(
         .DEPTH(256),
@@ -87,8 +181,8 @@ module gesture_top #(
     ) u_input_fifo (
         .clk     (clk),
         .rst     (rst),
-        .wr_en   (evt_valid && !fifo_full),
-        .wr_data (evt_data),
+        .wr_en   (fifo_wr_en),
+        .wr_data (fifo_wr_data),
         .rd_en   (fifo_rd_en),
         .rd_data (fifo_rd_data),
         .empty   (fifo_empty),
@@ -96,8 +190,19 @@ module gesture_top #(
         .count   ()  // Unused
     );
     
-    // Ready signal: accept data if FIFO not full
-    assign evt_ready = !fifo_full;
+    // Mux UART events and external EVT2 input
+    always_comb begin
+        if (UART_RX_ENABLE && uart_evt_pending) begin
+            fifo_wr_en = !fifo_full;
+            fifo_wr_data = uart_evt_word;
+        end else begin
+            fifo_wr_en = evt_valid && !fifo_full;
+            fifo_wr_data = evt_data;
+        end
+    end
+
+    // Ready signal: accept external data if FIFO not full and UART has no pending word
+    assign evt_ready = !fifo_full && !(UART_RX_ENABLE && uart_evt_pending);
     
     // -------------------------------------------------------------------------
     // EVT 2.0 Decoder
@@ -107,6 +212,7 @@ module gesture_top #(
     logic       decoded_polarity;
     logic [15:0] decoded_timestamp;
     logic       decoded_valid;
+    logic        fifo_rd_valid;
     
     evt2_decoder #(
         .GRID_BITS(4)
@@ -114,7 +220,7 @@ module gesture_top #(
         .clk        (clk),
         .rst        (rst),
         .data_in    (fifo_rd_data),
-        .data_valid (!fifo_empty),
+        .data_valid (fifo_rd_valid),
         .data_ready (decoder_ready),
         .x_out      (decoded_x),
         .y_out      (decoded_y),
@@ -122,9 +228,17 @@ module gesture_top #(
         .timestamp  (decoded_timestamp),
         .event_valid(decoded_valid)
     );
-    
-    // Read from FIFO when decoder is ready
-    assign fifo_rd_en = decoder_ready && !fifo_empty;
+
+    // Read from FIFO whenever data is available; align valid with BRAM read latency
+    assign fifo_rd_en = !fifo_empty;
+
+    always_ff @(posedge clk) begin
+        if (rst) begin
+            fifo_rd_valid <= 1'b0;
+        end else begin
+            fifo_rd_valid <= fifo_rd_en && !fifo_empty;
+        end
+    end
     
     // -------------------------------------------------------------------------
     // Time-Surface Memory
