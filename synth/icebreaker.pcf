@@ -17,3 +17,10 @@ set_io uart_tx 9
 set_io led_heartbeat 39
 set_io led_gesture_valid 40
 set_io led_activity 41
+
+# PMOD2 direction LEDs (active high)
+# Mapping: LED1=UP, LED2=DOWN, LED3=LEFT, LED4=RIGHT
+set_io led_up 26
+set_io led_down 27
+set_io led_left 25
+set_io led_right 23

@@ -1,0 +1,54 @@
+# Ice40 Synthesis Makefile for Time-Surface DVS Gesture Classifier
+# New Architecture: Time-Surface with Spatial Moments
+# Target: Lattice iCE40UP5K on iCEBreaker board
+
+PROJ = gesture_top
+PCF = icebreaker_gesture.pcf
+DEVICE = up5k
+PACKAGE = sg48
+
+RTL_DIR = ../rtl
+RTL_FILES = $(RTL_DIR)/bram_256x16.sv \
+            $(RTL_DIR)/input_fifo.sv \
+            $(RTL_DIR)/evt2_decoder.sv \
+            $(RTL_DIR)/time_surface_memory.sv \
+            $(RTL_DIR)/feature_extractor.sv \
+            $(RTL_DIR)/uart_tx.sv \
+            $(RTL_DIR)/uart_debug.sv \
+            $(RTL_DIR)/gesture_top.sv
+
+.PHONY: all clean prog report timing
+
+all: $(PROJ).bit
+
+# Convert SystemVerilog to Verilog for Yosys
+$(PROJ).v: $(RTL_FILES)
+	sv2v $(RTL_FILES) -w $@
+
+# Synthesis
+$(PROJ).json: $(PROJ).v
+	yosys -p "read_verilog $<; synth_ice40 -top $(PROJ) -json $@"
+
+# Place and Route
+$(PROJ).asc: $(PROJ).json $(PCF)
+	nextpnr-ice40 --$(DEVICE) --package $(PACKAGE) --json $< --pcf $(PCF) --asc $@ --freq 12
+
+# Bitstream generation
+$(PROJ).bit: $(PROJ).asc
+	icepack $< $@
+
+# Program the FPGA
+prog: $(PROJ).bit
+	iceprog $<
+
+# Resource utilization report
+report: $(PROJ).json
+	yosys -p "read_json $<; stat"
+
+# Timing analysis
+timing: $(PROJ).asc
+	icetime -d $(DEVICE) -m -r $(PROJ).timing $<
+	@echo "Timing report saved to $(PROJ).timing"
+
+clean:
+	rm -f $(PROJ).v $(PROJ).json $(PROJ).asc $(PROJ).bit $(PROJ).timing

@@ -1,3 +1,5 @@
+`timescale 1ns/1ps
+
 // Simple UART Transmitter - 8N1
 // Fixed baud rate via CLKS_PER_BIT parameter
 // Uses SYNCHRONOUS reset (active-high) for iCE40 compatibility

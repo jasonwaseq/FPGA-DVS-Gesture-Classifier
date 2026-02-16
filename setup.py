@@ -56,6 +56,18 @@ RTL_FILES = [
     "uart_gesture_top.sv",
 ]
 
+# RTL files for new Time-Surface gesture architecture
+RTL_FILES_GESTURE = [
+    "uart_tx.sv",
+    "bram_256x16.sv",
+    "input_fifo.sv",
+    "evt2_decoder.sv",
+    "time_surface_memory.sv",
+    "feature_extractor.sv",
+    "uart_debug.sv",
+    "gesture_top.sv",
+]
+
 # OSS CAD Suite download URLs (2024-11-21 release)
 OSS_CAD_URLS = {
     ("Windows", "AMD64"): "https://github.com/YosysHQ/oss-cad-suite-build/releases/download/2024-11-21/oss-cad-suite-windows-x64-20241121.exe",
@@ -284,6 +296,16 @@ def run_tests(test_module="test_spatiotemporal_classifier"):
     """Run cocotb verification tests."""
     print_header("Running cocotb Verification Tests")
     
+    # Determine RTL files and toplevel based on test module
+    if test_module == "test_gesture_top":
+        rtl_files = RTL_FILES_GESTURE
+        toplevel = "gesture_top"
+        defines = []  # No special defines needed for gesture_top
+    else:
+        rtl_files = RTL_FILES
+        toplevel = "uart_gesture_top"
+        defines = ["-DCLKS_PER_BIT=4", "-DMIN_EVENT_THRESH=4", "-DMOTION_THRESH=2"]
+    
     # Prefer system Icarus to avoid OSS CAD Suite GLIBC conflicts
     system_iverilog = Path("/usr/bin/iverilog")
     system_vvp = Path("/usr/bin/vvp")
@@ -331,7 +353,7 @@ def run_tests(test_module="test_spatiotemporal_classifier"):
     
     # Set up cocotb environment
     env["COCOTB_TEST_MODULES"] = test_module
-    env["TOPLEVEL"] = "uart_gesture_top"
+    env["TOPLEVEL"] = toplevel
     env["TOPLEVEL_LANG"] = "verilog"
     env["PYTHONPATH"] = str(TB_DIR)
     if sys.platform.startswith("linux") and not use_system_iverilog:
@@ -352,17 +374,16 @@ def run_tests(test_module="test_spatiotemporal_classifier"):
     
     # Compile RTL with iverilog
     print("\nCompiling RTL with Icarus Verilog...")
+    print(f"  Toplevel: {toplevel}")
+    print(f"  Test module: {test_module}")
     vvp_file = sim_build / "sim.vvp"
-    sources = [str(RTL_DIR / f) for f in RTL_FILES]
+    sources = [str(RTL_DIR / f) for f in rtl_files]
     
     compile_cmd = [
         iverilog_cmd, "-g2012",
-        "-s", "uart_gesture_top",
+        "-s", toplevel,
         "-o", str(vvp_file),
-        "-DCLKS_PER_BIT=4",
-        "-DMIN_EVENT_THRESH=4",
-        "-DMOTION_THRESH=2",
-    ] + sources
+    ] + defines + sources
     
     result = subprocess.run(compile_cmd, env=env, cwd=sim_build, capture_output=True, text=True)
     if result.returncode != 0:

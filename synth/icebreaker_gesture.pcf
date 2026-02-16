@@ -1,0 +1,79 @@
+# =============================================================================
+# Pin Constraints for iCEBreaker FPGA - Time-Surface Gesture Classifier
+# =============================================================================
+# Target: Lattice iCE40UP5K on iCEBreaker board
+# Interface: Prophesee GenX320 EVT 2.0 (32-bit parallel data bus)
+# =============================================================================
+
+# Clock (12MHz oscillator on iCEBreaker)
+set_io clk 35
+
+# Active-Low Reset (optional, uses internal POR if not connected)
+set_io rst_n 10
+
+# UART Debug Output (onboard FTDI USB-UART)
+set_io uart_tx 9
+
+# -----------------------------------------------------------------------------
+# EVT 2.0 Data Bus (32-bit parallel interface via PMOD connectors)
+# -----------------------------------------------------------------------------
+
+# PMOD1A - Data bits [7:0]
+set_io evt_data[0] 4
+set_io evt_data[1] 2
+set_io evt_data[2] 47
+set_io evt_data[3] 46
+set_io evt_data[4] 44
+set_io evt_data[5] 48
+set_io evt_data[6] 3
+set_io evt_data[7] 45
+
+# PMOD1B - Data bits [15:8]
+set_io evt_data[8] 43
+set_io evt_data[9] 38
+set_io evt_data[10] 34
+set_io evt_data[11] 31
+set_io evt_data[12] 42
+set_io evt_data[13] 36
+set_io evt_data[14] 32
+set_io evt_data[15] 28
+
+# PMOD2 - Data bits [23:16]
+set_io evt_data[16] 26
+set_io evt_data[17] 27
+set_io evt_data[18] 25
+set_io evt_data[19] 23
+set_io evt_data[20] 21
+set_io evt_data[21] 20
+set_io evt_data[22] 19
+set_io evt_data[23] 18
+
+# Additional breakout - Data bits [31:24]
+set_io evt_data[24] 11
+set_io evt_data[25] 12
+set_io evt_data[26] 13
+set_io evt_data[27] 14
+set_io evt_data[28] 15
+set_io evt_data[29] 16
+set_io evt_data[30] 17
+set_io evt_data[31] 37
+
+# EVT 2.0 Control Signals
+set_io evt_valid 6
+set_io evt_ready 41
+
+# -----------------------------------------------------------------------------
+# Status LEDs (iCEBreaker accent LEDs)
+# -----------------------------------------------------------------------------
+set_io led_heartbeat 39
+set_io led_activity 40
+
+# -----------------------------------------------------------------------------
+# Gesture Direction LEDs
+# Note: These share pins with PMOD2 data. If using full 32-bit EVT data,
+# connect external LEDs to unused pins or omit direction LEDs.
+# -----------------------------------------------------------------------------
+set_io led_up 26
+set_io led_down 27
+set_io led_left 25
+set_io led_right 23

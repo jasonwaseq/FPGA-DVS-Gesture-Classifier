@@ -37,7 +37,11 @@ module uart_gesture_top #(
     output logic uart_tx,
     output logic led_heartbeat,
     output logic led_gesture_valid,
-    output logic led_activity
+    output logic led_activity,
+    output logic led_up,
+    output logic led_down,
+    output logic led_left,
+    output logic led_right
 );
 
     localparam CLKS_PER_BIT = CLK_FREQ / BAUD_RATE;
@@ -146,6 +150,35 @@ module uart_gesture_top #(
             gesture_led_cnt <= gesture_led_cnt - 1'b1;
     end
     assign led_gesture_valid = ~(gesture_led_cnt > 0);
+
+    // =========================================================================
+    // Direction LEDs on PMOD2 (active-high, one-hot with pulse stretch)
+    // =========================================================================
+
+    logic [19:0] dir_led_cnt;
+    logic [1:0]  last_gesture;
+    logic        last_gesture_valid;
+
+    always @(posedge clk) begin
+        if (rst) begin
+            dir_led_cnt        <= '0;
+            last_gesture       <= 2'd0;
+            last_gesture_valid <= 1'b0;
+        end else if (gesture_valid) begin
+            dir_led_cnt        <= {20{1'b1}};
+            last_gesture       <= gesture;
+            last_gesture_valid <= 1'b1;
+        end else if (dir_led_cnt > 0) begin
+            dir_led_cnt <= dir_led_cnt - 1'b1;
+        end else begin
+            last_gesture_valid <= 1'b0;
+        end
+    end
+
+    assign led_up    = (dir_led_cnt > 0) && last_gesture_valid && (last_gesture == 2'b00);
+    assign led_down  = (dir_led_cnt > 0) && last_gesture_valid && (last_gesture == 2'b01);
+    assign led_left  = (dir_led_cnt > 0) && last_gesture_valid && (last_gesture == 2'b10);
+    assign led_right = (dir_led_cnt > 0) && last_gesture_valid && (last_gesture == 2'b11);
 
     // =========================================================================
     // Activity LED (blinks when events received)
