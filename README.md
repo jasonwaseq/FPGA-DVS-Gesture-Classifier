@@ -136,7 +136,7 @@ X, Y coordinates range from 0-319.
 
 ```bash
 .venv/bin/python tools/dvs_camera_emulator.py --simulate --preview
-.venv/bin/python tools/dvs_camera_emulator.py --port /dev/ttyUSB1
+.venv/bin/python tools/dvs_camera_emulator.py --port port#
 .venv/bin/python tools/dvs_event_player.py events.bin --preview
 ```
 
@@ -144,13 +144,12 @@ X, Y coordinates range from 0-319.
 
 ```bash
 .venv/bin/python tools/fpga_gesture_validator.py --list-ports
-.venv/bin/python tools/fpga_gesture_validator.py --port /dev/ttyUSB# --test all
-.venv/bin/python tools/fpga_gesture_validator.py --port /dev/ttyUSB# --interactive
+.venv/bin/python tools/fpga_gesture_validator.py --port port# --test all
+.venv/bin/python tools/fpga_gesture_validator.py --port port# --interactive
 ```
 
 ### Raw event capture and alignment
 
 ```bash
-.venv/bin/python tools/capture_evt_stream.py COM3 trial_run.bin --duration 30
-.venv/bin/python tools/capture_evt_stream.py /dev/ttyACM0 trial_run.bin --duration 30
+.venv/bin/python tools/capture_evt_stream.py port# trial_run.bin --duration #
 ```

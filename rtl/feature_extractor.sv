@@ -18,6 +18,11 @@
 //   M_01 = Σ y * S(x,y)        - Y-weighted sum
 //   Centroid = (M_10/M_00, M_01/M_00)
 //
+// Grid Coordinate System:
+//   Input: 320x320 sensor coordinates
+//   Downsampling: bits [8:5] extract -> grid range [0-9]
+//   Center: (4.5, 4.5) represented as (M00*9)>>1
+//
 // Linear Classifier:
 //   Score[class] = Σ W[class][i] * M[i] + bias[class]
 //   Output = argmax(Score)
@@ -214,13 +219,16 @@ module feature_extractor #(
                 S_COMPUTE: begin
                     // Compute centroid (avoid division, use scaled comparison)
                     // centroid_x = M10 / M00, centroid_y = M01 / M00
-                    // For classification, we compare: M10 vs M00*8 (center)
+                    // Grid coordinates range 0-9 (from bit slice [8:5] of 320 pixels)
+                    // Grid center is at approximately (4.5, 4.5)
+                    // Use M00*4.5 ≈ M00*9/2 for center reference
                     
-                    // Store offset from center (M10 - M00*8, M01 - M00*8)
+                    // Store offset from center: (M10 - M00*4.5, M01 - M00*4.5)
+                    // Using fixed-point: M00*4.5 = (M00*9) >> 1
                     // Positive offset_x means centroid is right of center
                     // Positive offset_y means centroid is below center
-                    offset_x <= $signed(m10_acc) - $signed(m00_acc * 4'd8);
-                    offset_y <= $signed(m01_acc) - $signed(m00_acc * 4'd8);
+                    offset_x <= $signed(m10_acc) - $signed((m00_acc * 5'd9) >> 1);
+                    offset_y <= $signed(m01_acc) - $signed((m00_acc * 5'd9) >> 1);
                     
                     state <= S_CLASSIFY;
                 end
@@ -258,17 +266,34 @@ module feature_extractor #(
                             gesture_confidence <= m00_acc[15:8];
                         
                         // Argmax: Find class with highest score
-                        if (score_up >= score_down && 
-                            score_up >= score_left && 
-                            score_up >= score_right) begin
+                        // Use unbiased comparison by checking all pairs
+                        if (score_up > score_down && 
+                            score_up > score_left && 
+                            score_up > score_right) begin
                             gesture_class <= 2'd0;  // UP
-                        end else if (score_down >= score_left && 
-                                     score_down >= score_right) begin
+                        end else if (score_down > score_up && 
+                                     score_down > score_left && 
+                                     score_down > score_right) begin
                             gesture_class <= 2'd1;  // DOWN
-                        end else if (score_left >= score_right) begin
+                        end else if (score_left > score_up && 
+                                     score_left > score_down && 
+                                     score_left > score_right) begin
                             gesture_class <= 2'd2;  // LEFT
-                        end else begin
+                        end else if (score_right > score_up && 
+                                     score_right > score_down && 
+                                     score_right > score_left) begin
                             gesture_class <= 2'd3;  // RIGHT
+                        end else begin
+                            // Tie-break: use magnitude comparison
+                            // Determine dominant axis and direction using absolute values
+                            if (((offset_y < 0) ? -offset_y : offset_y) > 
+                                ((offset_x < 0) ? -offset_x : offset_x)) begin
+                                // Y axis is dominant
+                                gesture_class <= (offset_y < 0) ? 2'd0 : 2'd1;  // UP or DOWN
+                            end else begin
+                                // X axis is dominant (or equal)
+                                gesture_class <= (offset_x < 0) ? 2'd2 : 2'd3;  // LEFT or RIGHT
+                            end
                         end
                     end
                     

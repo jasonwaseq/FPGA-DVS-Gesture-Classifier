@@ -219,18 +219,16 @@ def main():
                     y_histogram[y] = y_histogram.get(y, 0) + 1
             
             if events:
-                # Encode and send to FPGA
+                # Encode and send to FPGA, always print debug info for each event
                 for x, y, pol in events:
                     packet = encode_event_packet(x, y, pol)
-                    if args.debug and total_sent < 10:  # Show first 10 packets
-                        print(f"[DEBUG] Packet: {packet.hex()}")
+                    print(f"[SEND] X={x:3d} Y={y:3d} POL={pol} -> Packet: {packet.hex()}")
                     try:
                         fpga_port.write(packet)
                         total_sent += 1
                     except Exception as e:
                         print(f"[FPGA] Write error: {e}")
                         break
-                
                 total_events += len(events)
             
             # Check for gesture responses
