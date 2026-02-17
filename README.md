@@ -27,43 +27,49 @@ python3 -m venv .venv
 - Scripts and tools: [tools](tools)
 - Generated build outputs: [synth](synth)
 
-## Architecture overview (new pipeline)
+## Architecture overview (current RTL)
 
-The current RTL is a streaming, single-pass pipeline that converts raw DVS events into a gesture label. Events arrive over UART as X, Y, and polarity and are processed in order without revisiting past events. The design runs in one clock domain and is built to keep up with continuous input.
+The current RTL is a streaming, single-pass pipeline that converts EVT 2.0 DVS events into a gesture label. Events arrive as 32-bit EVT2 words (or via optional 5-byte UART mock input) and are processed in order on a single clock domain.
 
-**High-level pipeline**: DVS events (320x320) -> Input FIFO -> Spatial compression (16x16) -> Time-surface accumulation (early/late windows) -> Motion vector -> Gesture classifier -> UART response
+**High-level pipeline**: EVT2 words -> FIFO -> EVT2 decoder -> Time-surface memory (decay-on-read) -> Moment scan -> Direction classifier -> UART debug output
 
 ### Module map (current RTL)
 
-- Top-level integration: [rtl/gesture_top.sv](rtl/gesture_top.sv)
-- UART RX/TX: [rtl/uart_rx.sv](rtl/uart_rx.sv), [rtl/uart_tx.sv](rtl/uart_tx.sv)
+- Top-level integration and control: [rtl/gesture_top.sv](rtl/gesture_top.sv)
+- EVT2 decoder: [rtl/evt2_decoder.sv](rtl/evt2_decoder.sv)
 - Input FIFO: [rtl/input_fifo.sv](rtl/input_fifo.sv)
-- Spatial compression: [rtl/feature_extractor.sv](rtl/feature_extractor.sv)
 - Time surface memory: [rtl/time_surface_memory.sv](rtl/time_surface_memory.sv)
-- Event decoding: [rtl/evt2_decoder.sv](rtl/evt2_decoder.sv)
-- Debug/telemetry: [rtl/uart_debug.sv](rtl/uart_debug.sv)
+- Moment scan + classifier: [rtl/feature_extractor.sv](rtl/feature_extractor.sv)
+- UART debug output: [rtl/uart_debug.sv](rtl/uart_debug.sv)
+- Optional UART event input: [rtl/uart_rx.sv](rtl/uart_rx.sv)
 
 ### Input capture + FIFO
 
-- `uart_rx` deserializes the 5-byte event packet and emits a valid event when complete.
-- `input_fifo` absorbs UART bursts and provides `full`/`empty` status for flow control and diagnostics.
+- External EVT2 words are accepted when `evt_ready` is high and written into `input_fifo` (256 x 32-bit BRAM).
+- Optional UART event input can be enabled (parameter `UART_RX_ENABLE`) to synthesize EVT2 CD events from 5-byte packets for testing.
 
-### Spatial compression (320x320 -> 16x16)
+### EVT2 decode + spatial downsample
 
-Each event is binned into a 16x16 grid by dropping lower coordinate bits. This reduces memory and arithmetic while preserving gross motion direction. The feature extractor outputs a compact grid coordinate plus polarity.
+- `evt2_decoder` parses EVT2 words, reconstructs a 16-bit timestamp, and emits CD events.
+- X and Y are downsampled from 320x320 into a 16x16 grid using bit slicing (`x_raw[8:5]`, `y_raw[8:5]`) with clamping.
 
-### Time-surface accumulation (dual windows)
+### Time-surface memory (decay-on-read)
 
-Two heatmaps are maintained over a fixed event-count window:
+- `time_surface_memory` stores the last-event timestamp for each 16x16 cell in BRAM.
+- A global 16-bit timestamp counter provides `t_now` for decay.
+- On read, the decayed value is computed lazily: `value = MAX - (t_now - t_last) >> DECAY_SHIFT`, clamped to [0, MAX]. This produces a time-surface without explicit sweeping.
 
-- Early window accumulates activity at the start of the window.
-- Late window accumulates activity at the end of the window.
+### Moment scan + classification
 
-The window advances on event count rather than wall-clock time so performance remains stable across variable event rates. On window completion, the two heatmaps are frozen for analysis and then cleared for the next window.
+- `feature_extractor` runs on a fixed frame period (`FRAME_PERIOD_MS`).
+- It scans all 256 cells, accumulating spatial moments: `M00`, `M10`, `M01`.
+- The centroid offset from the center (8,8) is derived as `M10 - M00*8` and `M01 - M00*8`.
+- A simple directional classifier compares offsets to determine UP/DOWN/LEFT/RIGHT. `MIN_MASS_THRESH` gates low-activity frames.
 
-### Motion vector + gesture classification
+### Output and indicators
 
-At window end, each heatmap is summarized into a centroid. The motion vector is the delta between early and late centroids. The classifier selects the dominant axis (horizontal vs vertical) and uses thresholds to suppress low-activity or low-motion windows. When a gesture is detected, a compact result is sent over UART.
+- `uart_debug` outputs gesture class and confidence over UART.
+- LEDs reflect heartbeat, activity, and detected direction in [rtl/gesture_top.sv](rtl/gesture_top.sv).
 
 ## Old architecture (legacy)
 
