@@ -27,20 +27,30 @@ python3 -m venv .venv
 - Scripts and tools: [tools](tools)
 - Generated build outputs: [synth](synth)
 
-## Architecture overview
+## Architecture overview (new pipeline)
 
-The FPGA implements a streaming, single-pass pipeline that converts raw DVS events into a gesture label. Events arrive over UART as X, Y, and polarity and are processed in order without revisiting past events. The design runs in one clock domain and is built to keep up with continuous input.
+The current RTL is a streaming, single-pass pipeline that converts raw DVS events into a gesture label. Events arrive over UART as X, Y, and polarity and are processed in order without revisiting past events. The design runs in one clock domain and is built to keep up with continuous input.
 
 **High-level pipeline**: DVS events (320x320) -> Input FIFO -> Spatial compression (16x16) -> Time-surface accumulation (early/late windows) -> Motion vector -> Gesture classifier -> UART response
 
+### Module map (current RTL)
+
+- Top-level integration: [rtl/gesture_top.sv](rtl/gesture_top.sv)
+- UART RX/TX: [rtl/uart_rx.sv](rtl/uart_rx.sv), [rtl/uart_tx.sv](rtl/uart_tx.sv)
+- Input FIFO: [rtl/input_fifo.sv](rtl/input_fifo.sv)
+- Spatial compression: [rtl/feature_extractor.sv](rtl/feature_extractor.sv)
+- Time surface memory: [rtl/time_surface_memory.sv](rtl/time_surface_memory.sv)
+- Event decoding: [rtl/evt2_decoder.sv](rtl/evt2_decoder.sv)
+- Debug/telemetry: [rtl/uart_debug.sv](rtl/uart_debug.sv)
+
 ### Input capture + FIFO
 
-- UART RX deserializes the 5-byte EVT2-like packet and emits a valid event when complete.
-- The FIFO absorbs UART bursts and provides `full`/`empty` status for flow control and diagnostics.
+- `uart_rx` deserializes the 5-byte event packet and emits a valid event when complete.
+- `input_fifo` absorbs UART bursts and provides `full`/`empty` status for flow control and diagnostics.
 
 ### Spatial compression (320x320 -> 16x16)
 
-Each event is binned into a 16x16 grid by dropping lower coordinate bits. This reduces memory and arithmetic while preserving gross motion direction.
+Each event is binned into a 16x16 grid by dropping lower coordinate bits. This reduces memory and arithmetic while preserving gross motion direction. The feature extractor outputs a compact grid coordinate plus polarity.
 
 ### Time-surface accumulation (dual windows)
 
@@ -49,11 +59,11 @@ Two heatmaps are maintained over a fixed event-count window:
 - Early window accumulates activity at the start of the window.
 - Late window accumulates activity at the end of the window.
 
-The window advances on event count rather than wall-clock time so performance remains stable across variable event rates.
+The window advances on event count rather than wall-clock time so performance remains stable across variable event rates. On window completion, the two heatmaps are frozen for analysis and then cleared for the next window.
 
 ### Motion vector + gesture classification
 
-At window end, each heatmap is summarized into a centroid. The motion vector is the delta between early and late centroids. The classifier selects the dominant axis (horizontal vs vertical) and uses thresholds to suppress low-activity or low-motion windows.
+At window end, each heatmap is summarized into a centroid. The motion vector is the delta between early and late centroids. The classifier selects the dominant axis (horizontal vs vertical) and uses thresholds to suppress low-activity or low-motion windows. When a gesture is detected, a compact result is sent over UART.
 
 ## Old architecture (legacy)
 
