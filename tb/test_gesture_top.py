@@ -31,6 +31,7 @@ EVT_TIME_HIGH = 0x8
 # Feature extractor FSM states
 S_IDLE = 0
 S_SCAN_WAIT = 1
+S_SCAN_WAIT2 = 6
 S_SCAN = 2
 S_COMPUTE = 3
 S_CLASSIFY = 4
@@ -598,6 +599,8 @@ async def test_sweep_fsm_and_addressing(dut):
 
     assert await wait_for_state(dut, S_SCAN_WAIT), "FSM did not reach S_SCAN_WAIT"
     await RisingEdge(dut.clk)
+    assert get_int(dut.u_feature_extractor.debug_state) == S_SCAN_WAIT2, "FSM did not enter S_SCAN_WAIT2"
+    await RisingEdge(dut.clk)
     assert get_int(dut.u_feature_extractor.debug_state) == S_SCAN, "FSM did not enter S_SCAN"
 
     scan_cycles = 0
@@ -890,13 +893,28 @@ async def test_gesture_classification_correctness(dut):
 
     await reset_dut(dut)
 
-    # Strong UP pattern (events near top of frame) injected before scan
-    for i in range(32):
-        x = random.randint(40, 280)
-        y = random.randint(0, 80)
-        evt = make_evt2_cd_event(x=x, y=y, timestamp_lsb=i & 0x3F, polarity=1)
-        await send_evt2_word(dut, evt)
-        await RisingEdge(dut.clk)
+    # Flush all valid grid cells (0-9 x 0-9) to overwrite stale BRAM data
+    # from prior tests. Grid cell (gx, gy) maps from sensor coord gx*32, gy*32.
+    for gy in range(10):
+        for gx in range(10):
+            evt = make_evt2_cd_event(x=gx * 32, y=gy * 32, timestamp_lsb=0, polarity=1)
+            await send_evt2_word(dut, evt)
+
+    # Wait for flush events to fully decay (need delta_t >= 255*64 = 16320 cycles).
+    # Two full frame periods (24000 cycles) ensures all flush events have decayed
+    # AND the init-value cells (0x8000) outside the valid grid range are excluded
+    # by the RTL bounds check.
+    await ClockCycles(dut.clk, 24000)
+
+    # Strong UP pattern: multiple bursts near top of frame, centered X
+    for burst in range(3):
+        for i in range(30):
+            x = 160 + random.randint(-50, 50)   # Centered X
+            y = random.randint(10, 60)           # Top of frame (low Y)
+            evt = make_evt2_cd_event(x=x, y=y, timestamp_lsb=i & 0x3F, polarity=1)
+            await send_evt2_word(dut, evt)
+            await ClockCycles(dut.clk, 2)
+        await ClockCycles(dut.clk, 500)
 
     assert await wait_for_gesture_valid(dut), "No gesture_valid pulse after UP pattern"
     assert get_int(dut.u_feature_extractor.gesture_class) == 0, "Expected UP gesture classification"

@@ -36,12 +36,14 @@ The current RTL is a streaming, single-pass pipeline that converts EVT 2.0 DVS e
 ### Module map (current RTL)
 
 - Top-level integration and control: [rtl/gesture_top.sv](rtl/gesture_top.sv)
+- UART validation wrapper: [rtl/gesture_uart_top.sv](rtl/gesture_uart_top.sv)
 - EVT2 decoder: [rtl/evt2_decoder.sv](rtl/evt2_decoder.sv)
 - Input FIFO: [rtl/input_fifo.sv](rtl/input_fifo.sv)
 - Time surface memory: [rtl/time_surface_memory.sv](rtl/time_surface_memory.sv)
 - Moment scan + classifier: [rtl/feature_extractor.sv](rtl/feature_extractor.sv)
 - UART debug output: [rtl/uart_debug.sv](rtl/uart_debug.sv)
-- Optional UART event input: [rtl/uart_rx.sv](rtl/uart_rx.sv)
+- UART receiver: [rtl/uart_rx.sv](rtl/uart_rx.sv)
+- UART transmitter: [rtl/uart_tx.sv](rtl/uart_tx.sv)
 
 ### Input capture + FIFO
 
@@ -91,14 +93,25 @@ The previous pipeline is preserved in [rtl/old_architecture](rtl/old_architectur
 
 X, Y coordinates range from 0-319.
 
-### Receive from FPGA
+### Receive from FPGA (current architecture - `gesture_uart_top`)
+
+**Gesture response** (ASCII): `uart_debug` sends the gesture name followed by `\r\n`:
+
+| Gesture | ASCII output |
+|---------|-------------|
+| UP | `UP\r\n` |
+| DOWN | `DOWN\r\n` |
+| LEFT | `LEFT\r\n` |
+| RIGHT | `RIGHT\r\n` |
+
+### Receive from FPGA (legacy architecture - `uart_gesture_top`)
 
 **Gesture response** (2 bytes):
 
 | Byte | Contents |
 |------|----------|
-| 0 | `0xA0 | gesture` (0=UP, 1=DOWN, 2=LEFT, 3=RIGHT) |
-| 1 | `confidence[3:0] | event_count_hi[3:0]` |
+| 0 | `0xA0 \| gesture` (0=UP, 1=DOWN, 2=LEFT, 3=RIGHT) |
+| 1 | `confidence[3:0] \| event_count_hi[3:0]` |
 
 **Status response** (1 byte): `0xBx`
 
@@ -106,12 +119,7 @@ X, Y coordinates range from 0-319.
 - Bit 1: FIFO full
 - Bit 0: FIFO empty
 
-**Config response** (2 bytes):
-
-- Byte 0: MIN_EVENT_THRESH
-- Byte 1: MOTION_THRESH
-
-### Special commands
+### Special commands (legacy architecture only)
 
 | Send | Response | Description |
 |------|----------|-------------|
@@ -126,9 +134,88 @@ X, Y coordinates range from 0-319.
 |---------|-------------|
 | `python setup.py` | Setup venv, install packages, detect OSS CAD Suite |
 | `python setup.py test` | Run verification tests (iverilog + cocotb) |
-| `python setup.py synth` | Synthesize (Yosys -> nextpnr -> icepack) |
-| `python setup.py flash` | Program FPGA via iceprog |
+| `python setup.py synth` | Synthesize legacy design (parallel EVT2 bus) |
+| `python setup.py synth-uart` | Synthesize UART validation design |
+| `python setup.py flash` | Flash legacy bitstream |
+| `python setup.py flash-uart` | Flash UART validation bitstream |
 | `python setup.py clean` | Remove build artifacts |
+
+## Hardware validation pipeline (GenX320 + STM32 + iCEBreaker)
+
+End-to-end hardware validation of gesture classification using a live DVS sensor.
+
+**Setup**: Prophesee GenX320 sensor -> STM32 board -> USB CDC -> Laptop -> UART -> iCEBreaker FPGA
+
+### Step 1: Build and flash the UART validation bitstream
+
+The `gesture_uart_top` wrapper enables UART event input (`UART_RX_ENABLE=1`), ties off the unused parallel bus, and provides an internal power-on reset.
+
+```bash
+python setup.py synth-uart
+python setup.py flash-uart
+```
+
+Or use the Makefile directly:
+
+```bash
+cd synth && make -f Makefile.uart prog
+```
+
+### Step 2: Capture a raw EVT stream from the GenX320
+
+Connect the STM32 board (running the GenX320 firmware) to a USB port. Identify the serial port (e.g. `COM5` on Windows, `/dev/ttyACM0` on Linux).
+
+```bash
+python tools/capture_evt_stream.py COM5 gesture_trial.bin --duration 10
+```
+
+This saves the raw EVT2 byte stream and produces an aligned `.bin` file.
+
+### Step 3a: Replay the captured file to the FPGA
+
+Connect the iCEBreaker FPGA to a second USB port (e.g. `COM3` / `/dev/ttyUSB1`). Replay the captured events:
+
+```bash
+python tools/replay_evt_to_fpga.py --file aligned.bin --fpga COM3
+```
+
+The script decodes the raw EVT2 words, converts CD events to 5-byte UART packets, sends them to the FPGA, and displays gesture classifications in real-time.
+
+### Step 3b: Live relay (STM32 -> Laptop -> FPGA)
+
+For real-time classification, relay events directly from the sensor to the FPGA:
+
+```bash
+python tools/replay_evt_to_fpga.py --dvs COM5 --fpga COM3
+```
+
+Optionally save the raw capture while relaying:
+
+```bash
+python tools/replay_evt_to_fpga.py --dvs COM5 --fpga COM3 --save capture.bin --duration 30
+```
+
+### EVT2 bit layout
+
+The default bit layout matches the standard EVT2 format (`x[21:11]`, `y[10:0]`). If the GenX320 firmware uses a different packing, override with:
+
+```bash
+python tools/replay_evt_to_fpga.py --file aligned.bin --fpga COM3 \
+    --x-shift 17 --y-shift 6 --swap-xy
+```
+
+### What the FPGA outputs
+
+The `uart_debug` module sends ASCII gesture labels over UART TX whenever the classifier detects a gesture: `UP\r\n`, `DOWN\r\n`, `LEFT\r\n`, or `RIGHT\r\n`. The replay tool parses these and reports a summary with per-gesture counts.
+
+Direction LEDs on the iCEBreaker also flash for ~500ms on each detection:
+- `led_up` (pin 26), `led_down` (pin 27), `led_left` (pin 25), `led_right` (pin 23)
+- `led_heartbeat` (pin 39): ~1.5 Hz blink confirms the FPGA is alive
+- `led_activity` (pin 40): pulses when events are being received
+
+### Bandwidth note
+
+At 115200 baud, the UART can deliver ~2300 events/sec (5 bytes per event). The GenX320 may produce far more events, so the relay throttles naturally. Gesture classification still works at reduced rates because the time-surface accumulates events over the `FRAME_PERIOD_MS` window (default 10ms).
 
 ## Tools
 
@@ -140,7 +227,7 @@ X, Y coordinates range from 0-319.
 .venv/bin/python tools/dvs_event_player.py events.bin --preview
 ```
 
-### FPGA hardware validator
+### FPGA hardware validator (synthetic gestures)
 
 ```bash
 .venv/bin/python tools/fpga_gesture_validator.py --list-ports
@@ -152,4 +239,12 @@ X, Y coordinates range from 0-319.
 
 ```bash
 .venv/bin/python tools/capture_evt_stream.py port# trial_run.bin --duration #
+```
+
+### EVT2 replay / live relay to FPGA
+
+```bash
+.venv/bin/python tools/replay_evt_to_fpga.py --file aligned.bin --fpga port#
+.venv/bin/python tools/replay_evt_to_fpga.py --dvs port# --fpga port#
+.venv/bin/python tools/replay_evt_to_fpga.py --list-ports
 ```

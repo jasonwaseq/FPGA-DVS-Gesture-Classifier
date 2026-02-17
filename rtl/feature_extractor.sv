@@ -90,12 +90,13 @@ module feature_extractor #(
     // FSM States
     // -------------------------------------------------------------------------
     typedef enum logic [2:0] {
-        S_IDLE      = 3'd0,     // Wait for frame pulse
-        S_SCAN_WAIT = 3'd1,     // Wait for BRAM read latency
-        S_SCAN      = 3'd2,     // Iterate through all cells
-        S_COMPUTE   = 3'd3,     // Finalize moments
-        S_CLASSIFY  = 3'd4,     // Compute classification scores
-        S_OUTPUT    = 3'd5      // Output result
+        S_IDLE       = 3'd0,    // Wait for frame pulse
+        S_SCAN_WAIT  = 3'd1,    // Pipeline fill cycle 1 (BRAM latency)
+        S_SCAN_WAIT2 = 3'd6,    // Pipeline fill cycle 2 (decay register latency)
+        S_SCAN       = 3'd2,    // Iterate through all cells
+        S_COMPUTE    = 3'd3,    // Finalize moments
+        S_CLASSIFY   = 3'd4,    // Compute classification scores
+        S_OUTPUT     = 3'd5     // Output result
     } state_t;
     
     state_t state, next_state;
@@ -185,9 +186,21 @@ module feature_extractor #(
                 end
                 
                 // ---------------------------------------------------------
-                // SCAN_WAIT: Wait one cycle for BRAM read latency
+                // SCAN_WAIT: Pipeline fill cycle 1
+                // Pre-issue address 1 while BRAM processes address 0
                 // ---------------------------------------------------------
                 S_SCAN_WAIT: begin
+                    ts_read_addr <= 8'd1;
+                    ts_read_enable <= 1'b1;
+                    state <= S_SCAN_WAIT2;
+                end
+                
+                // ---------------------------------------------------------
+                // SCAN_WAIT2: Pipeline fill cycle 2
+                // Pre-issue address 2; read_value for addr 0 is now valid
+                // ---------------------------------------------------------
+                S_SCAN_WAIT2: begin
+                    ts_read_addr <= 8'd2;
                     ts_read_enable <= 1'b1;
                     state <= S_SCAN;
                 end
@@ -196,10 +209,19 @@ module feature_extractor #(
                 // SCAN: Read and accumulate moments for all 256 cells
                 // ---------------------------------------------------------
                 S_SCAN: begin
-                    // Accumulate moments from previous read
-                    m00_acc <= m00_acc + ts_read_value;
-                    m10_acc <= m10_acc + (scan_x * ts_read_value);
-                    m01_acc <= m01_acc + (scan_y * ts_read_value);
+                    // Accumulate moments from current read
+                    // read_value is now aligned: it corresponds to scan_addr
+                    // thanks to the 2-cycle pipeline fill in SCAN_WAIT/SCAN_WAIT2
+                    //
+                    // Only accumulate for valid grid cells [0-9] in each axis.
+                    // Sensor coordinates 0-319 map to grid 0-9 via bits [8:5].
+                    // Grid cells 10-15 are never written by real events and may
+                    // contain stale BRAM init values that bias the centroid.
+                    if (scan_x < 4'd10 && scan_y < 4'd10) begin
+                        m00_acc <= m00_acc + ts_read_value;
+                        m10_acc <= m10_acc + (scan_x * ts_read_value);
+                        m01_acc <= m01_acc + (scan_y * ts_read_value);
+                    end
                     
                     // Advance to next cell
                     if (scan_addr == 8'd255) begin
@@ -208,7 +230,9 @@ module feature_extractor #(
                         state <= S_COMPUTE;
                     end else begin
                         scan_addr <= scan_addr + 1'b1;
-                        ts_read_addr <= scan_addr[7:0] + 1'b1;
+                        // Issue address 3 ahead to compensate for 2-cycle
+                        // read pipeline (BRAM + decay register)
+                        ts_read_addr <= scan_addr[7:0] + 8'd3;
                         ts_read_enable <= 1'b1;
                     end
                 end

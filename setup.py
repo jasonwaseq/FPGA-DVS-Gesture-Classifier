@@ -7,8 +7,10 @@ Usage:
     python setup.py                       # Full setup (venv + dependencies + FPGA tools)
     python setup.py --skip-fpga           # Skip OSS CAD Suite download
     python setup.py test                  # Run cocotb verification tests
-    python setup.py synth                 # Synthesize for iCE40
-    python setup.py flash                 # Flash bitstream to FPGA (iceprog only)
+    python setup.py synth                 # Synthesize legacy design for iCE40
+    python setup.py synth-uart            # Synthesize UART validation design
+    python setup.py flash                 # Flash legacy bitstream
+    python setup.py flash-uart            # Flash UART validation bitstream
     python setup.py clean                 # Clean build artifacts
 """
 
@@ -67,6 +69,11 @@ RTL_FILES_GESTURE = [
     "feature_extractor.sv",
     "uart_debug.sv",
     "gesture_top.sv",
+]
+
+# RTL files for UART validation mode (gesture_uart_top wraps gesture_top)
+RTL_FILES_UART = RTL_FILES_GESTURE + [
+    "gesture_uart_top.sv",
 ]
 
 # OSS CAD Suite download URLs (2024-11-21 release)
@@ -414,40 +421,50 @@ def run_tests(test_module="test_spatiotemporal_classifier"):
 # Synthesis Functions
 # =============================================================================
 
-def run_synthesis():
-    """Synthesize design for iCE40 UP5K."""
-    print_header("Synthesizing for iCE40 UP5K")
-    
+def _synthesize(top_module, rtl_files, pcf_name, label=""):
+    """Generic synthesis for iCE40 UP5K.
+
+    Args:
+        top_module: Top-level module name (e.g. 'uart_gesture_top')
+        rtl_files: List of RTL filenames relative to RTL_DIR
+        pcf_name: PCF filename inside SYNTH_DIR
+        label: Human-readable label for log messages
+    """
+    display = label or top_module
+    print_header(f"Synthesizing {display} for iCE40 UP5K")
+
     oss_root = get_oss_cad_bin()
     if oss_root is None:
         print_error("OSS CAD Suite not found. Run 'python setup.py' first.")
         return 1
-    
+
     env = get_oss_cad_env()
     if env is None:
         print_error("Failed to set up OSS CAD Suite environment")
         return 1
-    
-    # Check for sv2v (needed to convert SystemVerilog)
-    sv2v = shutil.which("sv2v", path=str(oss_root / "bin"))
-    if sv2v is None:
-        print_warning("sv2v not found, trying direct Yosys synthesis...")
-    
-    sources = [str(RTL_DIR / f) for f in RTL_FILES]
-    output_json = SYNTH_DIR / "uart_gesture_top.json"
-    output_asc = SYNTH_DIR / "uart_gesture_top.asc"
-    output_bit = SYNTH_DIR / "uart_gesture_top.bit"
-    pcf_file = SYNTH_DIR / "icebreaker.pcf"
-    
+
+    sources = [str(RTL_DIR / f) for f in rtl_files]
+    output_json = SYNTH_DIR / f"{top_module}.json"
+    output_asc = SYNTH_DIR / f"{top_module}.asc"
+    output_bit = SYNTH_DIR / f"{top_module}.bit"
+    pcf_file = SYNTH_DIR / pcf_name
+
+    if not pcf_file.exists():
+        print_error(f"PCF file not found: {pcf_file}")
+        return 1
+
     # Synthesis with Yosys
-    print("\nRunning Yosys synthesis...")
-    yosys_cmd = f"read_verilog -sv {' '.join(sources)}; synth_ice40 -top uart_gesture_top -json {output_json}"
+    print(f"\nRunning Yosys synthesis (top={top_module})...")
+    yosys_cmd = (
+        f"read_verilog -sv {' '.join(sources)}; "
+        f"synth_ice40 -top {top_module} -json {output_json}"
+    )
     result = subprocess.run(["yosys", "-p", yosys_cmd], env=env, cwd=SYNTH_DIR)
     if result.returncode != 0:
         print_error("Synthesis failed")
         return 1
     print_success("Synthesis complete")
-    
+
     # Place and Route with nextpnr
     print("\nRunning nextpnr place and route...")
     result = subprocess.run([
@@ -462,7 +479,7 @@ def run_synthesis():
         print_error("Place and route failed")
         return 1
     print_success("Place and route complete")
-    
+
     # Generate bitstream
     print("\nGenerating bitstream...")
     result = subprocess.run(["icepack", str(output_asc), str(output_bit)], env=env)
@@ -470,9 +487,34 @@ def run_synthesis():
         print_error("Bitstream generation failed")
         return 1
     print_success(f"Bitstream created: {output_bit}")
-    
+
     print_header("Synthesis Complete")
     return 0
+
+
+def run_synthesis():
+    """Synthesize legacy design for iCE40 UP5K."""
+    return _synthesize(
+        top_module="uart_gesture_top",
+        rtl_files=RTL_FILES,
+        pcf_name="icebreaker.pcf",
+        label="Legacy uart_gesture_top",
+    )
+
+
+def run_synthesis_uart():
+    """Synthesize UART validation design for iCE40 UP5K.
+
+    Uses gesture_uart_top which wraps gesture_top with UART_RX_ENABLE=1
+    and ties off the parallel EVT2 bus.  Events are received over UART
+    using the 5-byte packet protocol.
+    """
+    return _synthesize(
+        top_module="gesture_uart_top",
+        rtl_files=RTL_FILES_UART,
+        pcf_name="icebreaker_uart.pcf",
+        label="UART validation (gesture_uart_top)",
+    )
 
 def list_ftdi_devices():
     """List FTDI devices suitable for FPGA programming."""
@@ -515,7 +557,7 @@ def find_ftdi_device(preferred_port=None, preferred_serial=None, preferred_vid=N
 
     return devices[0] if devices else None
 
-def flash_fpga(port=None, serial=None, vid=None, pid=None):
+def flash_fpga(port=None, serial=None, vid=None, pid=None, bitfile_name="uart_gesture_top.bit"):
     """Flash bitstream to FPGA."""
     print_header("Flashing FPGA")
     
@@ -524,10 +566,10 @@ def flash_fpga(port=None, serial=None, vid=None, pid=None):
         print_error("OSS CAD Suite not found")
         return 1
     
-    bitfile = SYNTH_DIR / "uart_gesture_top.bit"
+    bitfile = SYNTH_DIR / bitfile_name
     if not bitfile.exists():
         print_error(f"Bitstream not found: {bitfile}")
-        print("  Run 'python setup.py synth' first")
+        print("  Run 'python setup.py synth' or 'python setup.py synth-uart' first")
         return 1
     
     env = get_oss_cad_env()
@@ -703,9 +745,11 @@ def main():
             print("  Activate:  .venv\\Scripts\\activate")
         else:
             print("  Activate:  source .venv/bin/activate")
-        print("  Run tests: python setup.py test")
-        print("  Synthesize: python setup.py synth")
-        print("  Flash FPGA: python setup.py flash")
+        print("  Run tests:       python setup.py test")
+        print("  Synth (legacy):  python setup.py synth")
+        print("  Synth (UART):    python setup.py synth-uart")
+        print("  Flash (legacy):  python setup.py flash")
+        print("  Flash (UART):    python setup.py flash-uart")
         return 0
     
     command = args[0].lower()
@@ -715,12 +759,22 @@ def main():
         return run_tests(module)
     elif command in ["synth", "synthesis", "build"]:
         return run_synthesis()
+    elif command in ["synth-uart"]:
+        return run_synthesis_uart()
     elif command in ["flash", "program", "prog"]:
         return flash_fpga(
             port=options["port"],
             serial=options["serial"],
             vid=options["vid"],
             pid=options["pid"],
+        )
+    elif command in ["flash-uart"]:
+        return flash_fpga(
+            port=options["port"],
+            serial=options["serial"],
+            vid=options["vid"],
+            pid=options["pid"],
+            bitfile_name="gesture_uart_top.bit",
         )
     elif command == "clean":
         return clean()
