@@ -15,9 +15,68 @@ python3 -m venv .venv
 
 # Verify, synthesize, flash
 .venv/bin/python setup.py test
-.venv/bin/python setup.py synth
-.venv/bin/python setup.py flash
+.venv/bin/python setup.py synth-uart
+.venv/bin/python setup.py flash-uart
 ```
+
+## Flashing the FPGA (Current Architecture)
+
+The current architecture (`gesture_uart_top`) receives DVS events via UART and outputs ASCII gesture classifications. This is the recommended configuration for hardware validation.
+
+### Prerequisites
+
+- iCEBreaker FPGA board connected via USB
+- OSS CAD Suite installed (detected automatically by `setup.py`)
+- Python virtual environment activated (`.venv/bin/python`)
+
+### Build and Flash Steps
+
+**Option 1: Using setup.py (recommended)**
+
+```bash
+# Synthesize the UART-enabled bitstream
+python setup.py synth-uart
+
+# Flash to FPGA
+python setup.py flash-uart
+```
+
+**Option 2: Using Makefile directly**
+
+```bash
+cd synth
+make -f Makefile.uart clean    # Clean previous builds (optional)
+make -f Makefile.uart          # Build bitstream
+make -f Makefile.uart prog     # Program FPGA
+```
+
+### Configuration Parameters
+
+The current architecture uses these default parameters (configurable in `rtl/gesture_uart_top.sv`):
+
+- `MIN_MASS_THRESH = 2000`: Minimum accumulated mass threshold for gesture detection (tuned for webcam emulation)
+- `FRAME_PERIOD_MS = 50`: Classification frame period in milliseconds
+- `DECAY_SHIFT = 6`: Time-surface decay rate
+- `BAUD_RATE = 115200`: UART communication speed
+
+### Verifying the Flash
+
+After flashing, you can verify the FPGA is running:
+
+1. **Check LEDs**: `led_heartbeat` should blink at ~1.5 Hz
+2. **Test with emulator**: Use the DVS camera emulator to send events and observe gesture detections
+3. **Use validator tool**: Run `python tools/fpga_gesture_validator.py --port /dev/ttyUSB0 --test all`
+
+### Using with DVS Camera Emulator
+
+For webcam-based testing (Windows PowerShell):
+
+```powershell
+cd C:\Users\jason\Documents\FPGA-DVS-Gesture-Classifier\tools
+python dvs_camera_emulator.py --preview --max-events 5000 --port COM3 --no-noise --contrast 0.25
+```
+
+The FPGA will output ASCII gesture classifications (`UP\r\n`, `DOWN\r\n`, etc.) which are displayed in the emulator preview window.
 
 ## Project layout
 
@@ -77,6 +136,29 @@ The current RTL is a streaming, single-pass pipeline that converts EVT 2.0 DVS e
 
 The previous pipeline is preserved in [rtl/old_architecture](rtl/old_architecture). It uses the earlier module split and naming scheme (for example `SpatialCompressor`, `TemporalAccumulator`, `MotionComputer`) and is kept for reference only. It is not maintained and may not match current tests or tools.
 
+### Flashing the Legacy Architecture
+
+The legacy architecture (`uart_gesture_top`) uses different thresholds (`MIN_EVENT_THRESH=20`, `MOTION_THRESH=8`) and supports echo/status/config commands. To flash the legacy bitstream:
+
+```bash
+# Synthesize legacy design
+python setup.py synth
+
+# Flash legacy bitstream
+python setup.py flash
+```
+
+Or using Makefile:
+
+```bash
+cd synth
+make -f Makefile clean
+make -f Makefile
+make -f Makefile prog
+```
+
+**Note**: The legacy architecture uses binary gesture responses (not ASCII) and includes echo test support. The `fpga_gesture_validator.py` tool is designed for the legacy architecture.
+
 ## UART protocol
 
 **Configuration**: 115200 baud, 8N1
@@ -134,10 +216,10 @@ X, Y coordinates range from 0-319.
 |---------|-------------|
 | `python setup.py` | Setup venv, install packages, detect OSS CAD Suite |
 | `python setup.py test` | Run verification tests (iverilog + cocotb) |
+| `python setup.py synth-uart` | Synthesize current architecture (UART input, ASCII output) |
+| `python setup.py flash-uart` | Flash current architecture bitstream |
 | `python setup.py synth` | Synthesize legacy design (parallel EVT2 bus) |
-| `python setup.py synth-uart` | Synthesize UART validation design |
 | `python setup.py flash` | Flash legacy bitstream |
-| `python setup.py flash-uart` | Flash UART validation bitstream |
 | `python setup.py clean` | Remove build artifacts |
 
 ## Hardware validation pipeline (GenX320 + STM32 + iCEBreaker)
@@ -150,16 +232,7 @@ End-to-end hardware validation of gesture classification using a live DVS sensor
 
 The `gesture_uart_top` wrapper enables UART event input (`UART_RX_ENABLE=1`), ties off the unused parallel bus, and provides an internal power-on reset.
 
-```bash
-python setup.py synth-uart
-python setup.py flash-uart
-```
-
-Or use the Makefile directly:
-
-```bash
-cd synth && make -f Makefile.uart prog
-```
+See the [Flashing the FPGA](#flashing-the-fpga-current-architecture) section above for detailed instructions.
 
 ### Step 2: Capture a raw EVT stream from the GenX320
 

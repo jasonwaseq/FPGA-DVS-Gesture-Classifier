@@ -21,9 +21,9 @@
 module gesture_uart_top #(
     parameter CLK_FREQ_HZ     = 12_000_000,
     parameter BAUD_RATE       = 115200,
-    parameter FRAME_PERIOD_MS = 10,
+    parameter FRAME_PERIOD_MS = 50,   // Increased for webcam emulation (was 10ms)
     parameter DECAY_SHIFT     = 6,
-    parameter MIN_MASS_THRESH = 100
+    parameter MIN_MASS_THRESH = 2000  // Increased for webcam emulation (was 100)
 )(
     input  logic clk,
 

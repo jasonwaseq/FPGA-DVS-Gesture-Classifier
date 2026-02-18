@@ -566,7 +566,8 @@ def create_combined_preview(
     original_frame: np.ndarray,
     events: List[DVSEvent],
     resolution: int = DVS_RESOLUTION,
-    stats: dict = None
+    stats: dict = None,
+    recent_gestures: List[str] = None
 ) -> np.ndarray:
     """Create a side-by-side preview with original and event visualization"""
     # Resize original to match DVS resolution
@@ -583,14 +584,28 @@ def create_combined_preview(
     combined = np.hstack([orig_resized, event_vis])
     
     # Add stats overlay
+    y_offset = 20
     if stats:
         text = f"Events: {stats['total_events']} | ON: {stats['on_events']} | OFF: {stats['off_events']}"
-        cv2.putText(combined, text, (10, 20), cv2.FONT_HERSHEY_SIMPLEX, 
+        cv2.putText(combined, text, (10, y_offset), cv2.FONT_HERSHEY_SIMPLEX, 
                     0.5, (0, 255, 0), 1, cv2.LINE_AA)
+        y_offset += 20
         
         fps_text = f"Frames: {stats['frame_count']} | Events/frame: {stats['events_per_frame']:.1f}"
-        cv2.putText(combined, fps_text, (10, 40), cv2.FONT_HERSHEY_SIMPLEX,
+        cv2.putText(combined, fps_text, (10, y_offset), cv2.FONT_HERSHEY_SIMPLEX,
                     0.5, (0, 255, 0), 1, cv2.LINE_AA)
+        y_offset += 20
+    
+    # Add gesture detections overlay
+    if recent_gestures:
+        y_offset += 10
+        cv2.putText(combined, "Detected Gestures:", (10, y_offset), 
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 0), 1, cv2.LINE_AA)
+        y_offset += 20
+        for i, gesture in enumerate(recent_gestures[-3:]):  # Show last 3 gestures
+            cv2.putText(combined, f"  {gesture}", (10, y_offset), 
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 255), 2, cv2.LINE_AA)
+            y_offset += 20
     
     return combined
 
@@ -600,7 +615,7 @@ def create_combined_preview(
 # =============================================================================
 
 class UARTOutputHandler:
-    """Handles sending DVS events over UART to the FPGA"""
+    """Handles sending DVS events over UART to the FPGA and receiving gesture classifications"""
     
     def __init__(self, port: str, baud_rate: int = 115200):
         self.port = port
@@ -609,8 +624,11 @@ class UARTOutputHandler:
         self.event_queue: queue.Queue = queue.Queue(maxsize=10000)
         self.running = False
         self.tx_thread: Optional[threading.Thread] = None
+        self.rx_thread: Optional[threading.Thread] = None
         self.events_sent = 0
-        self.gestures_received = []
+        self.gestures_received = []  # List of (gesture_name, timestamp) tuples
+        self.rx_buffer = bytearray()  # Buffer for accumulating ASCII responses
+        self.lock = threading.Lock()  # For thread-safe access to gestures_received
     
     def open(self) -> bool:
         """Open serial connection"""
@@ -638,15 +656,26 @@ class UARTOutputHandler:
         self.running = False
         if self.tx_thread:
             self.tx_thread.join(timeout=1.0)
+        if self.rx_thread:
+            self.rx_thread.join(timeout=1.0)
         if self.serial:
             self.serial.close()
             self.serial = None
     
+    def get_recent_gestures(self, max_count: int = 5) -> List[str]:
+        """Get recent gesture detections (thread-safe)"""
+        with self.lock:
+            # Return the last N gestures (most recent first)
+            recent = [name for name, _ in self.gestures_received[-max_count:]]
+            return recent
+    
     def start_tx_thread(self):
-        """Start background thread for sending events"""
+        """Start background threads for sending events and receiving gestures"""
         self.running = True
         self.tx_thread = threading.Thread(target=self._tx_loop, daemon=True)
         self.tx_thread.start()
+        self.rx_thread = threading.Thread(target=self._rx_loop, daemon=True)
+        self.rx_thread.start()
     
     def _tx_loop(self):
         """Background thread that sends events from queue"""
@@ -656,21 +685,42 @@ class UARTOutputHandler:
                 if self.serial and self.serial.is_open:
                     self.serial.write(event.to_bytes())
                     self.events_sent += 1
-                    
-                    # Check for responses (gestures)
-                    if self.serial.in_waiting > 0:
-                        response = self.serial.read(self.serial.in_waiting)
-                        for byte in response:
-                            if (byte & 0xF0) == 0xA0:  # Gesture response
-                                gesture = byte & 0x03
-                                gesture_names = ['UP', 'DOWN', 'LEFT', 'RIGHT']
-                                self.gestures_received.append(gesture_names[gesture])
-                                print(f"\n*** GESTURE DETECTED: {gesture_names[gesture]} ***")
-                
             except queue.Empty:
                 continue
             except Exception as e:
                 print(f"TX Error: {e}")
+    
+    def _rx_loop(self):
+        """Background thread that receives gesture classifications (ASCII format)"""
+        # New architecture (gesture_uart_top) outputs ASCII: "UP\r\n", "DOWN\r\n", etc.
+        gesture_names = ['UP', 'DOWN', 'LEFT', 'RIGHT']
+        
+        while self.running:
+            try:
+                if self.serial and self.serial.is_open and self.serial.in_waiting > 0:
+                    data = self.serial.read(self.serial.in_waiting)
+                    self.rx_buffer.extend(data)
+                    
+                    # Look for complete lines (ending with \r\n)
+                    while b'\r\n' in self.rx_buffer:
+                        line_end = self.rx_buffer.find(b'\r\n')
+                        line = self.rx_buffer[:line_end].strip()
+                        self.rx_buffer = self.rx_buffer[line_end + 2:]
+                        
+                        # Try to parse as gesture name
+                        try:
+                            gesture_str = line.decode('ascii', errors='ignore').strip()
+                            if gesture_str in gesture_names:
+                                with self.lock:
+                                    self.gestures_received.append((gesture_str, time.time()))
+                                print(f"\n*** GESTURE DETECTED: {gesture_str} ***")
+                        except:
+                            pass
+                else:
+                    time.sleep(0.01)  # Small delay when no data
+            except Exception as e:
+                print(f"RX Error: {e}")
+                time.sleep(0.1)
     
     def send_event(self, event: DVSEvent):
         """Queue an event for sending"""
@@ -685,23 +735,26 @@ class UARTOutputHandler:
             self.send_event(event)
     
     def test_connection(self) -> bool:
-        """Test FPGA connection with echo command"""
+        """Test FPGA connection with echo command (optional - new architecture doesn't support it)"""
         if not self.serial or not self.serial.is_open:
             return False
         
         try:
             self.serial.reset_input_buffer()
-            self.serial.write(bytes([0xFF]))  # Echo command
+            self.serial.write(bytes([0xFF]))  # Echo command (legacy architecture only)
             time.sleep(0.1)
             
             if self.serial.in_waiting > 0:
                 response = self.serial.read(1)
                 if response[0] == 0x55:
-                    print("FPGA connection verified (echo test passed)")
+                    print("FPGA connection verified (echo test passed - legacy architecture)")
                     return True
             
-            print("WARNING: FPGA did not respond to echo test")
-            return False
+            # New architecture (gesture_uart_top) doesn't implement echo test
+            # This is OK - we'll detect gestures via ASCII responses instead
+            print("INFO: Echo test not supported (using new architecture - gesture_uart_top)")
+            print("      Gesture detections will be shown when FPGA classifies gestures.")
+            return True  # Return True anyway - connection is fine, just different protocol
             
         except Exception as e:
             print(f"Connection test failed: {e}")
@@ -979,7 +1032,12 @@ Examples:
                     else:
                         stats['source'] = 'CAMERA'
                     
-                    preview = create_combined_preview(frame, events, args.resolution, stats)
+                    # Get recent gesture detections from FPGA
+                    recent_gestures = None
+                    if uart_handler:
+                        recent_gestures = uart_handler.get_recent_gestures(max_count=3)
+                    
+                    preview = create_combined_preview(frame, events, args.resolution, stats, recent_gestures)
                     
                     # Scale up for better visibility
                     preview_scaled = cv2.resize(preview, None, fx=2, fy=2, 
@@ -1058,8 +1116,14 @@ Examples:
         
         if uart_handler:
             print(f"  Events Sent:  {uart_handler.events_sent}")
-            if uart_handler.gestures_received:
-                print(f"  Gestures:     {uart_handler.gestures_received}")
+            with uart_handler.lock:
+                if uart_handler.gestures_received:
+                    gesture_counts = {}
+                    for name, _ in uart_handler.gestures_received:
+                        gesture_counts[name] = gesture_counts.get(name, 0) + 1
+                    print(f"  Gestures Detected:")
+                    for name, count in gesture_counts.items():
+                        print(f"    {name}: {count}")
             uart_handler.close()
         
         if file_handler:
