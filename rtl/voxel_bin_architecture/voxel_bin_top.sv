@@ -21,7 +21,7 @@
 
 `timescale 1ns/1ps
 
-module uart_gesture_top #(
+module voxel_bin_top #(
     parameter CLK_FREQ       = 12_000_000,
     parameter BAUD_RATE      = 115200,
     parameter WINDOW_MS      = 400,            // 400ms observation window

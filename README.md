@@ -19,9 +19,9 @@ python3 -m venv .venv
 .venv/bin/python setup.py flash-uart
 ```
 
-## Flashing the FPGA (Current Architecture)
+## Flashing the FPGA (Current Architecture - Gradient-Map)
 
-The current architecture (`gesture_uart_top`) receives DVS events via UART and outputs ASCII gesture classifications. This is the recommended configuration for hardware validation.
+The current Gradient-Map architecture (`gradient_map_top`) receives DVS events via UART and outputs ASCII gesture classifications. This is the recommended configuration for hardware validation.
 
 ### Prerequisites
 
@@ -52,7 +52,7 @@ make -f Makefile.uart prog     # Program FPGA
 
 ### Configuration Parameters
 
-The current architecture uses these default parameters (configurable in `rtl/gesture_uart_top.sv`):
+The current architecture uses these default parameters (configurable in `rtl/gradient_map_architecture/gradient_map_top.sv`):
 
 - `MIN_MASS_THRESH = 2000`: Minimum accumulated mass threshold for gesture detection (tuned for webcam emulation)
 - `FRAME_PERIOD_MS = 50`: Classification frame period in milliseconds
@@ -80,8 +80,9 @@ The FPGA will output ASCII gesture classifications (`UP\r\n`, `DOWN\r\n`, etc.) 
 
 ## Project layout
 
-- Current RTL: [rtl](rtl)
-- Legacy RTL: [rtl/old_architecture](rtl/old_architecture)
+- Common RTL and wrappers: [rtl](rtl)
+- Voxel-Bin architecture RTL: [rtl/voxel_bin_architecture](rtl/voxel_bin_architecture)
+- Gradient-Map architecture RTL: [rtl/gradient_map_architecture](rtl/gradient_map_architecture)
 - Tests: [tb](tb)
 - Scripts and tools: [tools](tools)
 - Generated build outputs: [synth](synth)
@@ -132,19 +133,65 @@ The current RTL is a streaming, single-pass pipeline that converts EVT 2.0 DVS e
 - `uart_debug` outputs gesture class and confidence over UART.
 - LEDs reflect heartbeat, activity, and detected direction in [rtl/gesture_top.sv](rtl/gesture_top.sv).
 
-## Old architecture (legacy)
+## Gradient-Map architecture (current, ASCII UART)
 
-The previous pipeline is preserved in [rtl/old_architecture](rtl/old_architecture). It uses the earlier module split and naming scheme (for example `SpatialCompressor`, `TemporalAccumulator`, `MotionComputer`) and is kept for reference only. It is not maintained and may not match current tests or tools.
+The Gradient-Map architecture is the streaming, single-pass pipeline that converts EVT 2.0 DVS events into a gesture label using a time-surface plus spatio-temporal classifier. Events arrive as 32-bit EVT2 words (or via optional 5-byte UART mock input) and are processed in order on a single clock domain.
 
-### Flashing the Legacy Architecture
+**High-level pipeline**: EVT2 words -> FIFO -> EVT2 decoder -> Time-surface encoder (exponential decay) -> Spatio-temporal classifier (gradient-map / systolic array) -> UART debug output
 
-The legacy architecture (`uart_gesture_top`) uses different thresholds (`MIN_EVENT_THRESH=20`, `MOTION_THRESH=8`) and supports echo/status/config commands. To flash the legacy bitstream:
+### Module map (Gradient-Map architecture)
+
+- Top-level integration and control: `rtl/gradient_map_architecture/gesture_top.sv`
+- UART validation wrapper: `rtl/gradient_map_architecture/gradient_map_top.sv`
+- EVT2 decoder: `rtl/gradient_map_architecture/evt2_decoder.sv`
+- Input FIFO: `rtl/gradient_map_architecture/input_fifo.sv`
+- Time-surface memory core: `rtl/gradient_map_architecture/time_surface_memory.sv`
+- Time-surface encoder: `rtl/gradient_map_architecture/time_surface_encoder.sv`
+- Gradient-map classifier core (flatten + systolic array + weights): files under `rtl/gradient_map_architecture`
+- UART debug output: `rtl/uart_debug.sv`
+- UART receiver: `rtl/uart_rx.sv`
+- UART transmitter: `rtl/uart_tx.sv`
+
+### How to test, synthesize, and flash (Gradient-Map)
+
+- **Test (gesture_top focused)**:
+
+  ```bash
+  python setup.py test test_gesture_top
+  ```
+
+- **Test (full spatio-temporal pipeline)**:
+
+  ```bash
+  cd tb
+  make -f Makefile.spatio run
+  ```
+
+- **Synthesize (UART validation wrapper)**:
+
+  ```bash
+  python setup.py synth-uart   # builds gradient_map_top.bit
+  ```
+
+- **Flash (UART validation wrapper)**:
+
+  ```bash
+  python setup.py flash-uart   # flashes gradient_map_top.bit
+  ```
+
+## Voxel-Bin architecture (legacy)
+
+The voxel-bin architecture is preserved in [rtl/voxel_bin_architecture](rtl/voxel_bin_architecture). It uses the earlier module split and naming scheme (for example `SpatialCompressor`, `TemporalAccumulator`, `MotionComputer`) and is kept for reference only. It is not maintained and may not match current tests or tools.
+
+### Flashing the Voxel-Bin Architecture
+
+The voxel-bin architecture (`voxel_bin_top`) uses different thresholds (`MIN_EVENT_THRESH=20`, `MOTION_THRESH=8`) and supports echo/status/config commands. To flash the voxel-bin bitstream:
 
 ```bash
-# Synthesize legacy design
+# Synthesize legacy design (voxel_bin_top)
 python setup.py synth
 
-# Flash legacy bitstream
+# Flash legacy bitstream (voxel_bin_top)
 python setup.py flash
 ```
 
@@ -175,7 +222,7 @@ make -f Makefile prog
 
 X, Y coordinates range from 0-319.
 
-### Receive from FPGA (current architecture - `gesture_uart_top`)
+### Receive from FPGA (current architecture - `gradient_map_top`)
 
 **Gesture response** (ASCII): `uart_debug` sends the gesture name followed by `\r\n`:
 
@@ -186,7 +233,7 @@ X, Y coordinates range from 0-319.
 | LEFT | `LEFT\r\n` |
 | RIGHT | `RIGHT\r\n` |
 
-### Receive from FPGA (legacy architecture - `uart_gesture_top`)
+### Receive from FPGA (legacy architecture - `voxel_bin_top`)
 
 **Gesture response** (2 bytes):
 
@@ -215,11 +262,12 @@ X, Y coordinates range from 0-319.
 | Command | Description |
 |---------|-------------|
 | `python setup.py` | Setup venv, install packages, detect OSS CAD Suite |
-| `python setup.py test` | Run verification tests (iverilog + cocotb) |
-| `python setup.py synth-uart` | Synthesize current architecture (UART input, ASCII output) |
-| `python setup.py flash-uart` | Flash current architecture bitstream |
-| `python setup.py synth` | Synthesize legacy design (parallel EVT2 bus) |
-| `python setup.py flash` | Flash legacy bitstream |
+| `python setup.py test test_dvs_gesture` | Run voxel-bin architecture tests (legacy UART binary path) |
+| `python setup.py test test_gesture_top` | Run Gradient-Map architecture tests (`gesture_top`) |
+| `python setup.py synth-uart` | Synthesize Gradient-Map UART validation design (`gradient_map_top`) |
+| `python setup.py flash-uart` | Flash Gradient-Map UART validation bitstream (`gradient_map_top.bit`) |
+| `python setup.py synth` | Synthesize voxel-bin legacy design (`voxel_bin_top`) |
+| `python setup.py flash` | Flash voxel-bin legacy bitstream (`voxel_bin_top.bit`) |
 | `python setup.py clean` | Remove build artifacts |
 
 ## Hardware validation pipeline (GenX320 + STM32 + iCEBreaker)
@@ -230,7 +278,7 @@ End-to-end hardware validation of gesture classification using a live DVS sensor
 
 ### Step 1: Build and flash the UART validation bitstream
 
-The `gesture_uart_top` wrapper enables UART event input (`UART_RX_ENABLE=1`), ties off the unused parallel bus, and provides an internal power-on reset.
+The `gradient_map_top` wrapper enables UART event input (`UART_RX_ENABLE=1`), ties off the unused parallel bus, and provides an internal power-on reset.
 
 See the [Flashing the FPGA](#flashing-the-fpga-current-architecture) section above for detailed instructions.
 

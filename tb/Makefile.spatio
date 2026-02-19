@@ -1,22 +1,22 @@
 # Makefile for Spatio-Temporal DVS Gesture Classifier testbench
-# Target: gesture_top module (new spatio-temporal architecture)
+# Target: gesture_top module (Gradient-Map architecture)
 
 TOPLEVEL_LANG = verilog
 
-# RTL files — new architecture (includes all dependencies)
+# RTL files — Gradient-Map architecture (includes all dependencies)
 RTL_DIR = ../rtl
-VERILOG_SOURCES = $(RTL_DIR)/input_fifo.sv \
-                  $(RTL_DIR)/evt2_decoder.sv \
-                  $(RTL_DIR)/time_surface_memory.sv \
-                  $(RTL_DIR)/time_surface_encoder.sv \
-                  $(RTL_DIR)/flatten_buffer.sv \
-                  $(RTL_DIR)/weight_rom.sv \
-                  $(RTL_DIR)/systolic_array.sv \
-                  $(RTL_DIR)/spatio_temporal_classifier.sv \
-                  $(RTL_DIR)/uart_tx.sv \
+VERILOG_SOURCES = $(RTL_DIR)/uart_tx.sv \
                   $(RTL_DIR)/uart_rx.sv \
                   $(RTL_DIR)/uart_debug.sv \
-                  $(RTL_DIR)/gesture_top.sv
+                  $(RTL_DIR)/gradient_map_architecture/input_fifo.sv \
+                  $(RTL_DIR)/gradient_map_architecture/evt2_decoder.sv \
+                  $(RTL_DIR)/gradient_map_architecture/time_surface_memory.sv \
+                  $(RTL_DIR)/gradient_map_architecture/time_surface_encoder.sv \
+                  $(RTL_DIR)/gradient_map_architecture/flatten_buffer.sv \
+                  $(RTL_DIR)/gradient_map_architecture/weight_rom.sv \
+                  $(RTL_DIR)/gradient_map_architecture/systolic_array.sv \
+                  $(RTL_DIR)/gradient_map_architecture/spatio_temporal_classifier.sv \
+                  $(RTL_DIR)/gradient_map_architecture/gesture_top.sv
 
 TOPLEVEL = gesture_top
 MODULE   = test_spatio_temporal_pipeline

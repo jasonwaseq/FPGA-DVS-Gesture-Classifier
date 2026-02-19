@@ -44,36 +44,39 @@ PYTHON_PACKAGES = [
     "pyserial",
 ]
 
-# RTL source files in dependency order
+# RTL source files in dependency order (voxel-bin architecture)
 RTL_FILES = [
     "uart_rx.sv",
     "uart_tx.sv",
-    "old_architecture/InputFIFO.sv",
-    "old_architecture/SpatialCompressor.sv",
-    "old_architecture/TemporalAccumulator.sv",
-    "old_architecture/MotionComputer.sv",
-    "old_architecture/GestureClassifier.sv",
-    "old_architecture/OutputRegister.sv",
-    "old_architecture/dvs_gesture_accel.sv",
-    "old_architecture/uart_gesture_top.sv",
+    "voxel_bin_architecture/InputFIFO.sv",
+    "voxel_bin_architecture/SpatialCompressor.sv",
+    "voxel_bin_architecture/TemporalAccumulator.sv",
+    "voxel_bin_architecture/MotionComputer.sv",
+    "voxel_bin_architecture/GestureClassifier.sv",
+    "voxel_bin_architecture/OutputRegister.sv",
+    "voxel_bin_architecture/dvs_gesture_accel.sv",
+    "voxel_bin_architecture/voxel_bin_top.sv",
 ]
 
-# RTL files for new Time-Surface gesture architecture
+# RTL files for Gradient-Map gesture architecture (gesture_top)
 RTL_FILES_GESTURE = [
     "uart_tx.sv",
     "uart_rx.sv",
-    "bram_256x16.sv",
-    "input_fifo.sv",
-    "evt2_decoder.sv",
-    "time_surface_memory.sv",
-    "feature_extractor.sv",
     "uart_debug.sv",
-    "gesture_top.sv",
+    "gradient_map_architecture/input_fifo.sv",
+    "gradient_map_architecture/evt2_decoder.sv",
+    "gradient_map_architecture/time_surface_memory.sv",
+    "gradient_map_architecture/flatten_buffer.sv",
+    "gradient_map_architecture/weight_rom.sv",
+    "gradient_map_architecture/systolic_array.sv",
+    "gradient_map_architecture/spatio_temporal_classifier.sv",
+    "gradient_map_architecture/time_surface_encoder.sv",
+    "gradient_map_architecture/gesture_top.sv",
 ]
 
-# RTL files for UART validation mode (gesture_uart_top wraps gesture_top)
+# RTL files for UART validation mode (gradient_map_top wraps gesture_top)
 RTL_FILES_UART = RTL_FILES_GESTURE + [
-    "gesture_uart_top.sv",
+    "gradient_map_architecture/gradient_map_top.sv",
 ]
 
 # OSS CAD Suite download URLs (2024-11-21 release)
@@ -311,7 +314,7 @@ def run_tests(test_module="test_spatiotemporal_classifier"):
         defines = []  # No special defines needed for gesture_top
     else:
         rtl_files = RTL_FILES
-        toplevel = "uart_gesture_top"
+        toplevel = "voxel_bin_top"
         defines = ["-DCLKS_PER_BIT=4", "-DMIN_EVENT_THRESH=4", "-DMOTION_THRESH=2"]
     
     # Prefer system Icarus to avoid OSS CAD Suite GLIBC conflicts
@@ -493,27 +496,27 @@ def _synthesize(top_module, rtl_files, pcf_name, label=""):
 
 
 def run_synthesis():
-    """Synthesize legacy design for iCE40 UP5K."""
+    """Synthesize voxel-bin legacy design for iCE40 UP5K."""
     return _synthesize(
-        top_module="uart_gesture_top",
+        top_module="voxel_bin_top",
         rtl_files=RTL_FILES,
         pcf_name="icebreaker.pcf",
-        label="Legacy uart_gesture_top",
+        label="Voxel-bin legacy (voxel_bin_top)",
     )
 
 
 def run_synthesis_uart():
     """Synthesize UART validation design for iCE40 UP5K.
 
-    Uses gesture_uart_top which wraps gesture_top with UART_RX_ENABLE=1
+    Uses gradient_map_top which wraps gesture_top with UART_RX_ENABLE=1
     and ties off the parallel EVT2 bus.  Events are received over UART
     using the 5-byte packet protocol.
     """
     return _synthesize(
-        top_module="gesture_uart_top",
+        top_module="gradient_map_top",
         rtl_files=RTL_FILES_UART,
         pcf_name="icebreaker_uart.pcf",
-        label="UART validation (gesture_uart_top)",
+        label="UART validation (gradient_map_top)",
     )
 
 def list_ftdi_devices():
@@ -557,7 +560,7 @@ def find_ftdi_device(preferred_port=None, preferred_serial=None, preferred_vid=N
 
     return devices[0] if devices else None
 
-def flash_fpga(port=None, serial=None, vid=None, pid=None, bitfile_name="uart_gesture_top.bit"):
+def flash_fpga(port=None, serial=None, vid=None, pid=None, bitfile_name="voxel_bin_top.bit"):
     """Flash bitstream to FPGA."""
     print_header("Flashing FPGA")
     
@@ -629,7 +632,7 @@ def flash_fpga(port=None, serial=None, vid=None, pid=None, bitfile_name="uart_ge
         print(f"\nWindows-specific solution:")
         print(f"  The FPGA is showing as COM port, but needs FTDI driver access.")
         print(f"  Try this command in Administrator PowerShell:")
-        print(f"     iceprog synth\\uart_gesture_top.bit")
+        print(f"     iceprog synth\\{bitfile.name}")
     
     return 1
 
@@ -774,7 +777,7 @@ def main():
             serial=options["serial"],
             vid=options["vid"],
             pid=options["pid"],
-            bitfile_name="gesture_uart_top.bit",
+            bitfile_name="gradient_map_top.bit",
         )
     elif command == "clean":
         return clean()

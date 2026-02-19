@@ -1,7 +1,7 @@
 `timescale 1ns/1ps
 
 // =============================================================================
-// Module: gesture_uart_top
+// Module: gradient_map_top
 // =============================================================================
 // UART-Only Synthesis Wrapper for Hardware Validation
 //
@@ -18,7 +18,7 @@
 // Target: Lattice iCE40UP5K on iCEBreaker board
 // =============================================================================
 
-module gesture_uart_top #(
+module gradient_map_top #(
     parameter CLK_FREQ_HZ     = 12_000_000,
     parameter BAUD_RATE       = 115200,
     parameter FRAME_PERIOD_MS = 50,   // Increased for webcam emulation (was 10ms)

@@ -2,7 +2,7 @@
 # Asynchronous Spatiotemporal Motion-Energy Classifier
 # 320x320 -> 16x16 spatial compression with dual-accumulator architecture
 
-PROJ = uart_gesture_top
+PROJ = voxel_bin_top
 PCF = icebreaker.pcf
 DEVICE = up5k
 PACKAGE = sg48
@@ -10,8 +10,8 @@ PACKAGE = sg48
 RTL_DIR = ../rtl
 RTL_FILES = $(RTL_DIR)/uart_rx.sv \
             $(RTL_DIR)/uart_tx.sv \
-            $(RTL_DIR)/dvs_gesture_accel.sv \
-            $(RTL_DIR)/uart_gesture_top.sv
+            $(RTL_DIR)/voxel_bin_architecture/dvs_gesture_accel.sv \
+            $(RTL_DIR)/voxel_bin_architecture/voxel_bin_top.sv
 
 .PHONY: all clean prog report timing
 
