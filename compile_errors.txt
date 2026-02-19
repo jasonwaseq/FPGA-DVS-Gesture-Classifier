@@ -1,0 +1,9 @@
+rtl/time_surface_encoder.sv:77: warning: Port 5 (event_x) of time_surface_memory expects 5 bits, got 4.
+rtl/time_surface_encoder.sv:77:        : Padding 1 high bits of the port.
+rtl/time_surface_encoder.sv:77: warning: Port 6 (event_y) of time_surface_memory expects 5 bits, got 4.
+rtl/time_surface_encoder.sv:77:        : Padding 1 high bits of the port.
+rtl/gesture_top.sv:258: warning: Port 5 (event_x) of time_surface_encoder expects 4 bits, got 5.
+rtl/gesture_top.sv:258:        : Pruning 1 high bits of the expression.
+rtl/gesture_top.sv:258: warning: Port 6 (event_y) of time_surface_encoder expects 4 bits, got 5.
+rtl/gesture_top.sv:258:        : Pruning 1 high bits of the expression.
+rtl/gesture_top.sv:145: warning: always_comb process has no sensitivities.

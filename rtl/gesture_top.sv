@@ -9,14 +9,14 @@
 // Sensor Input: Prophesee GenX320 (EVT 2.0 32-bit data bus)
 //
 // Architecture:
-//   1. input_fifo: Buffers EVT 2.0 data from sensor (256 x 32-bit BRAM)
-//   2. evt2_decoder: Decodes packets, reconstructs timestamps, downsamples
-//   3. time_surface_memory: 16x16 grid storing last event timestamps
-//   4. feature_extractor: Computes spatial moments, classifies gestures
-//   5. uart_debug: Sends classification results over UART
+//   1. input_fifo:                Buffers EVT 2.0 data (256 x 32-bit BRAM)
+//   2. evt2_decoder:              Decodes packets, reconstructs timestamps
+//   3. time_surface_encoder:      16x16 grid with exponential-decay timestamps
+//   4. spatio_temporal_classifier: Flatten → systolic MAC → argmax classifier
+//   5. uart_debug:                Sends classifications over UART
 //
 // Data Flow:
-//   Sensor -> FIFO -> Decoder -> Time Surface -> Feature Extractor -> UART
+//   Sensor -> FIFO -> Decoder -> Time Surface Encoder -> Spatio-Temporal Classifier -> UART
 //
 // Clock: Single global clock (12 MHz recommended for iCE40)
 // =============================================================================
@@ -208,14 +208,14 @@ module gesture_top #(
     // EVT 2.0 Decoder
     // -------------------------------------------------------------------------
     logic       decoder_ready;
-    logic [3:0] decoded_x, decoded_y;
+    logic [4:0] decoded_x, decoded_y;   // 5 bits for 32-cell grid
     logic       decoded_polarity;
     logic [15:0] decoded_timestamp;
     logic       decoded_valid;
     logic        fifo_rd_valid;
     
     evt2_decoder #(
-        .GRID_BITS(4)
+        .GRID_BITS(5)   // 32 cells per axis
     ) u_decoder (
         .clk        (clk),
         .rst        (rst),
@@ -241,19 +241,19 @@ module gesture_top #(
     end
     
     // -------------------------------------------------------------------------
-    // Time-Surface Memory
+    // Time-Surface Encoder (Exponential Decay)
     // -------------------------------------------------------------------------
-    logic [7:0]  ts_read_addr;
+    logic [9:0]  ts_read_addr;    // 10-bit for 1024 cells
     logic        ts_read_enable;
     logic [7:0]  ts_read_value;
     logic [15:0] ts_read_raw;
-    
-    time_surface_memory #(
-        .GRID_SIZE(16),
-        .ADDR_BITS(8),
-        .TS_BITS(16),
-        .VALUE_BITS(8),
-        .MAX_VALUE(255),
+
+    time_surface_encoder #(
+        .GRID_SIZE  (32),
+        .ADDR_BITS  (10),
+        .TS_BITS    (16),
+        .VALUE_BITS (8),
+        .MAX_VALUE  (255),
         .DECAY_SHIFT(DECAY_SHIFT)
     ) u_time_surface (
         .clk         (clk),
@@ -262,30 +262,34 @@ module gesture_top #(
         .event_valid (decoded_valid),
         .event_x     (decoded_x),
         .event_y     (decoded_y),
-        .event_ts    (global_timestamp),  // Use global timestamp for consistency
+        .event_ts    (global_timestamp),
         .read_enable (ts_read_enable),
         .read_addr   (ts_read_addr),
         .read_value  (ts_read_value),
         .read_ts_raw (ts_read_raw)
     );
-    
+
     // -------------------------------------------------------------------------
-    // Feature Extractor & Classifier
+    // Spatio-Temporal Classifier
+    // (Flatten -> Systolic Array MAC -> Argmax)
     // -------------------------------------------------------------------------
-    logic [1:0] gesture_class;
-    logic       gesture_valid;
-    logic [7:0] gesture_confidence;
+    logic [1:0]  gesture_class;
+    logic        gesture_valid;
+    logic [7:0]  gesture_confidence;
     logic [23:0] debug_m00, debug_m10, debug_m01;
-    logic [2:0] debug_state;
-    
-    feature_extractor #(
-        .CLK_FREQ_HZ(CLK_FREQ_HZ),
+    logic [2:0]  debug_state;
+
+    spatio_temporal_classifier #(
+        .CLK_FREQ_HZ    (CLK_FREQ_HZ),
         .FRAME_PERIOD_MS(FRAME_PERIOD_MS),
-        .GRID_SIZE(16),
-        .VALUE_BITS(8),
-        .MOMENT_BITS(24),
+        .GRID_SIZE      (32),
+        .VALUE_BITS     (8),
+        .MOMENT_BITS    (24),
+        .WEIGHT_BITS    (8),
+        .SCORE_BITS     (24),
+        .NUM_CLASSES    (4),
         .MIN_MASS_THRESH(MIN_MASS_THRESH)
-    ) u_feature_extractor (
+    ) u_spatio_classifier (
         .clk               (clk),
         .rst               (rst),
         .ts_read_addr      (ts_read_addr),

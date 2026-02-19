@@ -1,0 +1,11 @@
+../rtl/time_surface_encoder.sv:77: warning: Port 5 (event_x) of time_surface_memory expects 5 bits, got 4.
+../rtl/time_surface_encoder.sv:77:        : Padding 1 high bits of the port.
+../rtl/time_surface_encoder.sv:77: warning: Port 6 (event_y) of time_surface_memory expects 5 bits, got 4.
+../rtl/time_surface_encoder.sv:77:        : Padding 1 high bits of the port.
+../rtl/gesture_top.sv:258: warning: Port 5 (event_x) of time_surface_encoder expects 4 bits, got 5.
+../rtl/gesture_top.sv:258:        : Pruning 1 high bits of the expression.
+../rtl/gesture_top.sv:258: warning: Port 6 (event_y) of time_surface_encoder expects 4 bits, got 5.
+../rtl/gesture_top.sv:258:        : Pruning 1 high bits of the expression.
+/mnt/c/Users/jason/Documents/FPGA-DVS-Gesture-Classifier/.wsl-venv/lib/python3.12/site-packages/cocotb_tools/makefiles/simulators/Makefile.icarus:66: Using MODULE is deprecated, please use COCOTB_TEST_MODULES instead.
+make[1]: *** [/mnt/c/Users/jason/Documents/FPGA-DVS-Gesture-Classifier/.wsl-venv/lib/python3.12/site-packages/cocotb_tools/makefiles/simulators/Makefile.icarus:67: results.xml] Error 1
+make: *** [/mnt/c/Users/jason/Documents/FPGA-DVS-Gesture-Classifier/.wsl-venv/lib/python3.12/site-packages/cocotb_tools/makefiles/Makefile.inc:17: sim] Error 2

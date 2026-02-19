@@ -1,0 +1,3 @@
+/mnt/c/Users/jason/Documents/FPGA-DVS-Gesture-Classifier/.wsl-venv/lib/python3.12/site-packages/cocotb_tools/makefiles/simulators/Makefile.icarus:66: Using MODULE is deprecated, please use COCOTB_TEST_MODULES instead.
+make[1]: *** [/mnt/c/Users/jason/Documents/FPGA-DVS-Gesture-Classifier/.wsl-venv/lib/python3.12/site-packages/cocotb_tools/makefiles/simulators/Makefile.icarus:67: results.xml] Error 1
+make: *** [/mnt/c/Users/jason/Documents/FPGA-DVS-Gesture-Classifier/.wsl-venv/lib/python3.12/site-packages/cocotb_tools/makefiles/Makefile.inc:17: sim] Error 2

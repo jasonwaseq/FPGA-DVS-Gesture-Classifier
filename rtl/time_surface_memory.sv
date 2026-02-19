@@ -5,115 +5,95 @@
 // =============================================================================
 // Time-Surface Memory for DVS Event Processing
 //
-// Concept:
-//   Stores the timestamp of the most recent event at each pixel location.
-//   The "surface value" decays over time: S(p,t) = e^(-(t - t_last)/tau)
-//   Hardware approximation: Value = MAX - (T_now - T_last), clamped to [0, MAX]
+// Stores the timestamp of the most recent event at each grid cell.
+// Decay computed lazily on read: Value = MAX >> (Δt >> DECAY_SHIFT)
+// (True binary-exponential decay via shift approximation)
 //
-// Implementation:
-//   - 16x16 grid = 256 cells
-//   - Each cell stores a 16-bit timestamp
-//   - Decay computed on read: Value = MAX - min(T_now - T_stored, MAX)
-//   - Uses dual-port BRAM: Port A for writes, Port B for read scanning
+// Storage: Inlined logic array (no external BRAM module dependency).
+// Dual-port semantics:
+//   Port A: Synchronous write (event updates) — 1-cycle write
+//   Port B: Synchronous read (scan) — 1-cycle read latency
 //
-// Benefits:
-//   - No explicit decay counter/sweep needed
-//   - Decay computed lazily on read
-//   - Moving objects create "comet tails" of high values
-//   - Sporadic noise decays quickly (natural filtering)
+// Parameterized for any GRID_SIZE (default 32×32 = 1024 cells, ADDR_BITS=10).
 // =============================================================================
 
 module time_surface_memory #(
-    parameter GRID_SIZE   = 16,             // Grid dimension (16x16)
-    parameter ADDR_BITS   = 8,              // log2(GRID_SIZE^2) = 8
+    parameter GRID_SIZE   = 32,             // Grid dimension (32×32)
+    parameter ADDR_BITS   = 10,             // log2(GRID_SIZE^2) = 10 for 1024 cells
     parameter TS_BITS     = 16,             // Timestamp bits
     parameter VALUE_BITS  = 8,              // Decay value output bits
     parameter MAX_VALUE   = 255,            // Maximum surface value
-    parameter DECAY_SHIFT = 6               // Decay rate: larger = slower decay
+    parameter DECAY_SHIFT = 6               // Half-life = 2^DECAY_SHIFT ticks
 )(
     input  logic                    clk,
     input  logic                    rst,
-    
+
     // Global Timestamp (from system timer)
     input  logic [TS_BITS-1:0]      t_now,
-    
+
     // Event Write Interface (from decoder)
     input  logic                    event_valid,
-    input  logic [3:0]              event_x,        // Grid X [0-15]
-    input  logic [3:0]              event_y,        // Grid Y [0-15]
+    input  logic [$clog2(GRID_SIZE)-1:0] event_x,   // Grid X [0..GRID_SIZE-1]
+    input  logic [$clog2(GRID_SIZE)-1:0] event_y,   // Grid Y [0..GRID_SIZE-1]
     input  logic [TS_BITS-1:0]      event_ts,       // Event timestamp
-    
+
     // Read Interface (for feature extraction)
     input  logic                    read_enable,
-    input  logic [ADDR_BITS-1:0]    read_addr,      // Linear address [0-255]
+    input  logic [ADDR_BITS-1:0]    read_addr,      // Linear address [0..GRID_SIZE²-1]
     output logic [VALUE_BITS-1:0]   read_value,     // Decayed surface value
     output logic [TS_BITS-1:0]      read_ts_raw     // Raw timestamp (for debug)
 );
 
+    localparam NUM_CELLS = GRID_SIZE * GRID_SIZE;
+
     // -------------------------------------------------------------------------
-    // Address Computation for Write
-    // Linear address = y * GRID_SIZE + x = {y, x} for 16x16 grid
+    // Inlined Dual-Port BRAM (synthesises to block RAM on iCE40)
     // -------------------------------------------------------------------------
-    wire [ADDR_BITS-1:0] write_addr = {event_y, event_x};
-    
+    logic [TS_BITS-1:0] mem [0:NUM_CELLS-1];
+
+    // Linear write address = y * GRID_SIZE + x
+    wire [ADDR_BITS-1:0] write_addr = ADDR_BITS'(event_y) * ADDR_BITS'(GRID_SIZE) +
+                                       ADDR_BITS'(event_x);
+
+    // Port A: Synchronous write
+    always_ff @(posedge clk) begin
+        if (event_valid)
+            mem[write_addr] <= event_ts;
+    end
+
+    // Port B: Synchronous read (1-cycle latency)
+    logic [TS_BITS-1:0] bram_dout;
+    always_ff @(posedge clk) begin
+        bram_dout <= mem[read_addr];
+    end
+
     // -------------------------------------------------------------------------
-    // Dual-Port BRAM Instance
-    // Port A: Write (event updates)
-    // Port B: Read (feature extraction scanning)
+    // Raw Timestamp Output (registered)
     // -------------------------------------------------------------------------
-    logic [TS_BITS-1:0] bram_dout_a;
-    logic [TS_BITS-1:0] bram_dout_b;
-    
-    bram_256x16 u_bram (
-        .clk     (clk),
-        
-        // Port A: Write
-        .we_a    (event_valid),
-        .addr_a  (write_addr),
-        .din_a   (event_ts),
-        .dout_a  (bram_dout_a),
-        
-        // Port B: Read
-        .addr_b  (read_addr),
-        .dout_b  (bram_dout_b)
-    );
-    
+    assign read_ts_raw = bram_dout;
+
     // -------------------------------------------------------------------------
-    // Raw Timestamp Output
-    // -------------------------------------------------------------------------
-    assign read_ts_raw = bram_dout_b;
-    
-    // -------------------------------------------------------------------------
-    // Decay Computation (on read)
-    // 
-    // Time difference: delta_t = T_now - T_stored
-    // Decayed value: Value = MAX - (delta_t >> DECAY_SHIFT)
-    // Clamped to [0, MAX_VALUE]
+    // Decay Computation (registered — second pipeline stage)
+    // Total read latency: 1 (BRAM) + 1 (decay) = 2 cycles
     //
-    // DECAY_SHIFT controls decay rate:
-    //   - Larger shift = slower decay
-    //   - At 12MHz, shift=6 gives ~5ms to decay from max to zero
+    // Binary exponential decay: value = MAX_VALUE >> (Δt >> DECAY_SHIFT)
+    //   e.g. DECAY_SHIFT=6 → half-life = 64 ticks = ~5.3 µs @ 12 MHz
     // -------------------------------------------------------------------------
-    logic [TS_BITS-1:0] delta_t;
-    logic [TS_BITS-1:0] decay_amount;
-    logic [VALUE_BITS:0] value_calc;  // Extra bit for overflow detection
-    
+    logic [TS_BITS-1:0]  delta_t;
+    logic [7:0]          decay_steps;   // Number of half-lives elapsed
+
     always_ff @(posedge clk) begin
         if (rst) begin
             read_value <= '0;
         end else if (read_enable) begin
-            // Compute time difference (handles wrap-around naturally)
-            delta_t = t_now - bram_dout_b;
-            
-            // Scale decay by shift (larger shift = slower decay)
-            decay_amount = delta_t >> DECAY_SHIFT;
-            
-            // Compute value with saturation
-            if (decay_amount >= MAX_VALUE) begin
+            delta_t    = t_now - bram_dout;
+            decay_steps = TS_BITS'(delta_t >> DECAY_SHIFT);
+
+            // Saturate: after 8 half-lives value is effectively 0
+            if (decay_steps >= 8)
                 read_value <= 8'd0;
-            end else begin
-                read_value <= MAX_VALUE - decay_amount[VALUE_BITS-1:0];
-            end
+            else
+                read_value <= VALUE_BITS'(MAX_VALUE >> decay_steps);
         end
     end
 
