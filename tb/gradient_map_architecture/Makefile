@@ -1,6 +1,3 @@
-# Makefile for Gradient-Map architecture cocotb testbench
-# Target: gesture_top module
-
 TOPLEVEL_LANG = verilog
 
 # RTL files for Gradient-Map architecture
@@ -19,14 +16,14 @@ VERILOG_SOURCES = $(RTL_DIR)/uart_tx.sv \
                   $(RTL_DIR)/gradient_map_architecture/gesture_top.sv
 
 TOPLEVEL = gesture_top
-MODULE ?= test_gradient_map
+MODULE = test_gradient_map
 
 SIM = icarus
 
 # Enable SystemVerilog
 COMPILE_ARGS += -g2012
 
-# Fast simulation parameters
+# Faster simulation: reduce frame period for testing
 COMPILE_ARGS += -Pgesture_top.FRAME_PERIOD_MS=1
 COMPILE_ARGS += -Pgesture_top.MIN_MASS_THRESH=20
 COMPILE_ARGS += -Pgesture_top.UART_RX_ENABLE=1
@@ -38,17 +35,10 @@ else
 include $(shell cocotb-config --makefiles)/Makefile.sim
 endif
 
-.PHONY: test test_full test_spatio clean_all
+.PHONY: test clean_all
 
 test:
 	$(MAKE) sim
-
-test_full:
-	$(MAKE) clean
-	$(MAKE) test
-
-test_spatio:
-	$(MAKE) MODULE=test_spatio_temporal_pipeline sim
 
 clean_all:
 	rm -rf sim_build results.xml __pycache__

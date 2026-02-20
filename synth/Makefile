@@ -1,17 +1,25 @@
-# Ice40 Synthesis Makefile for DVS Gesture Accelerator
-# Asynchronous Spatiotemporal Motion-Energy Classifier
-# 320x320 -> 16x16 spatial compression with dual-accumulator architecture
+# Ice40 Synthesis Makefile for UART Validation Mode
+# Time-Surface DVS Gesture Classifier receiving events via UART
+# Target: Lattice iCE40UP5K on iCEBreaker board
 
-PROJ = voxel_bin_top
+PROJ = gradient_map_top
 PCF = icebreaker.pcf
 DEVICE = up5k
 PACKAGE = sg48
 
 RTL_DIR = ../rtl
-RTL_FILES = $(RTL_DIR)/uart_rx.sv \
-            $(RTL_DIR)/uart_tx.sv \
-            $(RTL_DIR)/voxel_bin_architecture/dvs_gesture_accel.sv \
-            $(RTL_DIR)/voxel_bin_architecture/voxel_bin_top.sv
+RTL_FILES = $(RTL_DIR)/uart_tx.sv \
+            $(RTL_DIR)/uart_rx.sv \
+            $(RTL_DIR)/uart_debug.sv \
+            $(RTL_DIR)/gradient_map_architecture/input_fifo.sv \
+            $(RTL_DIR)/gradient_map_architecture/evt2_decoder.sv \
+            $(RTL_DIR)/gradient_map_architecture/time_surface_memory.sv \
+            $(RTL_DIR)/gradient_map_architecture/time_surface_encoder.sv \
+            $(RTL_DIR)/gradient_map_architecture/weight_rom.sv \
+            $(RTL_DIR)/gradient_map_architecture/systolic_array.sv \
+            $(RTL_DIR)/gradient_map_architecture/spatio_temporal_classifier.sv \
+            $(RTL_DIR)/gradient_map_architecture/gesture_top.sv \
+            $(RTL_DIR)/gradient_map_architecture/gradient_map_top.sv
 
 .PHONY: all clean prog report timing
 
@@ -48,3 +56,4 @@ timing: $(PROJ).asc
 
 clean:
 	rm -f $(PROJ).v $(PROJ).json $(PROJ).asc $(PROJ).bit $(PROJ).timing
+

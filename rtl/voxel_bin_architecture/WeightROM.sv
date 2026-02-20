@@ -19,7 +19,7 @@
 
 module WeightROM #(
     parameter CLASS_IDX   = 0,
-    parameter NUM_CELLS   = 1280,   // 5 bins * 256
+    parameter NUM_CELLS   = 1024,   // 4 bins * 256 (optimized for ice40up5k)
     parameter GRID_SIZE   = 16,
     parameter WEIGHT_BITS = 8
 )(

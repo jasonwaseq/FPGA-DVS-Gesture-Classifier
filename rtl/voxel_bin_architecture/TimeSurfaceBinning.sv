@@ -13,8 +13,8 @@
 // Parameters:
 //   CLK_FREQ_HZ     - System clock frequency
 //   WINDOW_MS       - Total duration of the observation window (e.g., 400ms)
-//   NUM_BINS        - Number of bins in the ring buffer (e.g., 8)
-//   READOUT_BINS    - Number of bins to read out for classification (e.g., 5)
+//   NUM_BINS        - Number of bins in the ring buffer (5 for ice40up5k fit)
+//   READOUT_BINS    - Number of bins to read out for classification (5)
 //                     Must be <= NUM_BINS.
 //   GRID_SIZE       - Spatial grid dimension (e.g., 16x16)
 //   COUNTER_BITS    - Bit width for event counters in each bin cell
@@ -24,10 +24,11 @@
 module TimeSurfaceBinning #(
     parameter CLK_FREQ_HZ     = 12_000_000,
     parameter WINDOW_MS       = 400,
-    parameter NUM_BINS        = 8,
-    parameter READOUT_BINS    = 5,
+    parameter NUM_BINS        = 4,        // Reduced from 5 to 4 for ice40up5k fit
+    parameter READOUT_BINS    = 4,        // Reduced from 5 to 4
     parameter GRID_SIZE       = 16,
-    parameter COUNTER_BITS    = 8
+    parameter COUNTER_BITS    = 6,        // Reduced from 8 to 6 bits (saves BRAM)
+    parameter PARALLEL_READS  = 4         // Number of parallel reads per cycle (speed optimization)
 )(
     input  logic        clk,
     input  logic        rst,
@@ -42,10 +43,9 @@ module TimeSurfaceBinning #(
     // In a real system, we might use the event timestamp, but here we count cycles
     // to determine bin boundaries as per the param description "window W is split into identical, sequential bins".
     
-    // Output to Systolic Array
-    // Interface matches the 'feature_in' stream expectation of the systolic array
+    // Output to Systolic Array - Parallel interface for speed
     output logic        readout_start,              // Pulse to start systolic array
-    output logic [COUNTER_BITS-1:0] readout_data,   // Streamed feature data
+    output logic [PARALLEL_READS*COUNTER_BITS-1:0] readout_data,   // Parallel feature data (4 values)
     output logic        readout_valid               // Data valid qualifier
 );
 
@@ -61,6 +61,9 @@ module TimeSurfaceBinning #(
     localparam integer CELL_ADDR_BITS  = $clog2(TOTAL_CELLS);
     localparam integer BIN_IDX_BITS    = $clog2(NUM_BINS);
     localparam integer GRID_ADDR_BITS  = $clog2(CELLS_PER_BIN);
+    localparam integer PARALLEL_BITS   = $clog2(PARALLEL_READS);
+    localparam integer CELLS_PER_CYCLE = PARALLEL_READS;  // Cells read per cycle
+    localparam integer CYCLES_PER_BIN_READ = (CELLS_PER_BIN + PARALLEL_READS - 1) / PARALLEL_READS;  // Ceiling division
 
     // =========================================================================
     // Bin Timing & Management
@@ -106,9 +109,9 @@ module TimeSurfaceBinning #(
     
     state_t state;
     
-    // Readout Counters
+    // Readout Counters - optimized for parallel reads
     logic [BIN_IDX_BITS-1:0] readout_bin_ptr; // Logical bin index (0 to READOUT_BINS-1)
-    logic [GRID_ADDR_BITS-1:0] readout_cell_ctr;
+    logic [GRID_ADDR_BITS-PARALLEL_BITS:0] readout_cell_ctr;  // Reduced width for parallel reads
     
     // Clear Counters
     logic [GRID_ADDR_BITS-1:0] clear_cell_ctr;
@@ -227,8 +230,9 @@ module TimeSurfaceBinning #(
                 rd_bin_offset <= '0;
                 rd_cell_ctr <= '0;
             end else if (readout_busy) begin
-                // Advance counters (readout_valid driven by assign from readout_valid_d)
-                if (rd_cell_ctr == CELLS_PER_BIN - 1) begin
+                // Advance counters for parallel reads
+                // Each cycle reads PARALLEL_READS cells
+                if (rd_cell_ctr >= CYCLES_PER_BIN_READ - 1) begin
                     rd_cell_ctr <= '0;
                     if (rd_bin_offset == READOUT_BINS - 1) begin
                         readout_busy <= 1'b0;
@@ -245,7 +249,7 @@ module TimeSurfaceBinning #(
     // Readout Address Calculation
     // We want the OLDEST bin first? Or NEWEST?
     // Matrix usually [Time, Space].
-    // Let's assume chronological order [T-4, T-3, T-2, T-1, T-0]
+    // Let's assume chronological order [T-3, T-2, T-1, T-0] for 4 bins
     // T-0 is the bin just completed.
     // current_bin_idx is the *new* empty bin we just switched to.
     // So T-0 is (current_bin_idx - 1).
@@ -261,9 +265,9 @@ module TimeSurfaceBinning #(
     always_comb begin
         // The bin we just finished filling is (current_bin_idx - 1) modulo NUM_BINS.
         // We want to start reading from (current_bin_idx - READOUT_BINS).
-        // Example: N=8, R=5. Cur=2 (just started). Finished=1.
-        // We want bins: 5, 6, 7, 0, 1.
-        // 2 + 8 - 5 = 5. Offset 0 -> 5. Offset 4 -> 9%8=1. Correct.
+        // Example: N=4, R=4. Cur=1 (just started). Finished=0.
+        // We want bins: 1, 2, 3, 0 (wrapped).
+        // 1 + 4 - 4 = 1. Offset 0 -> 1. Offset 3 -> 4%4=0. Correct.
         calc_bin_idx = current_bin_idx + NUM_BINS - READOUT_BINS + rd_bin_offset;
         if (calc_bin_idx >= NUM_BINS) 
             actual_rd_bin_idx = calc_bin_idx - NUM_BINS;
@@ -273,29 +277,24 @@ module TimeSurfaceBinning #(
 
     // RAM Access Arbitration & Address Muxing
     // RAM latency is 1 cycle for read.
-    // We need `readout_data` assigned from `mem[addr]`.
+    // Parallel reads handled in generate block above.
     
     // Event Access Logic
     // We need to Read-Modify-Write. This takes 2 cycles for single port RAM.
     // Or we rely on the fact that events are sparse?
     // If we use dual port RAM:
     // Port A: Read/Write for Events/Clearing.
-    // Port B: Read for Readout.
+    // Port B: Read for Readout (parallel).
     // This allows Readout to happen in parallel with Event integration.
     // However, Clearing (State S_CLEAR) needs to write.
     
     // Let's infer a simple memory block and handle assignments explicitly
     logic [CELL_ADDR_BITS-1:0] clear_addr;
-    logic [CELL_ADDR_BITS-1:0] evt_addr; 
-    logic [CELL_ADDR_BITS-1:0] rd_addr;
+    logic [CELL_ADDR_BITS-1:0] evt_addr;
     
     assign clear_addr = {current_bin_idx, clear_cell_ctr};
     assign evt_addr   = {current_bin_idx, event_cell_addr};
-    assign rd_addr    = {actual_rd_bin_idx, rd_cell_ctr};
 
-    // Output assignments
-    assign readout_data = ram_rdata; // Latched from RAM
-    
     // =========================================================================
     // Dual-Port BRAM Implementation
     // Port A: Write (Events/Clearing) - can read for read-modify-write
@@ -306,9 +305,6 @@ module TimeSurfaceBinning #(
     logic [COUNTER_BITS-1:0] port_a_rdata;  // Read data from Port A
     logic [COUNTER_BITS-1:0] port_a_wdata;
     logic port_a_wen;
-    
-    // Port B signals for readout (read-only)
-    // rd_addr is already defined above
     
     // Port A: Handle writes (clearing and events)
     // For events: Read-Modify-Write pipeline (2 cycles)
@@ -331,10 +327,34 @@ module TimeSurfaceBinning #(
         end
     end
     
-    // Port B: Read port for readout (independent, no conflicts)
-    always_ff @(posedge clk) begin
-        if (readout_busy) begin
-            ram_rdata <= mem[rd_addr];  // Port B read
+    // Port B: Parallel read ports for readout (independent, no conflicts)
+    // Generate multiple read addresses for parallel access
+    logic [CELL_ADDR_BITS-1:0] rd_addr_parallel [0:PARALLEL_READS-1];
+    logic [COUNTER_BITS-1:0] ram_rdata_parallel [0:PARALLEL_READS-1];
+    
+    genvar p;
+    generate
+        for (p = 0; p < PARALLEL_READS; p = p + 1) begin : gen_parallel_reads
+            // Calculate address for each parallel read
+            logic [GRID_ADDR_BITS-1:0] cell_offset;
+            assign cell_offset = (rd_cell_ctr * PARALLEL_READS) + p;
+            assign rd_addr_parallel[p] = {actual_rd_bin_idx, cell_offset[GRID_ADDR_BITS-1:0]};
+            
+            // Parallel reads from memory
+            always_ff @(posedge clk) begin
+                if (readout_busy && cell_offset < CELLS_PER_BIN) begin
+                    ram_rdata_parallel[p] <= mem[rd_addr_parallel[p]];
+                end else begin
+                    ram_rdata_parallel[p] <= '0;
+                end
+            end
+        end
+    endgenerate
+    
+    // Pack parallel reads into output bus
+    always_comb begin
+        for (int i = 0; i < PARALLEL_READS; i = i + 1) begin
+            readout_data[(i+1)*COUNTER_BITS-1 : i*COUNTER_BITS] = ram_rdata_parallel[i];
         end
     end
     
@@ -366,22 +386,23 @@ module TimeSurfaceBinning #(
     end
     
     // Note on Latency:
-    // `readout_valid` needs to match `ram_rdata` timing.
-    // In `always_ff`, `ram_rdata` updates 1 cycle after address change.
+    // `readout_valid` needs to match parallel `ram_rdata_parallel` timing.
+    // Parallel reads update 1 cycle after address change.
     // `readout_busy` logic updates `rd_cell_ctr`.
-    // The `ram_rdata` corresponds to `rd_addr` from PREVIOUS cycle.
-    // So `readout_valid` should be delayed by 1 cycle relative to `readout_busy` start?
-    // In strict pipelining:
-    // Cycle 0: trigger set.
-    // Cycle 1: busy=1, addr=0.
-    // Cycle 2: data=mem[0] ready. valid should be 1.
-    // My FSM sets `readout_valid <= 1` immediately when busy is true.
-    // So on Cycle 1 (if triggered prev), valid=1. But data isn't ready.
-    // I need to delay valid by 1 cycle relative to address application.
+    // The parallel read data corresponds to addresses from PREVIOUS cycle.
+    // So `readout_valid` should be delayed by 1 cycle relative to `readout_busy` start.
+    // Also need to check that we're not reading beyond valid cells.
     
     logic readout_valid_d;
+    logic [GRID_ADDR_BITS-1:0] cell_offset_max;
+    
+    always_comb begin
+        cell_offset_max = (rd_cell_ctr * PARALLEL_READS) + (PARALLEL_READS - 1);
+    end
+    
     always_ff @(posedge clk) begin
-        readout_valid_d <= (readout_busy); // Valid if we were busy reading last cycle
+        // Valid if we were busy reading last cycle AND we're reading valid cells
+        readout_valid_d <= (readout_busy && cell_offset_max < CELLS_PER_BIN);
     end
     assign readout_valid = readout_valid_d;
 

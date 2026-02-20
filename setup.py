@@ -504,9 +504,21 @@ def _synthesize(top_module, rtl_files, pcf_name, label="", arch_dir=None):
 
     # Generate bitstream
     print("\nGenerating bitstream...")
-    result = subprocess.run(["icepack", str(output_asc), str(output_bit)], env=env)
+    result = subprocess.run(
+        ["icepack", str(output_asc), str(output_bit)], 
+        env=env, 
+        capture_output=True, 
+        text=True
+    )
     if result.returncode != 0:
         print_error("Bitstream generation failed")
+        if result.stderr:
+            print(f"  Error: {result.stderr.strip()}")
+        if result.stdout:
+            print(f"  Output: {result.stdout.strip()}")
+        # Check if design is over capacity (common cause of icepack failures)
+        print_warning("Note: If design exceeds FPGA capacity, bitstream generation may fail")
+        print_warning("      even if place and route completes. Check resource utilization.")
         return 1
     print_success(f"Bitstream created: {output_bit}")
 
@@ -527,7 +539,7 @@ ARCH_SYNTH_CONFIG = {
     "gradient_map": (
         "gradient_map_top",
         RTL_FILES_UART,
-        "icebreaker_uart.pcf",
+        "icebreaker.pcf",
         "Gradient-map UART (gradient_map_top)",
         "gradient_map",
     ),

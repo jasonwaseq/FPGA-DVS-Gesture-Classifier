@@ -178,8 +178,8 @@ module gesture_top #(
     // Input FIFO (EVT 2.0 buffering)
     // -------------------------------------------------------------------------
     input_fifo #(
-        .DEPTH(256),
-        .PTR_BITS(8),
+        .DEPTH(128),
+        .PTR_BITS(7),
         .DATA_WIDTH(32)
     ) u_input_fifo (
         .clk     (clk),
@@ -211,14 +211,14 @@ module gesture_top #(
     // EVT 2.0 Decoder
     // -------------------------------------------------------------------------
     logic       decoder_ready;
-    logic [4:0] decoded_x, decoded_y;   // 5 bits for 32-cell grid
+    logic [3:0] decoded_x, decoded_y;   // 4 bits for 16×16 grid (ice40up5k fit)
     logic       decoded_polarity;
     logic [15:0] decoded_timestamp;
     logic       decoded_valid;
     logic        fifo_rd_valid;
     
     evt2_decoder #(
-        .GRID_BITS(5)   // 32 cells per axis
+        .GRID_BITS(4)   // 16 cells per axis (ice40up5k fit)
     ) u_decoder (
         .clk        (clk),
         .rst        (rst),
@@ -246,14 +246,14 @@ module gesture_top #(
     // -------------------------------------------------------------------------
     // Time-Surface Encoder (Exponential Decay)
     // -------------------------------------------------------------------------
-    logic [9:0]  ts_read_addr;    // 10-bit for 1024 cells
+    logic [7:0]  ts_read_addr;   // 8-bit for 256 cells (16×16, ice40up5k fit)
     logic        ts_read_enable;
     logic [7:0]  ts_read_value;
     logic [15:0] ts_read_raw;
 
     time_surface_encoder #(
-        .GRID_SIZE  (32),
-        .ADDR_BITS  (10),
+        .GRID_SIZE  (16),
+        .ADDR_BITS  (8),
         .TS_BITS    (16),
         .VALUE_BITS (8),
         .MAX_VALUE  (255),
@@ -285,7 +285,8 @@ module gesture_top #(
     spatio_temporal_classifier #(
         .CLK_FREQ_HZ    (CLK_FREQ_HZ),
         .FRAME_PERIOD_MS(FRAME_PERIOD_MS),
-        .GRID_SIZE      (32),
+        .GRID_SIZE      (16),
+        .ADDR_BITS      (8),
         .VALUE_BITS     (8),
         .MOMENT_BITS    (24),
         .WEIGHT_BITS    (8),

@@ -14,12 +14,12 @@
 //   Port A: Synchronous write (event updates) — 1-cycle write
 //   Port B: Synchronous read (scan) — 1-cycle read latency
 //
-// Parameterized for any GRID_SIZE (default 32×32 = 1024 cells, ADDR_BITS=10).
+// Parameterized for any GRID_SIZE (default 16×16 = 256 cells for ice40up5k).
 // =============================================================================
 
 module time_surface_memory #(
-    parameter GRID_SIZE   = 32,             // Grid dimension (32×32)
-    parameter ADDR_BITS   = 10,             // log2(GRID_SIZE^2) = 10 for 1024 cells
+    parameter GRID_SIZE   = 16,             // Grid dimension (16×16)
+    parameter ADDR_BITS   = 8,              // log2(GRID_SIZE^2) = 8 for 256 cells
     parameter TS_BITS     = 16,             // Timestamp bits
     parameter VALUE_BITS  = 8,              // Decay value output bits
     parameter MAX_VALUE   = 255,            // Maximum surface value

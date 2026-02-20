@@ -1,26 +1,34 @@
-# Pin constraints for iCEBreaker FPGA board
-# DVS Gesture Accelerator - Asynchronous Spatiotemporal Motion-Energy Classifier
-#
-# CRITICAL: Uses internal power-on reset - no external reset pin needed
-# This matches the proven working design pattern
+# =============================================================================
+# Pin Constraints for iCEBreaker FPGA - UART Validation Mode
+# =============================================================================
+# Target: Lattice iCE40UP5K on iCEBreaker board
+# Mode: UART-only (no parallel EVT2 data bus)
+# Use: Hardware validation with events streamed from PC over UART
+# =============================================================================
 
-# Clock (12MHz oscillator)
+# Clock (12MHz oscillator on iCEBreaker)
 set_io clk 35
 
-# UART (onboard FTDI USB-UART)
-# FPGA RX = Pin 6 (receives from PC/FTDI TX)
-# FPGA TX = Pin 9 (transmits to PC/FTDI RX)
+# UART (onboard FTDI USB-UART, Channel B)
+# FPGA RX = Pin 6 (receives from PC / FTDI TX)
+# FPGA TX = Pin 9 (transmits to PC / FTDI RX)
 set_io uart_rx 6
 set_io uart_tx 9
 
-# Debug LEDs (accent LEDs, active low on iCEBreaker)
+# -----------------------------------------------------------------------------
+# Status LEDs (iCEBreaker snap-off accent LEDs)
+# -----------------------------------------------------------------------------
 set_io led_heartbeat 39
-set_io led_gesture_valid 40
-set_io led_activity 41
+set_io led_activity 40
 
-# PMOD2 direction LEDs (active high)
-# Mapping: LED1=UP, LED2=DOWN, LED3=LEFT, LED4=RIGHT
-set_io led_up 26
-set_io led_down 27
+# -----------------------------------------------------------------------------
+# Gesture Direction LEDs (active high, accent accent accent accent)
+# Using iCEBreaker PMOD2 header pins
+# LED1=UP, LED2=DOWN, LED3=LEFT, LED4=RIGHT
+# -----------------------------------------------------------------------------
+set_io led_up 23
+set_io led_down 26
 set_io led_left 25
-set_io led_right 23
+set_io led_right 21
+set_io led_gesture_valid 27
+

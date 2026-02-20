@@ -89,19 +89,28 @@ module dvs_gesture_accel #(
     logic                      compressed_pol;
     logic                      compressed_valid;
     
-    // TimeSurfaceBinning -> SystolicMatrixMultiply interface
+    // TimeSurfaceBinning -> SystolicMatrixMultiply interface (optimized for parallel reads)
+    localparam PARALLEL_READS = 4;
+    localparam COUNTER_BITS = 6;  // Reduced from 8 to 6 bits
+    
     logic        readout_start;
-    logic [7:0]  readout_data;
+    logic [PARALLEL_READS*COUNTER_BITS-1:0] readout_data;  // Parallel data (4 values)
     logic        readout_valid;
 
     // Systolic Output
     localparam NUM_CLASSES = 4;
-    localparam NUM_CELLS   = 5 * GRID_SIZE * GRID_SIZE; // 5 * 256 = 1280
+    localparam NUM_BINS = 4;  // Reduced from 5 to 4
+    localparam NUM_CELLS   = NUM_BINS * GRID_SIZE * GRID_SIZE; // 4 * 256 = 1024
     localparam WEIGHT_BITS = 8;
     localparam ACC_BITS    = 24;
 
-    logic [$clog2(NUM_CELLS)-1:0]       w_addr;
-    logic [NUM_CLASSES*WEIGHT_BITS-1:0] w_data_flat;
+    // Flattened parallel interfaces for port compatibility
+    logic [PARALLEL_READS*$clog2(NUM_CELLS)-1:0]       w_addr_flat;  // Flattened parallel addresses
+    logic [PARALLEL_READS*NUM_CLASSES*WEIGHT_BITS-1:0] w_data_flat;  // Flattened parallel weight data
+    
+    // Unpacked arrays for internal use
+    logic [$clog2(NUM_CELLS)-1:0]       w_addr [0:PARALLEL_READS-1];  // Parallel addresses
+    logic [NUM_CLASSES*WEIGHT_BITS-1:0] w_data [0:PARALLEL_READS-1];  // Parallel weight data
     logic                               sys_result_valid;
     logic [1:0]                         sys_best_class;
     logic [NUM_CLASSES*ACC_BITS-1:0]    sys_scores_flat;
@@ -158,17 +167,19 @@ module dvs_gesture_accel #(
     );
 
     // =========================================================================
-    // Module: TimeSurfaceBinning
+    // Module: TimeSurfaceBinning (Optimized)
     // =========================================================================
-    // Spatio-Temporal Pooling: 5 bins of 16x16 counters
+    // Spatio-Temporal Pooling: 4 bins of 16x16 counters (reduced from 5)
+    // Parallel reads: 4 values per cycle (speed optimization)
     
     TimeSurfaceBinning #(
         .CLK_FREQ_HZ    (CLK_FREQ_HZ),
         .WINDOW_MS      (WINDOW_MS),
-        .NUM_BINS       (8),
-        .READOUT_BINS   (5),
+        .NUM_BINS       (NUM_BINS),
+        .READOUT_BINS   (NUM_BINS),
         .GRID_SIZE      (GRID_SIZE),
-        .COUNTER_BITS   (8)
+        .COUNTER_BITS   (COUNTER_BITS),
+        .PARALLEL_READS (PARALLEL_READS)
     ) u_time_surface_binning (
         .clk            (clk),
         .rst            (rst),
@@ -184,22 +195,23 @@ module dvs_gesture_accel #(
     assign debug_event_count = 8'd0; 
 
     // =========================================================================
-    // Module: SystolicMatrixMultiply
+    // Module: SystolicMatrixMultiply (Optimized for parallel inputs)
     // =========================================================================
     
     SystolicMatrixMultiply #(
         .NUM_CLASSES    (NUM_CLASSES),
         .NUM_CELLS      (NUM_CELLS),
-        .VALUE_BITS     (8),
+        .VALUE_BITS     (COUNTER_BITS),
         .WEIGHT_BITS    (WEIGHT_BITS),
-        .ACC_BITS       (ACC_BITS)
+        .ACC_BITS       (ACC_BITS),
+        .PARALLEL_INPUTS(PARALLEL_READS)
     ) u_systolic_array (
         .clk            (clk),
         .rst            (rst),
         .start          (readout_start),
         .feature_in     (readout_data),
         .feature_valid  (readout_valid),
-        .w_addr         (w_addr),
+        .w_addr_flat    (w_addr_flat),
         .w_data_flat    (w_data_flat),
         .result_valid   (sys_result_valid),
         .best_class     (sys_best_class),
@@ -207,22 +219,43 @@ module dvs_gesture_accel #(
     );
 
     // =========================================================================
-    // Modules: WeightROMs (4 Parallel Instances)
+    // Unpack addresses from flattened bus
     // =========================================================================
+    generate
+        genvar pa;
+        for (pa = 0; pa < PARALLEL_READS; pa = pa + 1) begin : gen_unpack_addr
+            assign w_addr[pa] = w_addr_flat[(pa+1)*$clog2(NUM_CELLS)-1 : pa*$clog2(NUM_CELLS)];
+        end
+    endgenerate
+    
+    // =========================================================================
+    // Modules: WeightROMs (Parallel instances for parallel reads)
+    // =========================================================================
+    // Generate PARALLEL_READS * NUM_CLASSES ROMs for parallel weight access
     
     generate
-        genvar k;
-        for (k = 0; k < NUM_CLASSES; k = k + 1) begin : gen_weight_roms
-            WeightROM #(
-                .CLASS_IDX   (k),
-                .NUM_CELLS   (NUM_CELLS),
-                .GRID_SIZE   (GRID_SIZE),
-                .WEIGHT_BITS (WEIGHT_BITS)
-            ) u_weight_rom (
-                .clk         (clk),
-                .cell_addr   (w_addr),
-                .dout        (w_data_flat[(k+1)*WEIGHT_BITS-1 : k*WEIGHT_BITS])
-            );
+        genvar p, k;
+        for (p = 0; p < PARALLEL_READS; p = p + 1) begin : gen_parallel_roms
+            for (k = 0; k < NUM_CLASSES; k = k + 1) begin : gen_class_roms
+                WeightROM #(
+                    .CLASS_IDX   (k),
+                    .NUM_CELLS   (NUM_CELLS),
+                    .GRID_SIZE   (GRID_SIZE),
+                    .WEIGHT_BITS (WEIGHT_BITS)
+                ) u_weight_rom (
+                    .clk         (clk),
+                    .cell_addr   (w_addr[p]),
+                    .dout        (w_data[p][(k+1)*WEIGHT_BITS-1 : k*WEIGHT_BITS])
+                );
+            end
+        end
+    endgenerate
+    
+    // Pack weight data into flattened bus
+    generate
+        genvar pd;
+        for (pd = 0; pd < PARALLEL_READS; pd = pd + 1) begin : gen_pack_data
+            assign w_data_flat[(pd+1)*NUM_CLASSES*WEIGHT_BITS-1 : pd*NUM_CLASSES*WEIGHT_BITS] = w_data[pd];
         end
     endgenerate
 

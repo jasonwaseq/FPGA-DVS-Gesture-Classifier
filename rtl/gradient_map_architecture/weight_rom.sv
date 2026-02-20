@@ -12,8 +12,8 @@
 //   CLASS_IDX   - Which gesture class this ROM stores (0=UP, 1=DOWN,
 //                 2=LEFT, 3=RIGHT)
 //   NUM_CLASSES - Total number of gesture classes (4)
-//   NUM_CELLS   - Total grid cells = GRID_SIZE² (1024 for 32×32)
-//   GRID_SIZE   - Grid dimension (32)
+//   NUM_CELLS   - Total grid cells = GRID_SIZE² (256 for 16×16 ice40up5k)
+//   GRID_SIZE   - Grid dimension (16)
 //   WEIGHT_BITS - Signed weight width (8)
 //
 // Weight Encoding (geometric average):
@@ -32,8 +32,8 @@
 module weight_rom #(
     parameter CLASS_IDX   = 0,
     parameter NUM_CLASSES = 4,
-    parameter NUM_CELLS   = 1024,
-    parameter GRID_SIZE   = 32,
+    parameter NUM_CELLS   = 256,
+    parameter GRID_SIZE   = 16,
     parameter WEIGHT_BITS = 8
 )(
     input  logic                          clk,
@@ -58,7 +58,7 @@ module weight_rom #(
 
     initial begin
         // Centre of grid
-        centre = GRID_SIZE / 2;   // 16 for 32-cell grid
+        centre = GRID_SIZE / 2;   // 8 for 16×16 grid
 
         for (cy = 0; cy < GRID_SIZE; cy = cy + 1) begin
             for (cx = 0; cx < GRID_SIZE; cx = cx + 1) begin

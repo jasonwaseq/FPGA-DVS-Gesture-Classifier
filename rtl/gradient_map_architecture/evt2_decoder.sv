@@ -26,13 +26,13 @@
 //   time_high updated by EVT_TIME_HIGH packets
 //
 // Output Downsampling:
-//   320×320 sensor → 32×32 grid
-//   X_grid = min(x_raw >> 3, 31)   (≈10 sensor pixels per grid cell)
-//   Y_grid = min(y_raw >> 3, 31)
+//   320×320 sensor → 16×16 grid (ice40up5k fit)
+//   X_grid = min(x_raw >> 4, 15)   (20 sensor pixels per grid cell)
+//   Y_grid = min(y_raw >> 4, 15)
 // =============================================================================
 
 module evt2_decoder #(
-    parameter GRID_BITS = 5                 // Output grid coordinate bits (5 → 32 cells)
+    parameter GRID_BITS = 4                 // Output grid coordinate bits (4 → 16 cells per axis)
 )(
     input  logic        clk,
     input  logic        rst,
@@ -43,8 +43,8 @@ module evt2_decoder #(
     output logic        data_ready,         // Consumed this cycle
     
     // Output: Decoded & Downsampled Event
-    output logic [GRID_BITS-1:0] x_out,     // Grid X [0-15]
-    output logic [GRID_BITS-1:0] y_out,     // Grid Y [0-15]
+    output logic [GRID_BITS-1:0] x_out,     // Grid X [0..2^GRID_BITS-1]
+    output logic [GRID_BITS-1:0] y_out,     // Grid Y [0..2^GRID_BITS-1]
     output logic                 polarity,  // 1=ON, 0=OFF
     output logic [15:0]          timestamp, // Lower 16 bits of timestamp
     output logic                 event_valid // Valid event output
@@ -75,16 +75,15 @@ module evt2_decoder #(
     logic [27:0] time_high_reg;                 // Stored high timestamp bits
     
     // -------------------------------------------------------------------------
-    // Downsampling: 320×320 → 32×32
-    // Strategy: x_raw >> 3  (divide by 8) → range 0..39 for 320 coords
-    //           clamp to 31 so all 32 cells are used.
-    // Cell 0..31 each covers ≈10 sensor pixels; cells beyond 255px clamp to 31.
+    // Downsampling: 320×320 → 16×16 (ice40up5k fit)
+    // Strategy: x_raw >> 4 (divide by 16) → range 0..19; clamp to 15.
+    // Cell 0..15 each covers 20 sensor pixels.
     // -------------------------------------------------------------------------
     wire [5:0] x_grid_raw6 = x_raw[8:3];   // 6 bits, value 0..39
     wire [5:0] y_grid_raw6 = y_raw[8:3];
 
-    wire [GRID_BITS-1:0] x_grid = (x_grid_raw6 > 6'd31) ? 5'd31 : x_grid_raw6[GRID_BITS-1:0];
-    wire [GRID_BITS-1:0] y_grid = (y_grid_raw6 > 6'd31) ? 5'd31 : y_grid_raw6[GRID_BITS-1:0];
+    wire [GRID_BITS-1:0] x_grid = (x_grid_raw6 > {2'b0, 4'd15}) ? 4'd15 : x_grid_raw6[GRID_BITS-1:0];
+    wire [GRID_BITS-1:0] y_grid = (y_grid_raw6 > {2'b0, 4'd15}) ? 4'd15 : y_grid_raw6[GRID_BITS-1:0];
     
     // -------------------------------------------------------------------------
     // Timestamp Reconstruction

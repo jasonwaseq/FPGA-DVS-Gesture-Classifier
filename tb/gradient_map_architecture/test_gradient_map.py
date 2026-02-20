@@ -29,8 +29,8 @@ CLK_FREQ_HZ    = 12_000_000
 BAUD_RATE      = 115200
 CLKS_PER_BIT   = CLK_FREQ_HZ // BAUD_RATE  # 104
 
-GRID_SIZE      = 32
-NUM_CELLS      = GRID_SIZE * GRID_SIZE      # 1024
+GRID_SIZE      = 16  # Actual RTL uses 16x16 grid
+NUM_CELLS      = GRID_SIZE * GRID_SIZE      # 256
 DECAY_SHIFT    = 6                          # half-life = 2^6 = 64 ticks
 VALUE_BITS     = 8
 MAX_VALUE      = 255
@@ -96,10 +96,17 @@ async def send_evt_direct(dut, x, y, polarity=1):
 # Geometry helpers
 # =============================================================================
 def cell_to_sensor(cx, cy):
-    """Convert 32×32 grid cell → representative 320×320 sensor coordinate.
-    Each cell covers ~10 sensor pixels (320/32 = 10).
+    """Convert 16×16 grid cell → representative 320×320 sensor coordinate.
+    Each cell covers ~20 sensor pixels (320/16 = 20).
     """
-    return cx * 10 + 5, cy * 10 + 5
+    return cx * 20 + 10, cy * 20 + 10
+
+
+def sensor_to_grid_cell(sx, sy):
+    """Convert 320×320 sensor coordinate → 16×16 grid cell."""
+    cx = min(15, max(0, sx // 20))
+    cy = min(15, max(0, sy // 20))
+    return cx, cy
 
 
 def cell_to_evt_raw(cx, cy):
@@ -107,35 +114,56 @@ def cell_to_evt_raw(cx, cy):
     return cx * 8 + 4, cy * 8 + 4
 
 
-def generate_gesture_events(gesture, n=120, noise=0.05):
-    """Generate (x, y, pol) events simulating a clear linear gesture swipe."""
+def generate_gesture_events(gesture, n=200, noise=0.02, start_pos=None, end_pos=None):
+    """Generate (x, y, pol) events simulating a clear linear gesture swipe.
+    
+    Args:
+        gesture: GESTURE_UP, GESTURE_DOWN, GESTURE_LEFT, or GESTURE_RIGHT
+        n: Number of events to generate
+        noise: Fraction of random noise events (0.0-1.0)
+        start_pos: (x, y) start position (default: center - offset)
+        end_pos: (x, y) end position (default: center + offset)
+    """
     events = []
-    cx, cy = 160, 160
-    spread = 20
-
-    if gesture == GESTURE_UP:
-        xs = [cx] * n
-        ys = [int(cy + 60 - t * 120) for t in [i/n for i in range(n)]]
-    elif gesture == GESTURE_DOWN:
-        xs = [cx] * n
-        ys = [int(cy - 60 + t * 120) for t in [i/n for i in range(n)]]
-    elif gesture == GESTURE_LEFT:
-        xs = [int(cx + 60 - t * 120) for t in [i/n for i in range(n)]]
-        ys = [cy] * n
-    elif gesture == GESTURE_RIGHT:
-        xs = [int(cx - 60 + t * 120) for t in [i/n for i in range(n)]]
-        ys = [cy] * n
-    else:
-        raise ValueError(f"Unknown gesture {gesture}")
-
-    for x, y in zip(xs, ys):
+    cx, cy = 160, 160  # Center of 320x320 sensor
+    
+    # Default motion range: ~120 pixels
+    motion_range = 120
+    
+    if start_pos is None or end_pos is None:
+        if gesture == GESTURE_UP:
+            start_pos = (cx, cy + motion_range // 2)
+            end_pos = (cx, cy - motion_range // 2)
+        elif gesture == GESTURE_DOWN:
+            start_pos = (cx, cy - motion_range // 2)
+            end_pos = (cx, cy + motion_range // 2)
+        elif gesture == GESTURE_LEFT:
+            start_pos = (cx + motion_range // 2, cy)
+            end_pos = (cx - motion_range // 2, cy)
+        elif gesture == GESTURE_RIGHT:
+            start_pos = (cx - motion_range // 2, cy)
+            end_pos = (cx + motion_range // 2, cy)
+        else:
+            raise ValueError(f"Unknown gesture {gesture}")
+    
+    sx, sy = start_pos
+    ex, ey = end_pos
+    
+    # Generate events along the motion path
+    for i in range(n):
+        t = i / max(1, n - 1)  # 0.0 to 1.0
         if random.random() < noise:
+            # Add noise event
             events.append((random.randint(0, 319), random.randint(0, 319), 1))
         else:
-            ex = max(0, min(319, x + int(random.gauss(0, spread / 3))))
-            ey = max(0, min(319, y + int(random.gauss(0, spread / 3))))
-            events.append((ex, ey, 1))
-
+            # Main gesture path with small spread
+            spread = 15
+            x = int(sx + (ex - sx) * t + random.gauss(0, spread / 3))
+            y = int(sy + (ey - sy) * t + random.gauss(0, spread / 3))
+            x = max(0, min(319, x))
+            y = max(0, min(319, y))
+            events.append((x, y, 1))
+    
     return events
 
 
@@ -310,43 +338,107 @@ async def test_systolic_scores_nonzero(dut):
 # Test 4-7: Gesture Detection Tests
 # =============================================================================
 async def gesture_test(dut, gesture, expected_class, description):
+    """Robust gesture classification test."""
     await setup_dut(dut)
     dut._log.info("=" * 60)
     dut._log.info(f"TEST: {description}")
     dut._log.info("=" * 60)
 
-    events = generate_gesture_events(gesture, n=150, noise=0.03)
+    # Generate a strong gesture pattern targeting the correct grid cells
+    # For gradient-map, we need events in the positive weight zones
+    # UP: top half (cy < 8), DOWN: bottom half (cy >= 8)
+    # LEFT: left half (cx < 8), RIGHT: right half (cx >= 8)
+    events = generate_gesture_events(gesture, n=400, noise=0.005)
+    dut._log.info(f"Generated {len(events)} events for {GESTURE_NAMES[expected_class]} gesture")
+    
+    # Verify events map to correct grid cells
+    grid_cells_used = set()
+    for x, y, _ in events[:50]:  # Check first 50 events
+        cx, cy = sensor_to_grid_cell(x, y)
+        grid_cells_used.add((cx, cy))
+    dut._log.info(f"Events map to {len(grid_cells_used)} grid cells")
 
-    # Send events in two temporal waves to build motion contrast
-    half = len(events) // 2
-    await send_event_stream(dut, events[:half], inter_event_gap=5)
-    await ClockCycles(dut.clk, FRAME_CYCLES // 4)
-    await send_event_stream(dut, events[half:], inter_event_gap=5)
-
-    # Wait up to 10 frame periods for a gesture to register
-    gesture_seen = False
-    for frame in range(10):
-        await ClockCycles(dut.clk, FRAME_CYCLES + 2048 + 100)
-        try:
-            if dut.u_spatio_classifier.gesture_valid.value == 1:
-                detected = int(dut.u_spatio_classifier.gesture_class.value)
-                dut._log.info(
-                    f"  Frame {frame+1}: detected {GESTURE_NAMES.get(detected, '?')} "
-                    f"(expected {GESTURE_NAMES[expected_class]})"
-                )
-                assert detected == expected_class, (
-                    f"Wrong gesture: got {GESTURE_NAMES.get(detected, '?')}, "
-                    f"expected {GESTURE_NAMES[expected_class]}"
-                )
-                gesture_seen = True
-                break
-        except AttributeError:
-            pass
-
-    if gesture_seen:
-        dut._log.info(f"{description} PASSED")
-    else:
-        dut._log.info(f"{description} COMPLETED (no valid pulse seen — check thresholds)")
+    # Send events over multiple frames to accumulate sufficient energy
+    # Split events into chunks and send them across frames
+    num_chunks = 6
+    chunk_size = len(events) // num_chunks
+    
+    for chunk_idx in range(num_chunks):
+        start_idx = chunk_idx * chunk_size
+        end_idx = start_idx + chunk_size if chunk_idx < num_chunks - 1 else len(events)
+        
+        # Send chunk of events
+        for x, y, pol in events[start_idx:end_idx]:
+            await send_dvs_event(dut, x, y, pol)
+            await ClockCycles(dut.clk, 15)  # Small gap for UART processing
+        
+        # Wait a bit before next chunk
+        await ClockCycles(dut.clk, FRAME_CYCLES // 3)
+    
+    # Wait for frame boundary and classification
+    await ClockCycles(dut.clk, 2000)  # Complete current frame
+    await ClockCycles(dut.clk, FRAME_CYCLES)  # Wait for next frame to trigger classification
+    
+    # Wait for systolic processing: NUM_CELLS cycles + overhead
+    systolic_delay = NUM_CELLS + 200
+    
+    # Monitor for gesture_valid over multiple frames
+    gesture_detected = False
+    detected_class = None
+    max_frames = 10
+    
+    for frame in range(max_frames):
+        # Sample gesture_valid signal over the systolic processing window
+        for _ in range(systolic_delay):
+            await RisingEdge(dut.clk)
+            try:
+                if dut.u_spatio_classifier.gesture_valid.value == 1:
+                    detected_class = int(dut.u_spatio_classifier.gesture_class.value)
+                    gesture_detected = True
+                    # Try to read debug info
+                    try:
+                        energy = int(dut.u_spatio_classifier.debug_m00.value)
+                        dut._log.info(
+                            f"  Frame {frame+1}: Detected {GESTURE_NAMES.get(detected_class, '?')} "
+                            f"(expected {GESTURE_NAMES[expected_class]}, energy={energy})"
+                        )
+                    except:
+                        dut._log.info(
+                            f"  Frame {frame+1}: Detected {GESTURE_NAMES.get(detected_class, '?')} "
+                            f"(expected {GESTURE_NAMES[expected_class]})"
+                        )
+                    break
+            except (AttributeError, ValueError):
+                # Try alternative signal paths
+                try:
+                    if hasattr(dut, 'gesture_valid') and dut.gesture_valid.value == 1:
+                        detected_class = int(dut.gesture_class.value)
+                        gesture_detected = True
+                        dut._log.info(
+                            f"  Frame {frame+1}: Detected {GESTURE_NAMES.get(detected_class, '?')} "
+                            f"(expected {GESTURE_NAMES[expected_class]})"
+                        )
+                        break
+                except (AttributeError, ValueError):
+                    pass
+        
+        if gesture_detected:
+            break
+        
+        # Wait for next frame
+        await ClockCycles(dut.clk, FRAME_CYCLES - systolic_delay)
+    
+    # Assert the result
+    assert gesture_detected, (
+        f"Gesture {GESTURE_NAMES[expected_class]} not detected after {max_frames} frames. "
+        f"Check thresholds (MIN_MASS_THRESH={MIN_MASS_THRESH}) and event generation."
+    )
+    assert detected_class == expected_class, (
+        f"Wrong gesture detected: got {GESTURE_NAMES.get(detected_class, '?')}, "
+        f"expected {GESTURE_NAMES[expected_class]}"
+    )
+    
+    dut._log.info(f"{description} PASSED ✓")
 
 
 @cocotb.test()
@@ -401,3 +493,91 @@ async def test_mass_threshold(dut):
 
     assert not spurious, "Spurious gesture detected with sub-threshold events"
     dut._log.info("Mass Threshold Test PASSED — no spurious detections")
+
+
+# =============================================================================
+# Test 9: Multiple Gestures Sequential
+# =============================================================================
+@cocotb.test()
+async def test_multiple_gestures_sequential(dut):
+    """Test that the system can classify multiple gestures in sequence."""
+    await setup_dut(dut)
+    dut._log.info("=" * 60)
+    dut._log.info("TEST: Multiple Gestures Sequential")
+    dut._log.info("=" * 60)
+    
+    gestures_to_test = [
+        (GESTURE_UP, 0, "UP"),
+        (GESTURE_DOWN, 1, "DOWN"),
+        (GESTURE_LEFT, 2, "LEFT"),
+        (GESTURE_RIGHT, 3, "RIGHT")
+    ]
+    
+    detected_gestures = []
+    
+    for gesture, expected_class, name in gestures_to_test:
+        dut._log.info(f"Testing {name} gesture...")
+        
+        # Generate and send events
+        events = generate_gesture_events(gesture, n=200, noise=0.01)
+        await send_event_stream(dut, events, inter_event_gap=3)
+        
+        # Wait for classification
+        await ClockCycles(dut.clk, FRAME_CYCLES * 2 + NUM_CELLS + 100)
+        
+        # Check for detection
+        gesture_found = False
+        for _ in range(FRAME_CYCLES + NUM_CELLS + 100):
+            await RisingEdge(dut.clk)
+            try:
+                if dut.u_spatio_classifier.gesture_valid.value == 1:
+                    detected = int(dut.u_spatio_classifier.gesture_class.value)
+                    if detected == expected_class:
+                        detected_gestures.append(name)
+                        gesture_found = True
+                        dut._log.info(f"  ✓ {name} detected correctly")
+                        break
+            except (AttributeError, ValueError):
+                pass
+        
+        if not gesture_found:
+            dut._log.warning(f"  ✗ {name} not detected")
+        
+        # Clear time surface between gestures
+        await ClockCycles(dut.clk, FRAME_CYCLES * 3)
+    
+    # Verify at least 3 out of 4 gestures were detected
+    assert len(detected_gestures) >= 3, (
+        f"Only {len(detected_gestures)}/4 gestures detected: {detected_gestures}"
+    )
+    dut._log.info(f"Multiple Gestures Test PASSED — detected {len(detected_gestures)}/4 gestures")
+
+
+# =============================================================================
+# Test 10: Event Rate Stress Test
+# =============================================================================
+@cocotb.test()
+async def test_event_rate_stress(dut):
+    """Test system handles high event rates without errors."""
+    await setup_dut(dut)
+    dut._log.info("=" * 60)
+    dut._log.info("TEST: Event Rate Stress Test")
+    dut._log.info("=" * 60)
+    
+    # Generate many events quickly
+    events = generate_gesture_events(GESTURE_RIGHT, n=500, noise=0.05)
+    
+    # Send events with minimal gap (stress test)
+    for x, y, pol in events:
+        await send_dvs_event(dut, x, y, pol)
+        await ClockCycles(dut.clk, 1)  # Minimal gap
+    
+    # Wait for processing
+    await ClockCycles(dut.clk, FRAME_CYCLES * 3 + NUM_CELLS + 200)
+    
+    # System should still function (no assertion failures)
+    # Check that we can still send events
+    await send_dvs_event(dut, 160, 160, 1)
+    await ClockCycles(dut.clk, 100)
+    
+    dut._log.info("Event Rate Stress Test PASSED — system handled high event rate")

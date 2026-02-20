@@ -2,34 +2,22 @@
 """
 DVS Gesture Classifier - Hardware Validation Script
 
-This script sends mock DVS events over UART to an iCE40 FPGA running the
-Asynchronous Spatiotemporal Motion-Energy Gesture Classifier and monitors
-for gesture detection responses.
+This script sends mock DVS events over UART to an iCE40 FPGA running a
+DVS gesture classifier and monitors for gesture detection responses.
+
+Architectures:
+  - voxel_bin (default): Binary protocol. Echo 0xFF->0x55, Status 0xFE->0xBx,
+    Config 0xFD->2 bytes. Gesture: [0xA0|gesture, confidence_byte].
+  - gradient_map: ASCII protocol only. No echo/status/config. Gesture output:
+    "UP\\r\\n", "DOWN\\r\\n", "LEFT\\r\\n", "RIGHT\\r\\n".
 
 Supported Gestures:
-    - UP    (0x00): Motion from bottom to top
-    - DOWN  (0x01): Motion from top to bottom
-    - LEFT  (0x02): Motion from right to left
-    - RIGHT (0x03): Motion from left to right
-
-UART Protocol:
-    TX (to FPGA):
-        - DVS Event: 5 bytes [X_HI, X_LO, Y_HI, Y_LO, POL]
-        - Echo test: 0xFF -> expects 0x55
-        - Status query: 0xFE -> expects 0xBx
-        - Config query: 0xFD -> expects 2 bytes
-        - Soft reset: 0xFC
-    
-    RX (from FPGA):
-        - Gesture: [0xA0 | gesture, confidence_byte]
-        - Echo: 0x55
-        - Status: 0xBx
+    - UP, DOWN, LEFT, RIGHT (same for both architectures)
 
 Usage:
+    python fpga_gesture_validator.py --port COM3 --arch gradient_map --test all
+    python fpga_gesture_validator.py --port /dev/ttyUSB1 --arch voxel_bin --test all
     python fpga_gesture_validator.py --port COM3 --gesture right
-    python fpga_gesture_validator.py --port /dev/ttyUSB0 --test all
-    python fpga_gesture_validator.py --port COM3 --interactive
-    python fpga_gesture_validator.py --port COM3 --continuous --duration 60
 
 Requirements:
     pip install pyserial
@@ -58,6 +46,12 @@ except ImportError:
 # =============================================================================
 # Constants and Configuration
 # =============================================================================
+
+class Architecture:
+    """UART protocol variant."""
+    VOXEL_BIN = "voxel_bin"       # Binary: 0xA0|gesture, echo/status/config
+    GRADIENT_MAP = "gradient_map" # ASCII: "UP\r\n", "DOWN\r\n", ... only
+
 
 class Gesture(IntEnum):
     """Gesture type encodings"""
@@ -198,13 +192,16 @@ def generate_random_events(count: int) -> List[DVSEvent]:
 class FPGAGestureInterface:
     """Interface for communicating with the FPGA gesture classifier over UART"""
     
-    def __init__(self, port: str, baud_rate: int = DEFAULT_BAUD_RATE):
+    def __init__(self, port: str, baud_rate: int = DEFAULT_BAUD_RATE,
+                 architecture: str = Architecture.VOXEL_BIN):
         self.port = port
         self.baud_rate = baud_rate
+        self.architecture = architecture
         self.serial: Optional[serial.Serial] = None
         self.rx_queue = queue.Queue()
         self.rx_thread: Optional[threading.Thread] = None
         self.running = False
+        self._ascii_line_buffer = bytearray()  # for gradient_map line parsing
         
     def connect(self) -> bool:
         """Open serial connection"""
@@ -279,19 +276,24 @@ class FPGAGestureInterface:
         return bytes(result)
     
     def clear_rx_buffer(self):
-        """Clear any pending received data"""
+        """Clear any pending received data and ASCII line buffer (gradient_map)."""
         while not self.rx_queue.empty():
             try:
                 self.rx_queue.get_nowait()
             except queue.Empty:
                 break
+        self._ascii_line_buffer.clear()
     
     # -------------------------------------------------------------------------
     # UART Commands
     # -------------------------------------------------------------------------
     
     def send_echo(self) -> bool:
-        """Send echo command and verify response"""
+        """Send echo command and verify response (voxel_bin only)."""
+        if self.architecture == Architecture.GRADIENT_MAP:
+            # Gradient-map has no echo; avoid sending 0xFF (would corrupt 5-byte parser)
+            self.clear_rx_buffer()
+            return True  # Assume connected
         self.clear_rx_buffer()
         self._send_byte(0xFF)
         response = self._receive_byte(timeout=0.5)
@@ -301,14 +303,9 @@ class FPGAGestureInterface:
         return False
     
     def query_status(self) -> Optional[dict]:
-        """Query accelerator status
-        Status byte format: [1,0,1,1, temporal_phase, fifo_full, fifo_empty, 0]
-        - Bits 7-4: 0xB (identifier)
-        - Bit 3: temporal_phase (0=early, 1=late)
-        - Bit 2: fifo_full
-        - Bit 1: fifo_empty
-        - Bit 0: reserved (0)
-        """
+        """Query accelerator status (voxel_bin only)."""
+        if self.architecture == Architecture.GRADIENT_MAP:
+            return None  # No status command
         self.clear_rx_buffer()
         self._send_byte(0xFE)
         response = self._receive_byte(timeout=0.5)
@@ -318,14 +315,16 @@ class FPGAGestureInterface:
             print(f"Invalid status response: 0x{response:02X}")
             return None
         return {
-            'phase': (response >> 3) & 0x01,     # Bit 3
-            'fifo_full': (response >> 2) & 0x01, # Bit 2
-            'fifo_empty': (response >> 1) & 0x01,# Bit 1
+            'phase': (response >> 3) & 0x01,
+            'fifo_full': (response >> 2) & 0x01,
+            'fifo_empty': (response >> 1) & 0x01,
             'raw': response
         }
     
     def query_config(self) -> Optional[dict]:
-        """Query configuration parameters"""
+        """Query configuration parameters (voxel_bin only)."""
+        if self.architecture == Architecture.GRADIENT_MAP:
+            return None  # No config command
         self.clear_rx_buffer()
         self._send_byte(0xFD)
         response = self._receive_bytes(2, timeout=0.5)
@@ -337,7 +336,9 @@ class FPGAGestureInterface:
         }
     
     def soft_reset(self):
-        """Send soft reset command"""
+        """Send soft reset command (voxel_bin only). Gradient_map: no-op."""
+        if self.architecture == Architecture.GRADIENT_MAP:
+            return
         self._send_byte(0xFC)
         time.sleep(0.01)
     
@@ -360,30 +361,54 @@ class FPGAGestureInterface:
             if delay_us > 0:
                 time.sleep(delay_us / 1_000_000)
     
+    def _check_gesture_ascii(self, timeout: float) -> Optional[GestureResult]:
+        """Parse gradient_map ASCII output: UP\r\n, DOWN\r\n, LEFT\r\n, RIGHT\r\n"""
+        deadline = time.time() + timeout
+        while time.time() < deadline:
+            try:
+                b = self.rx_queue.get(timeout=max(0.01, deadline - time.time()))
+            except queue.Empty:
+                break
+            if b in (0x0A, 0x0D):  # \n or \r — end of line
+                line = self._ascii_line_buffer.decode("ascii", errors="ignore").strip()
+                self._ascii_line_buffer.clear()
+                if line == "UP":
+                    return GestureResult(Gesture.UP, 0, 0, b"UP\r\n")
+                if line == "DOWN":
+                    return GestureResult(Gesture.DOWN, 0, 0, b"DOWN\r\n")
+                if line == "LEFT":
+                    return GestureResult(Gesture.LEFT, 0, 0, b"LEFT\r\n")
+                if line == "RIGHT":
+                    return GestureResult(Gesture.RIGHT, 0, 0, b"RIGHT\r\n")
+            else:
+                self._ascii_line_buffer.append(b)
+                if len(self._ascii_line_buffer) > 32:
+                    self._ascii_line_buffer.clear()
+        return None
+    
     def check_gesture(self, timeout: float = 0.1) -> Optional[GestureResult]:
-        """Check for gesture detection response"""
+        """Check for gesture detection response (binary or ASCII per architecture)."""
+        if self.architecture == Architecture.GRADIENT_MAP:
+            return self._check_gesture_ascii(timeout)
+        
         byte1 = self._receive_byte(timeout=timeout)
         if byte1 is None:
             return None
+        if (byte1 & 0xF0) != 0xA0:
+            return None
         
-        # Check if this is a gesture response (0xAx)
-        if (byte1 & 0xF0) == 0xA0:
-            byte2 = self._receive_byte(timeout=0.1)
-            if byte2 is None:
-                byte2 = 0
-            
-            gesture = Gesture(byte1 & 0x03)
-            confidence = (byte2 >> 4) & 0x0F
-            event_count_hi = byte2 & 0x0F
-            
-            return GestureResult(
-                gesture=gesture,
-                confidence=confidence,
-                event_count_hi=event_count_hi,
-                raw_bytes=bytes([byte1, byte2])
-            )
-        
-        return None
+        byte2 = self._receive_byte(timeout=0.1)
+        if byte2 is None:
+            byte2 = 0
+        gesture = Gesture(byte1 & 0x03)
+        confidence = (byte2 >> 4) & 0x0F
+        event_count_hi = byte2 & 0x0F
+        return GestureResult(
+            gesture=gesture,
+            confidence=confidence,
+            event_count_hi=event_count_hi,
+            raw_bytes=bytes([byte1, byte2])
+        )
 
 
 # =============================================================================
@@ -447,18 +472,20 @@ def test_gesture(fpga: FPGAGestureInterface, gesture: Gesture,
         print(f"TEST: {gesture_name} Gesture")
         print("="*60)
     
-    # Reset before test
     fpga.soft_reset()
     fpga.clear_rx_buffer()
+    # Clear ASCII line buffer for gradient_map
+    if hasattr(fpga, "_ascii_line_buffer"):
+        fpga._ascii_line_buffer.clear()
     time.sleep(0.05)
 
-    # Align to start in early phase when possible
-    status = fpga.query_status()
-    if status and status.get("phase") == 1:
-        if verbose:
-            print("Waiting for early phase start...")
-        time.sleep(0.25)
-
+    # Voxel_bin: align to temporal phase
+    if fpga.architecture == Architecture.VOXEL_BIN:
+        status = fpga.query_status()
+        if status and status.get("phase") == 1:
+            if verbose:
+                print("Waiting for early phase start...")
+            time.sleep(0.25)
     
     # Generate gesture events (reduced noise, larger motion for robust detection)
     events = generate_gesture_events(
@@ -473,21 +500,19 @@ def test_gesture(fpga: FPGAGestureInterface, gesture: Gesture,
     if verbose:
         print(f"Sending {len(events)} events for {gesture_name} gesture...")
     
-    # Send events with realistic timing
-    # Split into early and late portions for the dual-accumulator architecture
-    half = len(events) // 2
+    if fpga.architecture == Architecture.GRADIENT_MAP:
+        # Gradient-map: frame-based (e.g. 50 ms); send dense event stream, then wait for classification
+        fpga.send_event_stream(events, delay_us=200)
+        time.sleep(0.2)   # Allow frame to close and classifier to run (e.g. 50 ms frame + pipeline)
+    else:
+        # Voxel_bin: split early/late for dual-accumulator
+        half = len(events) // 2
+        fpga.send_event_stream(events[:half], delay_us=500)
+        time.sleep(0.2)
+        fpga.send_event_stream(events[half:], delay_us=500)
     
-    # Early window events
-    fpga.send_event_stream(events[:half], delay_us=500)
-    time.sleep(0.2)  # Wait for phase transition
-    
-    # Late window events  
-    fpga.send_event_stream(events[half:], delay_us=500)
-    
-    # Wait for classification with persistence
     time.sleep(0.5)
     
-    # Check for gesture response
     result = fpga.check_gesture(timeout=1.0)
     
     if result:
@@ -623,17 +648,23 @@ def interactive_mode(fpga: FPGAGestureInterface):
                 else:
                     print("Echo: FAILED")
             elif cmd == 's':
-                status = fpga.query_status()
-                if status:
-                    print(f"Status: {status}")
+                if fpga.architecture == Architecture.GRADIENT_MAP:
+                    print("Status: not supported (gradient_map)")
                 else:
-                    print("Status: FAILED")
+                    status = fpga.query_status()
+                    if status:
+                        print(f"Status: {status}")
+                    else:
+                        print("Status: FAILED")
             elif cmd == 'c':
-                config = fpga.query_config()
-                if config:
-                    print(f"Config: {config}")
+                if fpga.architecture == Architecture.GRADIENT_MAP:
+                    print("Config: not supported (gradient_map)")
                 else:
-                    print("Config: FAILED")
+                    config = fpga.query_config()
+                    if config:
+                        print(f"Config: {config}")
+                    else:
+                        print("Config: FAILED")
             elif cmd == 'x':
                 fpga.soft_reset()
                 print("Reset sent")
@@ -681,9 +712,9 @@ def main():
         epilog="""
 Examples:
   %(prog)s --list-ports
-  %(prog)s --port COM3 --test echo
+  %(prog)s --port COM3 --arch gradient_map --test all
+  %(prog)s --port /dev/ttyUSB1 --arch voxel_bin --test all
   %(prog)s --port COM3 --gesture right
-  %(prog)s --port COM3 --test all
   %(prog)s --port COM3 --interactive
   %(prog)s --port /dev/ttyUSB0 --continuous --duration 120
         """
@@ -693,6 +724,10 @@ Examples:
                         help='Serial port (e.g., COM3 or /dev/ttyUSB0)')
     parser.add_argument('--baud', '-b', type=int, default=DEFAULT_BAUD_RATE,
                         help=f'Baud rate (default: {DEFAULT_BAUD_RATE})')
+    parser.add_argument('--arch', '-a', type=str,
+                        choices=['voxel_bin', 'gradient_map'],
+                        default='voxel_bin',
+                        help='FPGA architecture: voxel_bin (binary protocol) or gradient_map (ASCII only)')
     parser.add_argument('--list-ports', action='store_true',
                         help='List available serial ports')
     parser.add_argument('--test', '-t', type=str, 
@@ -719,28 +754,38 @@ Examples:
         print("\nERROR: --port is required")
         return 1
     
-    # Connect to FPGA
-    fpga = FPGAGestureInterface(args.port, args.baud)
+    architecture = args.arch
+    if architecture == "gradient_map":
+        print("Using gradient_map protocol (ASCII gesture output)")
+    else:
+        print("Using voxel_bin protocol (binary + echo/status/config)")
+    
+    fpga = FPGAGestureInterface(args.port, args.baud, architecture=architecture)
     if not fpga.connect():
         return 1
     
     try:
-        # Initial connection test
         if not test_connection(fpga):
             print("WARNING: Echo test failed, FPGA may not be responding")
         
-        # Run requested operation
         if args.test == 'echo':
             test_connection(fpga)
         elif args.test == 'status':
-            test_status(fpga)
+            if architecture == Architecture.GRADIENT_MAP:
+                print("(gradient_map has no status command — skipped)")
+            else:
+                test_status(fpga)
         elif args.test == 'config':
-            test_config(fpga)
+            if architecture == Architecture.GRADIENT_MAP:
+                print("(gradient_map has no config command — skipped)")
+            else:
+                test_config(fpga)
         elif args.test == 'noise':
             test_noise_rejection(fpga)
         elif args.test == 'all':
-            test_status(fpga)
-            test_config(fpga)
+            if architecture != Architecture.GRADIENT_MAP:
+                test_status(fpga)
+                test_config(fpga)
             test_noise_rejection(fpga)
             test_all_gestures(fpga)
         elif args.gesture:
@@ -756,9 +801,9 @@ Examples:
         elif args.interactive:
             interactive_mode(fpga)
         else:
-            # Default: run all tests
-            test_status(fpga)
-            test_config(fpga)
+            if architecture != Architecture.GRADIENT_MAP:
+                test_status(fpga)
+                test_config(fpga)
             test_all_gestures(fpga)
         
     except KeyboardInterrupt:

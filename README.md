@@ -21,7 +21,7 @@ python3 -m venv .venv
 
 ## Flashing the FPGA
 
-Synthesize and flash by architecture name. Both architectures are actively maintained.
+Synthesize and flash by architecture name. 
 
 ### Prerequisites
 
@@ -54,6 +54,13 @@ make -f Makefile clean && make -f Makefile && make -f Makefile prog
 make -f Makefile.uart clean && make -f Makefile.uart && make -f Makefile.uart prog
 ```
 
+### iCE40 UP5K resource fit
+
+Both architectures are tuned to fit the Lattice iCE40 UP5K (≈5280 LUT4s, 30×4 Kbit BRAM):
+
+- **Gradient-map**: 16×16 grid (256 cells), 128-entry input FIFO, time-surface and weight ROMs sized for 256 cells; `flatten_buffer` removed from build (classifier streams directly from BRAM).
+- **Voxel-bin**: 5 temporal bins (was 8), 16×16 grid, 1280-cell feature vector and 4×1280 weight ROMs unchanged; bin RAM reduced to 5×256×8-bit.
+
 ### Configuration Parameters (Gradient-Map)
 
 The gradient-map architecture uses these default parameters (configurable in `rtl/gradient_map_architecture/gradient_map_top.sv`):
@@ -62,6 +69,9 @@ The gradient-map architecture uses these default parameters (configurable in `rt
 - `FRAME_PERIOD_MS = 50`: Classification frame period in milliseconds
 - `DECAY_SHIFT = 6`: Time-surface decay rate
 - `BAUD_RATE = 115200`: UART communication speed
+- Grid: **16×16** (256 cells) for UP5K fit; decoder downsamples 320×320 to 16×16
+
+Cocotb tests under `tb/gradient_map_architecture/` that assume 32×32 (e.g. `GRID_SIZE=32`, `NUM_CELLS=1024`) may need to be updated to 16×16 / 256 to match the current RTL.
 
 ### Verifying the Flash
 
@@ -69,7 +79,7 @@ After flashing, you can verify the FPGA is running:
 
 1. **Check LEDs**: `led_heartbeat` should blink at ~1.5 Hz
 2. **Test with emulator**: Use the DVS camera emulator to send events and observe gesture detections
-3. **Use validator tool**: Run `python tools/fpga_gesture_validator.py --port /dev/ttyUSB0 --test all`
+3. **Use validator tool**: Run `python tools/fpga_gesture_validator.py --port /dev/ttyUSB0 --arch gradient_map --test all` (or `--arch voxel_bin` for voxel-bin).
 
 ### Using with DVS Camera Emulator
 
@@ -93,70 +103,74 @@ The FPGA will output ASCII gesture classifications (`UP\r\n`, `DOWN\r\n`, etc.) 
 - Scripts and tools: [tools](tools)
 - Generated build outputs: [synth](synth)
 
-## Architecture overview (current RTL)
+## Architecture overview
 
-The current RTL is a streaming, single-pass pipeline that converts EVT 2.0 DVS events into a gesture label. Events arrive as 32-bit EVT2 words (or via optional 5-byte UART mock input) and are processed in order on a single clock domain.
+The two provided architectures are both streaming, single-pass DVS pipelines that run on a single clock domain, but they implement **different feature representations and classifiers**:
 
-**High-level pipeline**: EVT2 words -> FIFO -> EVT2 decoder -> Time-surface memory (decay-on-read) -> Moment scan -> Direction classifier -> UART debug output
+- **Gradient-Map**: EVT2 → time-surface (exponential decay) → learned linear classifier (systolic MAC array over the 2D surface).
+- **Voxel-Bin**: EVT2 → spatial compression → 3D histogram (time × x × y) → learned linear classifier (systolic MAC over flattened bins).
 
-### Module map (current RTL)
-
-- Top-level integration and control: [rtl/gesture_top.sv](rtl/gesture_top.sv)
-- UART validation wrapper: [rtl/gesture_uart_top.sv](rtl/gesture_uart_top.sv)
-- EVT2 decoder: [rtl/evt2_decoder.sv](rtl/evt2_decoder.sv)
-- Input FIFO: [rtl/input_fifo.sv](rtl/input_fifo.sv)
-- Time surface memory: [rtl/time_surface_memory.sv](rtl/time_surface_memory.sv)
-- Moment scan + classifier: [rtl/feature_extractor.sv](rtl/feature_extractor.sv)
-- UART debug output: [rtl/uart_debug.sv](rtl/uart_debug.sv)
-- UART receiver: [rtl/uart_rx.sv](rtl/uart_rx.sv)
-- UART transmitter: [rtl/uart_tx.sv](rtl/uart_tx.sv)
-
-### Input capture + FIFO
-
-- External EVT2 words are accepted when `evt_ready` is high and written into `input_fifo` (256 x 32-bit BRAM).
-- Optional UART event input can be enabled (parameter `UART_RX_ENABLE`) to synthesize EVT2 CD events from 5-byte packets for testing.
-
-### EVT2 decode + spatial downsample
-
-- `evt2_decoder` parses EVT2 words, reconstructs a 16-bit timestamp, and emits CD events.
-- X and Y are downsampled from 320x320 into a 16x16 grid using bit slicing (`x_raw[8:5]`, `y_raw[8:5]`) with clamping.
-
-### Time-surface memory (decay-on-read)
-
-- `time_surface_memory` stores the last-event timestamp for each 16x16 cell in BRAM.
-- A global 16-bit timestamp counter provides `t_now` for decay.
-- On read, the decayed value is computed lazily: `value = MAX - (t_now - t_last) >> DECAY_SHIFT`, clamped to [0, MAX]. This produces a time-surface without explicit sweeping.
-
-### Moment scan + classification
-
-- `feature_extractor` runs on a fixed frame period (`FRAME_PERIOD_MS`).
-- It scans all 256 cells, accumulating spatial moments: `M00`, `M10`, `M01`.
-- The centroid offset from the center (8,8) is derived as `M10 - M00*8` and `M01 - M00*8`.
-- A simple directional classifier compares offsets to determine UP/DOWN/LEFT/RIGHT. `MIN_MASS_THRESH` gates low-activity frames.
-
-### Output and indicators
-
-- `uart_debug` outputs gesture class and confidence over UART.
-- LEDs reflect heartbeat, activity, and detected direction in [rtl/gesture_top.sv](rtl/gesture_top.sv).
+Neither architecture computes an explicit centroid; both use **learned weights over feature maps** rather than hand-coded centroid logic.
 
 ## Gradient-Map architecture
 
-The Gradient-Map architecture is a streaming, single-pass pipeline that converts EVT 2.0 DVS events into a gesture label using a time-surface plus spatio-temporal classifier. Events arrive as 32-bit EVT2 words (or via optional 5-byte UART mock input) and are processed in order on a single clock domain.
+The Gradient-Map architecture is a streaming, frame-based pipeline that converts EVT 2.0 DVS events into a gesture label using a decaying time-surface plus a systolic-array classifier. Events arrive as 32-bit EVT2 words (or via optional 5-byte UART mock input) and are processed in order on a single clock domain. Default grid is **16×16** (256 cells) for iCE40 UP5K fit.
 
-**High-level pipeline**: EVT2 words -> FIFO -> EVT2 decoder -> Time-surface encoder (exponential decay) -> Spatio-temporal classifier (gradient-map / systolic array) -> UART debug output
+**High-level pipeline**: EVT2 words → FIFO → EVT2 decoder → Time-surface encoder (exponential decay) → Spatio-temporal classifier (systolic MAC + argmax) → UART debug output
 
 ### Module map (Gradient-Map architecture)
 
 - Top-level integration and control: `rtl/gradient_map_architecture/gesture_top.sv`
 - UART validation wrapper: `rtl/gradient_map_architecture/gradient_map_top.sv`
-- EVT2 decoder: `rtl/gradient_map_architecture/evt2_decoder.sv`
+- EVT2 decoder + spatial downsample: `rtl/gradient_map_architecture/evt2_decoder.sv`
 - Input FIFO: `rtl/gradient_map_architecture/input_fifo.sv`
 - Time-surface memory core: `rtl/gradient_map_architecture/time_surface_memory.sv`
-- Time-surface encoder: `rtl/gradient_map_architecture/time_surface_encoder.sv`
-- Gradient-map classifier core (flatten + systolic array + weights): files under `rtl/gradient_map_architecture`
+- Time-surface encoder (exponential decay front-end): `rtl/gradient_map_architecture/time_surface_encoder.sv`
+- Spatio-temporal classifier (frame timer + scan + systolic array + weights):
+  - `rtl/gradient_map_architecture/spatio_temporal_classifier.sv`
+  - `rtl/gradient_map_architecture/systolic_array.sv`
+  - `rtl/gradient_map_architecture/weight_rom.sv`
 - UART debug output: `rtl/uart_debug.sv`
 - UART receiver: `rtl/uart_rx.sv`
 - UART transmitter: `rtl/uart_tx.sv`
+
+### Input capture + FIFO (Gradient-Map)
+
+- External EVT2 words are accepted when `evt_ready` is high and written into the architecture-local `input_fifo` (128 x 32-bit BRAM in the current config).
+- Optional UART event input can be enabled (parameter `UART_RX_ENABLE`) to synthesize EVT2 CD events from 5-byte packets for testing.
+
+### EVT2 decode + spatial downsample (Gradient-Map)
+
+- `evt2_decoder` parses EVT2 words, reconstructs a 16-bit timestamp, and emits CD events.
+- X and Y are downsampled from 320×320 into a 16×16 grid using bit slicing with clamping (see `GRID_BITS` parameter in the gradient-map decoder).
+
+### Time-surface encoder (exponential decay)
+
+- `time_surface_memory` stores the last-event timestamp for each 16×16 cell in an inlined dual-port BRAM.
+- `time_surface_encoder` wraps `time_surface_memory` and converts timestamps into an exponentially decaying value:
+  - For each cell, it computes Δt = `t_now - t_last_event`, then `decay_steps = Δt >> DECAY_SHIFT`.
+  - The surface value is `MAX_VALUE >> decay_steps`, i.e. exact binary half-lives (255, 127, 63, …) until it decays to zero.
+- Reads are pipelined so that the classifier can stream one decayed cell per cycle.
+
+### Spatio-temporal classification (systolic array)
+
+- `spatio_temporal_classifier` runs on a fixed frame period (`FRAME_PERIOD_MS`) driven by a frame counter.
+- Each frame, it linearly scans all `GRID_SIZE × GRID_SIZE` cells, reading decayed values from the time-surface into:
+  - An **energy accumulator** (`debug_m00`) used to gate low-activity frames via `MIN_MASS_THRESH`.
+  - A **feature stream**: one cell per cycle into `systolic_array`.
+- `systolic_array` and four parallel `weight_rom` instances implement a 4-way learned linear classifier:
+  - For each cell index `i`, all 4 class weights `w_k[i]` are fetched in parallel and multiplied by the feature value.
+  - Accumulators integrate these products over all cells to produce 4 class scores.
+  - An argmax stage selects the best class and exposes scores for debug.
+- The final output logic in `spatio_temporal_classifier`:
+  - Asserts `gesture_valid` only when the frame energy exceeds `MIN_MASS_THRESH`.
+  - Outputs `gesture_class` from the systolic argmax.
+  - Derives a coarse `gesture_confidence` from the accumulated energy, **not** from centroid geometry.
+
+### Output and indicators (Gradient-Map)
+
+- `uart_debug` outputs gesture class and confidence as ASCII strings (`UP\r\n`, `DOWN\r\n`, etc.).
+- `gesture_top.sv` in the gradient-map folder also drives LEDs for heartbeat, activity, and detected direction.
 
 ### How to test, synthesize, and flash (Gradient-Map)
 
@@ -164,18 +178,30 @@ The Gradient-Map architecture is a streaming, single-pass pipeline that converts
 # Run main cocotb tests
 python setup.py test gradient_map
 # Or from tb folder:
-cd tb/gradient_map_architecture && make -f Makefile.gesture test
+cd tb/gradient_map_architecture && make test
 
 # Synthesize and flash
 python setup.py synth gradient_map   # builds gradient_map_top.bit
-python setup.py flash gradient_map  # flashes gradient_map_top.bit
+python setup.py flash gradient_map   # flashes gradient_map_top.bit
 ```
 
 ## Voxel-Bin architecture
 
-The voxel-bin architecture uses a dual-accumulator sliding-window design with spatial compression (320×320 → 16×16) and temporal binning. It is actively maintained alongside the gradient-map architecture.
+The voxel-bin architecture is an event-driven pipeline that compresses the 320×320 sensor into a 16×16 grid and accumulates activity into a **3D histogram of recent events** (time bins × x × y). A readout FSM periodically flattens the most recent bins into a feature vector and feeds a systolic classifier. Default is **5 temporal bins** (read out all 5) for iCE40 UP5K fit.
 
-**Key modules**: `SpatialCompressor`, `TemporalAccumulator`, `MotionComputer`, `GestureClassifier`
+**High-level pipeline**: DVS events → InputFIFO → SpatialCompressor (320×320 → 16×16) → TimeSurfaceBinning (NUM_BINS × GRID × GRID counters) → SystolicMatrixMultiply + WeightROM (learned classifier) → OutputRegister (persistence + confidence) → UART
+
+**Key modules** (see `rtl/voxel_bin_architecture`):
+
+- `dvs_gesture_accel.sv`: top-level accelerator (wraps the full voxel-bin pipeline).
+- `InputFIFO.sv`: shallow event FIFO with ready/valid handshaking.
+- `SpatialCompressor.sv`: maps raw sensor coordinates to the GRID_SIZE×GRID_SIZE grid.
+- `TimeSurfaceBinning.sv`: ring buffer of 2D histograms over time; rotates bins based on a cycle counter and flattens the latest `READOUT_BINS` bins into a 1-D feature stream (`readout_data`, `readout_valid`).
+- `SystolicMatrixMultiply.sv`: systolic MAC array that multiplies the flattened bin vector by 4 learned weight vectors (one per gesture class) and produces 4 scores plus `best_class`.
+- `WeightROM.sv`: per-class weight ROMs addressed by feature index, providing weights to the systolic array.
+- `OutputRegister.sv`: persistence filter and confidence mapping; converts classifier outputs into a stable gesture code plus 4-bit confidence, with simple activity/motion gating.
+
+In the voxel-bin path, motion is inferred from **learned weights over the spatio-temporal histogram**, not from explicit centroid or geometric computations. Legacy centroid-based modules (`TemporalAccumulator`, `MotionComputer`, `GestureClassifier`) remain in the tree for reference and experiments but are not used in the current `dvs_gesture_accel` top.
 
 ### How to test, synthesize, and flash (Voxel-Bin)
 
@@ -190,7 +216,8 @@ python setup.py synth voxel_bin   # builds voxel_bin_top.bit
 python setup.py flash voxel_bin  # flashes voxel_bin_top.bit
 ```
 
-**Note**: The voxel-bin architecture uses binary gesture responses (not ASCII) and supports echo/status/config UART commands. The `fpga_gesture_validator.py` tool is designed for this architecture.
+**Note**: The voxel-bin architecture uses binary gesture responses and supports echo/status/config UART commands. The gradient-map architecture outputs ASCII only (`UP\r\n`, etc.) and has no echo/status/config. Use the validator with `--arch gradient_map` for gradient-map or `--arch voxel_bin` (default) for voxel-bin:  
+`python tools/fpga_gesture_validator.py --port /dev/ttyUSB0 --arch gradient_map --test all`
 
 ## UART protocol
 
@@ -341,7 +368,8 @@ At 115200 baud, the UART can deliver ~2300 events/sec (5 bytes per event). The G
 
 ```bash
 .venv/bin/python tools/fpga_gesture_validator.py --list-ports
-.venv/bin/python tools/fpga_gesture_validator.py --port port# --test all
+.venv/bin/python tools/fpga_gesture_validator.py --port port# --arch gradient_map --test all
+.venv/bin/python tools/fpga_gesture_validator.py --port port# --arch voxel_bin --test all
 .venv/bin/python tools/fpga_gesture_validator.py --port port# --interactive
 ```
 

@@ -27,7 +27,8 @@
 module spatio_temporal_classifier #(
     parameter CLK_FREQ_HZ     = 12_000_000,
     parameter FRAME_PERIOD_MS = 10,
-    parameter GRID_SIZE       = 32,
+    parameter GRID_SIZE       = 16,
+    parameter ADDR_BITS       = 8,
     parameter VALUE_BITS      = 8,
     parameter MOMENT_BITS     = 24,
     parameter WEIGHT_BITS     = 8,
@@ -39,7 +40,7 @@ module spatio_temporal_classifier #(
     input  logic                    rst,
 
     // Time-Surface Read Interface (driven to time_surface_encoder)
-    output logic [9:0]              ts_read_addr,   // 10-bit for 1024 cells
+    output logic [ADDR_BITS-1:0]    ts_read_addr,
     output logic                    ts_read_enable,
     input  logic [VALUE_BITS-1:0]   ts_read_value,
 
@@ -55,8 +56,7 @@ module spatio_temporal_classifier #(
     output logic [2:0]              debug_state
 );
 
-    localparam NUM_CELLS  = GRID_SIZE * GRID_SIZE;        // 1024
-    localparam ADDR_BITS  = $clog2(NUM_CELLS);            // 10
+    localparam NUM_CELLS  = GRID_SIZE * GRID_SIZE;
     localparam PIPE_DEPTH = 2;                            // BRAM + decay latency
     localparam CNT_BITS   = $clog2(NUM_CELLS + PIPE_DEPTH + 2);
 

@@ -25,7 +25,7 @@
 //   the decay computation with the exponential version.
 //
 // Parameters:
-//   GRID_SIZE    - Grid dimension (16 → 16×16 = 256 cells)
+//   GRID_SIZE    - Grid dimension (16 → 16×16 = 256 cells for ice40up5k)
 //   ADDR_BITS    - log2(GRID_SIZE^2) = 8
 //   TS_BITS      - Timestamp bits (16)
 //   VALUE_BITS   - Output decay value bits (8)
@@ -34,8 +34,8 @@
 // =============================================================================
 
 module time_surface_encoder #(
-    parameter GRID_SIZE   = 32,
-    parameter ADDR_BITS   = 10,
+    parameter GRID_SIZE   = 16,
+    parameter ADDR_BITS   = 8,
     parameter TS_BITS     = 16,
     parameter VALUE_BITS  = 8,
     parameter MAX_VALUE   = 255,

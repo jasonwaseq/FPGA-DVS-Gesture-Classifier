@@ -14,20 +14,22 @@
 // Parameters:
 //   NUM_CLASSES  - Number of output classes (4)
 //   NUM_CELLS    - Input vector duration (READOUT_BINS * GRID_SIZE^2)
-//                  For 5 bins * 256 cells = 1280.
-//   VALUE_BITS   - Input feature bit width (8)
+//                  For 4 bins * 256 cells = 1024.
+//   VALUE_BITS   - Input feature bit width (6, reduced from 8)
 //   WEIGHT_BITS  - Weight bit width (8)
 //   ACC_BITS     - Accumulator width (24)
+//   PARALLEL_INPUTS - Number of parallel feature inputs per cycle (4 for speed)
 //
 // =============================================================================
 
 module SystolicMatrixMultiply #(
     parameter NUM_CLASSES = 4,
-    // Default to 5 bins * 16x16 = 1280
-    parameter NUM_CELLS   = 1280, 
-    parameter VALUE_BITS  = 8,
+    // Default to 4 bins * 16x16 = 1024
+    parameter NUM_CELLS   = 1024, 
+    parameter VALUE_BITS  = 6,        // Reduced from 8 to match COUNTER_BITS
     parameter WEIGHT_BITS = 8,
-    parameter ACC_BITS    = 24
+    parameter ACC_BITS    = 24,
+    parameter PARALLEL_INPUTS = 4     // Parallel inputs per cycle (speed optimization)
 )(
     input  logic                                    clk,
     input  logic                                    rst,
@@ -35,13 +37,13 @@ module SystolicMatrixMultiply #(
     // Control
     input  logic                                    start,
 
-    // Feature stream — one value per cycle
-    input  logic [VALUE_BITS-1:0]                   feature_in,
+    // Feature stream — parallel values per cycle (optimized)
+    input  logic [PARALLEL_INPUTS*VALUE_BITS-1:0]   feature_in,    // Parallel feature data
     input  logic                                    feature_valid, // Optional qualification
 
-    // Parallel weight ROM interface
-    output logic [$clog2(NUM_CELLS)-1:0]            w_addr,
-    input  logic [NUM_CLASSES*WEIGHT_BITS-1:0]      w_data_flat,  // 4x8=32 bits
+    // Parallel weight ROM interface (flattened for port compatibility)
+    output logic [PARALLEL_INPUTS*$clog2(NUM_CELLS)-1:0]            w_addr_flat,  // Flattened addresses
+    input  logic [PARALLEL_INPUTS*NUM_CLASSES*WEIGHT_BITS-1:0]      w_data_flat,  // Flattened parallel weight data
 
     // Results
     output logic                                    result_valid,
@@ -53,6 +55,8 @@ module SystolicMatrixMultiply #(
     // Constants
     // =========================================================================
     localparam CNT_BITS = $clog2(NUM_CELLS + 4);
+    localparam PARALLEL_BITS = $clog2(PARALLEL_INPUTS);
+    localparam CYCLES_NEEDED = (NUM_CELLS + PARALLEL_INPUTS - 1) / PARALLEL_INPUTS;  // Ceiling division
 
     // =========================================================================
     // State machine
@@ -69,22 +73,45 @@ module SystolicMatrixMultiply #(
     // =========================================================================
     // Internal Signals
     // =========================================================================
-    logic [CNT_BITS-1:0] cell_cnt;   // Counts 0..NUM_CELLS-1
+    logic [CNT_BITS-1:0] cell_cnt;   // Counts cycles (0..CYCLES_NEEDED-1)
 
     // Accumulators
     logic signed [ACC_BITS-1:0] acc   [0:NUM_CLASSES-1];
     logic signed [ACC_BITS-1:0] acc_r [0:NUM_CLASSES-1];
 
     // Feature pipeline (1-cycle delay to align with ROM latency)
-    logic [VALUE_BITS-1:0] feat_pipe_r;
-    logic                  pipe_valid_r;
+    logic [PARALLEL_INPUTS*VALUE_BITS-1:0] feat_pipe_r;
+    logic                                   pipe_valid_r;
 
-    // Helper: extract per-class weight from flat bus
-    wire signed [WEIGHT_BITS-1:0] w [0:NUM_CLASSES-1];
+    // Unpack addresses and weight data from flattened buses
+    wire [$clog2(NUM_CELLS)-1:0] w_addr [0:PARALLEL_INPUTS-1];
+    wire [NUM_CLASSES*WEIGHT_BITS-1:0] w_data [0:PARALLEL_INPUTS-1];
+    
     generate
-        genvar gk;
-        for (gk = 0; gk < NUM_CLASSES; gk = gk + 1) begin : gen_w_unpack
-            assign w[gk] = $signed(w_data_flat[(gk+1)*WEIGHT_BITS-1 : gk*WEIGHT_BITS]);
+        genvar pa;
+        for (pa = 0; pa < PARALLEL_INPUTS; pa = pa + 1) begin : gen_unpack_addr
+            assign w_addr[pa] = w_addr_flat[(pa+1)*$clog2(NUM_CELLS)-1 : pa*$clog2(NUM_CELLS)];
+            assign w_data[pa] = w_data_flat[(pa+1)*NUM_CLASSES*WEIGHT_BITS-1 : pa*NUM_CLASSES*WEIGHT_BITS];
+        end
+    endgenerate
+    
+    // Helper: extract per-class weights from parallel buses
+    wire signed [WEIGHT_BITS-1:0] w [0:PARALLEL_INPUTS-1][0:NUM_CLASSES-1];
+    generate
+        genvar pi, gk;
+        for (pi = 0; pi < PARALLEL_INPUTS; pi = pi + 1) begin : gen_parallel_weights
+            for (gk = 0; gk < NUM_CLASSES; gk = gk + 1) begin : gen_w_unpack
+                assign w[pi][gk] = $signed(w_data[pi][(gk+1)*WEIGHT_BITS-1 : gk*WEIGHT_BITS]);
+            end
+        end
+    endgenerate
+    
+    // Extract parallel feature values
+    wire signed [VALUE_BITS-1:0] feat_vals [0:PARALLEL_INPUTS-1];
+    generate
+        genvar fi;
+        for (fi = 0; fi < PARALLEL_INPUTS; fi = fi + 1) begin : gen_feat_unpack
+            assign feat_vals[fi] = $signed(feat_pipe_r[(fi+1)*VALUE_BITS-1 : fi*VALUE_BITS]);
         end
     endgenerate
 
@@ -99,7 +126,7 @@ module SystolicMatrixMultiply #(
         if (rst) begin
             state        <= S_IDLE;
             cell_cnt     <= '0;
-            w_addr       <= '0;
+            w_addr_flat  <= '0;
             feat_pipe_r  <= '0;
             pipe_valid_r <= 1'b0;
             result_valid <= 1'b0;
@@ -120,36 +147,10 @@ module SystolicMatrixMultiply #(
                         for (k = 0; k < NUM_CLASSES; k = k + 1)
                             acc[k] <= '0;
                         cell_cnt    <= '0;
-                        w_addr      <= '0;
-                        // For the first cycle, we latch input IF it's valid immediately with start.
-                        // Assuming streaming protocol: Start pulses high, and data is valid on same cycle?
-                        // Or start triggers it.
-                        // In TimeSurfaceBinning -> Readout:
-                        // Cycle 1: Start=1, Valid=0 (because of latency logic I added).
-                        // Cycle 2: Start=0, Valid=1, Data=Valid.
-                        // So we should probably wait for 'feature_valid'?
-                        // But existing systolic assumes continuous stream.
-                        // Let's rely on synchronized start.
-                        // If TimeSurfaceBinning pulses START one cycle BEFORE valid data, we need to handle that.
-                        // Checked TSB: Start=1, Valid=0. Next cycle Valid=1.
-                        // So we should transition to RUNNING but *wait* to latch data?
-                        // Or just latch 0s?
-                        
-                        // Simplest fix: Just start accumulating.
-                        // If TSB sends Data valid on Cycle 2.
-                        // Cycle 1 (Idle->Run): Latch Data (Invalid/Z). PipeValid=0.
-                        // Cycle 2 (Run): PipeValid=1? Wait, PipeValid reflects PREVIOUS latch.
-                        // If I latch Garbage on Cycle 1, and process it on Cycle 2, Acc gets Garbage.
-                        // So I need to align correctly.
-                        
-                        // Let's assume START coincides with FIRST VALID DATA.
-                        // In TSB, I should align ReadoutStart with ReadoutValid?
-                        // "readout_start <= 1'b1; ... readout_valid_d <= readout_busy"
-                        // Valid comes 1 cycle later.
-                        
+                        // Initialize parallel addresses (flattened)
+                        for (int p = 0; p < PARALLEL_INPUTS; p = p + 1)
+                            w_addr_flat[(p+1)*$clog2(NUM_CELLS)-1 : p*$clog2(NUM_CELLS)] <= p;
                         state <= S_RUNNING;
-                        // On IDLE->RUNNING transition, we prepare address 0.
-                        w_addr <= '0; 
                     end
                 end
 
@@ -166,41 +167,44 @@ module SystolicMatrixMultiply #(
                     // We need to skip the very first calculation if data wasn't valid?
                     // Let's use a counter.
                     
-                    // Accumulation Logic
-                    // PipeValid_r means "feat_pipe_r contains valid data AND ROM has valid data for it"
+                    // Accumulation Logic - process all parallel inputs
                     if (pipe_valid_r) begin
-                         for (k = 0; k < NUM_CLASSES; k = k + 1)
-                            acc[k] <= acc[k] +
-                                ACC_BITS'($signed({1'b0, feat_pipe_r}) * $signed(w[k]));
+                        // Process each parallel input
+                        for (int p = 0; p < PARALLEL_INPUTS; p = p + 1) begin
+                            // Check if this parallel input is valid (not beyond NUM_CELLS)
+                            if ((cell_cnt * PARALLEL_INPUTS + p) < NUM_CELLS) begin
+                                for (k = 0; k < NUM_CLASSES; k = k + 1) begin
+                                    acc[k] <= acc[k] +
+                                        ACC_BITS'($signed({1'b0, feat_vals[p]}) * $signed(w[p][k]));
+                                end
+                            end
+                        end
                     end
                     
                     // Advance Control
                     if (feature_valid) begin
-                         pipe_valid_r <= 1'b1; // Once data flows, pipe is full next cycle
-                         
-                         cell_cnt <= cell_cnt + 1'b1;
-                         if (cell_cnt < CNT_BITS'(NUM_CELLS - 1)) begin
-                             w_addr <= w_addr + 1'b1;
-                         end
-                         
-                         if (cell_cnt == CNT_BITS'(NUM_CELLS - 1)) begin
-                             state <= S_DRAIN;
-                         end
+                        pipe_valid_r <= 1'b1; // Once data flows, pipe is full next cycle
+                        
+                        cell_cnt <= cell_cnt + 1'b1;
+                        // Update parallel addresses (flattened)
+                        for (int p = 0; p < PARALLEL_INPUTS; p = p + 1) begin
+                            if ((cell_cnt * PARALLEL_INPUTS + p + PARALLEL_INPUTS) < NUM_CELLS) begin
+                                w_addr_flat[(p+1)*$clog2(NUM_CELLS)-1 : p*$clog2(NUM_CELLS)] <= (cell_cnt + 1) * PARALLEL_INPUTS + p;
+                            end
+                        end
+                        
+                        if (cell_cnt >= CNT_BITS'(CYCLES_NEEDED - 1)) begin
+                            state <= S_DRAIN;
+                        end
                     end else begin
-                        // If data isn't valid, we stall?
-                        // TSB sends continuous stream once started.
-                        // But the first cycle (Start) had Valid=0.
-                        // So we sit in S_RUNNING, waiting for Valid=1?
-                        // Yes, gating by feature_valid is safer.
+                        // Stall if data not valid
                     end
                 end
 
                 // -----------------------------------------------------------
                 S_DRAIN: begin
-                    // Process the last latched value
-                    for (k = 0; k < NUM_CLASSES; k = k + 1)
-                        acc[k] <= acc[k] +
-                            ACC_BITS'($signed({1'b0, feat_pipe_r}) * $signed(w[k]));
+                    // All parallel values should have been processed in S_RUNNING
+                    // Just transition to argmax
                     pipe_valid_r <= 1'b0;
                     state        <= S_ARGMAX;
                 end
