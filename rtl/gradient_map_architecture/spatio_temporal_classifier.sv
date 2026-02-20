@@ -57,6 +57,8 @@ module spatio_temporal_classifier #(
 
     localparam NUM_CELLS  = GRID_SIZE * GRID_SIZE;        // 1024
     localparam ADDR_BITS  = $clog2(NUM_CELLS);            // 10
+    localparam PIPE_DEPTH = 2;                            // BRAM + decay latency
+    localparam CNT_BITS   = $clog2(NUM_CELLS + PIPE_DEPTH + 2);
 
     // =========================================================================
     // Frame Period Counter
@@ -83,51 +85,71 @@ module spatio_temporal_classifier #(
     end
 
     // =========================================================================
-    // Flatten Buffer
+    // Direct BRAM-to-Systolic Streaming (eliminates flatten_buffer)
     // =========================================================================
-    logic                    flat_valid;
-    logic [VALUE_BITS-1:0]   flat_data [0:NUM_CELLS-1];
-    logic [ADDR_BITS-1:0]    flat_ts_addr;
-    logic                    flat_ts_en;
-
-    flatten_buffer #(
-        .GRID_SIZE (GRID_SIZE),
-        .VALUE_BITS(VALUE_BITS),
-        .NUM_CELLS (NUM_CELLS),
-        .PIPE_DEPTH(2)
-    ) u_flatten (
-        .clk        (clk),
-        .rst        (rst),
-        .start      (frame_pulse),
-        .ts_addr    (flat_ts_addr),
-        .ts_en      (flat_ts_en),
-        .ts_val     (ts_read_value),
-        .flat_valid (flat_valid),
-        .flat_data  (flat_data)
-    );
-
-    assign ts_read_addr   = 10'(flat_ts_addr);
-    assign ts_read_enable = flat_ts_en;
-
-    // =========================================================================
+    // Pipeline: BRAM read (1 cycle) + decay (1 cycle) = 2 cycles total latency
+    // We issue addresses 2 cycles ahead and feed systolic_array as data becomes valid
+    
+    logic                    scan_active;
+    logic [ADDR_BITS-1:0]    scan_addr;      // Address issued to BRAM
+    logic [ADDR_BITS-1:0]    scan_addr_pipe [0:PIPE_DEPTH-1];  // Pipeline tracking
+    logic [CNT_BITS-1:0]     scan_cnt;       // Counts cells scanned
+    
     // Surface Energy Accumulator (for threshold gate)
-    // Tracks the sum of all scanned cell values across each frame.
-    // =========================================================================
     logic [MOMENT_BITS-1:0] energy_acc;
-    logic [1:0] scan_active_sr;   // 2-deep SR to track when ts_val is valid
+    logic                    data_valid;      // Data is valid after pipeline delay
 
     always_ff @(posedge clk) begin
         if (rst) begin
-            energy_acc     <= '0;
-            scan_active_sr <= 2'b00;
+            scan_active <= 1'b0;
+            scan_addr   <= '0;
+            scan_cnt    <= '0;
+            energy_acc  <= '0;
+            data_valid  <= 1'b0;
+            for (integer i = 0; i < PIPE_DEPTH; i = i + 1)
+                scan_addr_pipe[i] <= '0;
         end else begin
-            scan_active_sr <= {scan_active_sr[0], flat_ts_en};
-            if (frame_pulse)
-                energy_acc <= '0;
-            if (scan_active_sr[1])
-                energy_acc <= energy_acc + MOMENT_BITS'(ts_read_value);
+            // Pipeline shift register for address tracking
+            scan_addr_pipe[0] <= scan_addr;
+            for (integer i = 1; i < PIPE_DEPTH; i = i + 1)
+                scan_addr_pipe[i] <= scan_addr_pipe[i-1];
+            
+            // Data becomes valid after PIPE_DEPTH cycles
+            data_valid <= scan_active && (scan_cnt >= CNT_BITS'(PIPE_DEPTH));
+            
+            if (frame_pulse) begin
+                // Start new scan
+                scan_active <= 1'b1;
+                scan_addr   <= '0;
+                scan_cnt    <= '0;
+                energy_acc  <= '0;
+                for (integer i = 0; i < PIPE_DEPTH; i = i + 1)
+                    scan_addr_pipe[i] <= '0;
+            end else if (scan_active) begin
+                // Accumulate energy from valid data
+                if (data_valid)
+                    energy_acc <= energy_acc + MOMENT_BITS'(ts_read_value);
+                
+                // Advance scan
+                if (scan_addr < ADDR_BITS'(NUM_CELLS - 1)) begin
+                    scan_addr <= scan_addr + 1'b1;
+                    scan_cnt  <= scan_cnt + 1'b1;
+                end else begin
+                    // All addresses issued, wait for pipeline to drain
+                    if (scan_cnt >= CNT_BITS'(NUM_CELLS + PIPE_DEPTH - 1)) begin
+                        scan_active <= 1'b0;
+                        scan_cnt    <= '0;
+                    end else begin
+                        scan_cnt <= scan_cnt + 1'b1;
+                    end
+                end
+            end
         end
     end
+    
+    // Drive BRAM interface
+    assign ts_read_addr   = scan_addr;
+    assign ts_read_enable = scan_active && (scan_addr < ADDR_BITS'(NUM_CELLS));
 
     // =========================================================================
     // 4× Parallel Weight ROM instances (one per gesture class)
@@ -196,56 +218,48 @@ module spatio_temporal_classifier #(
     );
 
     // =========================================================================
-    // Feature Stream Driver
-    // Feeds flat_data[cell] to systolic_array, one cell per cycle.
-    // systolic_array drives w_addr; we use w_addr as the feature index.
+    // Feature Stream Driver - Direct BRAM-to-Systolic
+    // Feeds ts_read_value directly to systolic_array as it becomes valid
+    // Pipeline: Address issued → BRAM read (1 cycle) → Decay (1 cycle) → Valid data
     // =========================================================================
-    typedef enum logic [1:0] {
-        FS_IDLE = 2'd0,
-        FS_FEED = 2'd1,
-        FS_WAIT = 2'd2
-    } fs_state_t;
-
-    fs_state_t fs_state;
-    logic [ADDR_BITS-1:0] fs_cell;
-
+    logic                    sa_feeding;     // Actively feeding systolic
+    logic [ADDR_BITS-1:0]    sa_feature_cnt; // Track features fed
+    
     always_ff @(posedge clk) begin
         if (rst) begin
-            fs_state      <= FS_IDLE;
-            fs_cell       <= '0;
-            sa_start      <= 1'b0;
-            sa_feature_in <= '0;
+            sa_start       <= 1'b0;
+            sa_feature_in  <= '0;
+            sa_feeding     <= 1'b0;
+            sa_feature_cnt <= '0;
         end else begin
             sa_start <= 1'b0;
-
-            case (fs_state)
-                FS_IDLE: begin
-                    if (flat_valid) begin
-                        fs_cell       <= ADDR_BITS'(1);  // Cell 0 fed on start
-                        sa_start      <= 1'b1;
-                        sa_feature_in <= flat_data[0];
-                        fs_state      <= FS_FEED;
-                    end
+            
+            // Start feeding when first data becomes valid (after PIPE_DEPTH cycles)
+            if (!sa_feeding && data_valid && scan_active) begin
+                sa_start       <= 1'b1;
+                sa_feature_in  <= ts_read_value;  // First valid data (cell 0)
+                sa_feeding     <= 1'b1;
+                sa_feature_cnt <= ADDR_BITS'(1);
+            end else if (sa_feeding && data_valid) begin
+                // Continue feeding as data becomes valid each cycle
+                sa_feature_in <= ts_read_value;
+                if (sa_feature_cnt < ADDR_BITS'(NUM_CELLS - 1)) begin
+                    sa_feature_cnt <= sa_feature_cnt + 1'b1;
+                end else begin
+                    // All NUM_CELLS features fed
+                    sa_feeding <= 1'b0;
+                    sa_feature_cnt <= '0;
                 end
-
-                FS_FEED: begin
-                    // systolic_array drives w_addr; we feed the matching feature
-                    // (w_addr lags our cell by 1 cycle; use fs_cell which mirrors w_addr+1)
-                    sa_feature_in <= flat_data[fs_cell];
-                    if (fs_cell < ADDR_BITS'(NUM_CELLS - 1)) begin
-                        fs_cell <= fs_cell + 1'b1;
-                    end else begin
-                        fs_state <= FS_WAIT;
-                    end
-                end
-
-                FS_WAIT: begin
-                    if (sa_result_valid)
-                        fs_state <= FS_IDLE;
-                end
-
-                default: fs_state <= FS_IDLE;
-            endcase
+            end else if (sa_feeding && !data_valid) begin
+                // Stall if data not yet valid (shouldn't happen in normal operation)
+                // but handle gracefully
+            end
+            
+            // Reset on new frame
+            if (frame_pulse) begin
+                sa_feeding     <= 1'b0;
+                sa_feature_cnt <= '0;
+            end
         end
     end
 
@@ -277,6 +291,6 @@ module spatio_temporal_classifier #(
     assign debug_m00   = energy_acc;
     assign debug_m10   = MOMENT_BITS'(sa_score0);
     assign debug_m01   = MOMENT_BITS'(sa_score1);
-    assign debug_state = {1'b0, fs_state[1:0]};
+    assign debug_state = {1'b0, sa_feeding, scan_active};
 
 endmodule

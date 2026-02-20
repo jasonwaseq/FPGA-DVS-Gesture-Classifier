@@ -5,12 +5,10 @@ Works on Windows, Linux, and macOS
 
 Usage:
     python setup.py                       # Full setup (venv + dependencies + FPGA tools)
-    python setup.py --skip-fpga           # Skip OSS CAD Suite download
-    python setup.py test                  # Run cocotb verification tests
-    python setup.py synth                 # Synthesize legacy design for iCE40
-    python setup.py synth-uart            # Synthesize UART validation design
-    python setup.py flash                 # Flash legacy bitstream
-    python setup.py flash-uart            # Flash UART validation bitstream
+    python setup.py --skip-fpga            # Skip OSS CAD Suite download
+    python setup.py test [arch]            # Run cocotb tests (arch: voxel_bin | gradient_map)
+    python setup.py synth <arch>           # Synthesize for iCE40 (arch: voxel_bin | gradient_map)
+    python setup.py flash <arch>           # Flash bitstream (arch: voxel_bin | gradient_map)
     python setup.py clean                 # Clean build artifacts
 """
 
@@ -54,6 +52,9 @@ RTL_FILES = [
     "voxel_bin_architecture/MotionComputer.sv",
     "voxel_bin_architecture/GestureClassifier.sv",
     "voxel_bin_architecture/OutputRegister.sv",
+    "voxel_bin_architecture/TimeSurfaceBinning.sv",
+    "voxel_bin_architecture/WeightROM.sv",
+    "voxel_bin_architecture/SystolicMatrixMultiply.sv",
     "voxel_bin_architecture/dvs_gesture_accel.sv",
     "voxel_bin_architecture/voxel_bin_top.sv",
 ]
@@ -303,19 +304,30 @@ def setup_oss_cad_suite():
 # Test Functions
 # =============================================================================
 
-def run_tests(test_module="test_spatiotemporal_classifier"):
-    """Run cocotb verification tests."""
+# Architecture config for tests: (rtl_files, toplevel, tb_dir, defines, param_overrides)
+ARCH_TEST_CONFIG = {
+    "voxel_bin": (RTL_FILES, "voxel_bin_top", TB_DIR / "voxel_bin_architecture", ["-DCLKS_PER_BIT=4", "-DMIN_EVENT_THRESH=4", "-DMOTION_THRESH=2"], ["-Pvoxel_bin_top.CYCLES_PER_BIN=600"]),
+    "gradient_map": (RTL_FILES_GESTURE, "gesture_top", TB_DIR / "gradient_map_architecture", [], ["-Pgesture_top.FRAME_PERIOD_MS=1", "-Pgesture_top.MIN_MASS_THRESH=20", "-Pgesture_top.UART_RX_ENABLE=1"]),
+}
+
+
+def run_tests(test_module=None):
+    """Run cocotb verification tests. test_module: test_voxel_bin | test_gradient_map | <other>."""
     print_header("Running cocotb Verification Tests")
-    
-    # Determine RTL files and toplevel based on test module
-    if test_module == "test_gesture_top":
-        rtl_files = RTL_FILES_GESTURE
-        toplevel = "gesture_top"
-        defines = []  # No special defines needed for gesture_top
+
+    # Map test module to architecture
+    if test_module in ("test_voxel_bin", "voxel_bin"):
+        arch = "voxel_bin"
+        test_module = "test_voxel_bin"
+    elif test_module in ("test_gradient_map", "gradient_map"):
+        arch = "gradient_map"
+        test_module = "test_gradient_map"
     else:
-        rtl_files = RTL_FILES
-        toplevel = "voxel_bin_top"
-        defines = ["-DCLKS_PER_BIT=4", "-DMIN_EVENT_THRESH=4", "-DMOTION_THRESH=2"]
+        # Default to voxel_bin for backward compatibility
+        arch = "voxel_bin"
+        test_module = test_module or "test_voxel_bin"
+
+    rtl_files, toplevel, tb_dir, defines, param_overrides = ARCH_TEST_CONFIG[arch]
     
     # Prefer system Icarus to avoid OSS CAD Suite GLIBC conflicts
     system_iverilog = Path("/usr/bin/iverilog")
@@ -366,7 +378,7 @@ def run_tests(test_module="test_spatiotemporal_classifier"):
     env["COCOTB_TEST_MODULES"] = test_module
     env["TOPLEVEL"] = toplevel
     env["TOPLEVEL_LANG"] = "verilog"
-    env["PYTHONPATH"] = str(TB_DIR)
+    env["PYTHONPATH"] = str(tb_dir)
     if sys.platform.startswith("linux") and not use_system_iverilog:
         # Keep system glibc ahead when forced to use OSS CAD Suite Icarus
         env["LD_LIBRARY_PATH"] = "/lib/x86_64-linux-gnu:/usr/lib/x86_64-linux-gnu"
@@ -379,9 +391,9 @@ def run_tests(test_module="test_spatiotemporal_classifier"):
         env["LIBPYTHON_LOC"] = str(Path(sys.base_prefix) / dll_name)
         env["PYGPI_PYTHON_BIN"] = str(python)
     
-    # Create sim_build directory
-    sim_build = TB_DIR / "sim_build"
-    sim_build.mkdir(exist_ok=True)
+    # Create sim_build directory (per-architecture)
+    sim_build = tb_dir / "sim_build"
+    sim_build.mkdir(parents=True, exist_ok=True)
     
     # Compile RTL with iverilog
     print("\nCompiling RTL with Icarus Verilog...")
@@ -394,7 +406,7 @@ def run_tests(test_module="test_spatiotemporal_classifier"):
         iverilog_cmd, "-g2012",
         "-s", toplevel,
         "-o", str(vvp_file),
-    ] + defines + sources
+    ] + defines + param_overrides + sources
     
     result = subprocess.run(compile_cmd, env=env, cwd=sim_build, capture_output=True, text=True)
     if result.returncode != 0:
@@ -415,7 +427,7 @@ def run_tests(test_module="test_spatiotemporal_classifier"):
         str(vvp_file)
     ]
     
-    result = subprocess.run(sim_cmd, env=env, cwd=TB_DIR)
+    result = subprocess.run(sim_cmd, env=env, cwd=tb_dir)
     
     print_header("Tests Complete" if result.returncode == 0 else "Tests Failed")
     return result.returncode
@@ -424,11 +436,11 @@ def run_tests(test_module="test_spatiotemporal_classifier"):
 # Synthesis Functions
 # =============================================================================
 
-def _synthesize(top_module, rtl_files, pcf_name, label=""):
+def _synthesize(top_module, rtl_files, pcf_name, label="", arch_dir=None):
     """Generic synthesis for iCE40 UP5K.
 
     Args:
-        top_module: Top-level module name (e.g. 'uart_gesture_top')
+        top_module: Top-level module name (e.g. 'gradient_map_top')
         rtl_files: List of RTL filenames relative to RTL_DIR
         pcf_name: PCF filename inside SYNTH_DIR
         label: Human-readable label for log messages
@@ -447,9 +459,16 @@ def _synthesize(top_module, rtl_files, pcf_name, label=""):
         return 1
 
     sources = [str(RTL_DIR / f) for f in rtl_files]
-    output_json = SYNTH_DIR / f"{top_module}.json"
-    output_asc = SYNTH_DIR / f"{top_module}.asc"
-    output_bit = SYNTH_DIR / f"{top_module}.bit"
+
+    # Organize synthesis artifacts under per-architecture subdirectories.
+    output_root = SYNTH_DIR / arch_dir if arch_dir else SYNTH_DIR
+    output_root.mkdir(parents=True, exist_ok=True)
+
+    output_json = output_root / f"{top_module}.json"
+    output_asc = output_root / f"{top_module}.asc"
+    output_bit = output_root / f"{top_module}.bit"
+
+    # PCF files remain at the top level of SYNTH_DIR for reuse.
     pcf_file = SYNTH_DIR / pcf_name
 
     if not pcf_file.exists():
@@ -495,28 +514,39 @@ def _synthesize(top_module, rtl_files, pcf_name, label=""):
     return 0
 
 
-def run_synthesis():
-    """Synthesize voxel-bin legacy design for iCE40 UP5K."""
+# Architecture config for synthesis:
+# (top_module, rtl_files, pcf_name, label, subdir)
+ARCH_SYNTH_CONFIG = {
+    "voxel_bin": (
+        "voxel_bin_top",
+        RTL_FILES,
+        "icebreaker.pcf",
+        "Voxel-bin (voxel_bin_top)",
+        "voxel_bin",
+    ),
+    "gradient_map": (
+        "gradient_map_top",
+        RTL_FILES_UART,
+        "icebreaker_uart.pcf",
+        "Gradient-map UART (gradient_map_top)",
+        "gradient_map",
+    ),
+}
+
+
+def run_synthesis(arch):
+    """Synthesize design for iCE40 UP5K. arch: voxel_bin | gradient_map."""
+    if arch not in ARCH_SYNTH_CONFIG:
+        print_error(f"Unknown architecture: {arch}. Use voxel_bin or gradient_map.")
+        return 1
+
+    top_module, rtl_files, pcf_name, label, subdir = ARCH_SYNTH_CONFIG[arch]
     return _synthesize(
-        top_module="voxel_bin_top",
-        rtl_files=RTL_FILES,
-        pcf_name="icebreaker.pcf",
-        label="Voxel-bin legacy (voxel_bin_top)",
-    )
-
-
-def run_synthesis_uart():
-    """Synthesize UART validation design for iCE40 UP5K.
-
-    Uses gradient_map_top which wraps gesture_top with UART_RX_ENABLE=1
-    and ties off the parallel EVT2 bus.  Events are received over UART
-    using the 5-byte packet protocol.
-    """
-    return _synthesize(
-        top_module="gradient_map_top",
-        rtl_files=RTL_FILES_UART,
-        pcf_name="icebreaker_uart.pcf",
-        label="UART validation (gradient_map_top)",
+        top_module=top_module,
+        rtl_files=rtl_files,
+        pcf_name=pcf_name,
+        label=label,
+        arch_dir=subdir,
     )
 
 def list_ftdi_devices():
@@ -560,19 +590,32 @@ def find_ftdi_device(preferred_port=None, preferred_serial=None, preferred_vid=N
 
     return devices[0] if devices else None
 
-def flash_fpga(port=None, serial=None, vid=None, pid=None, bitfile_name="voxel_bin_top.bit"):
-    """Flash bitstream to FPGA."""
+def flash_fpga(port=None, serial=None, vid=None, pid=None, bitfile_name=None, arch=None):
+    """Flash bitstream to FPGA. arch: voxel_bin | gradient_map."""
     print_header("Flashing FPGA")
-    
+
+    # Resolve bitfile from architecture
+    if bitfile_name is None and arch is not None:
+        bitfile_name = "voxel_bin_top.bit" if arch == "voxel_bin" else "gradient_map_top.bit"
+    if bitfile_name is None:
+        bitfile_name = "voxel_bin_top.bit"
+
     oss_root = get_oss_cad_bin()
     if oss_root is None:
         print_error("OSS CAD Suite not found")
         return 1
     
-    bitfile = SYNTH_DIR / bitfile_name
+    # Look for the bitfile under the architecture's synthesis subdirectory
+    if arch is not None and arch in ARCH_SYNTH_CONFIG:
+        _, _, _, _, subdir = ARCH_SYNTH_CONFIG[arch]
+        bitfile_dir = SYNTH_DIR / subdir
+    else:
+        bitfile_dir = SYNTH_DIR
+
+    bitfile = bitfile_dir / bitfile_name
     if not bitfile.exists():
         print_error(f"Bitstream not found: {bitfile}")
-        print("  Run 'python setup.py synth' or 'python setup.py synth-uart' first")
+        print("  Run 'python setup.py synth voxel_bin' or 'python setup.py synth gradient_map' first")
         return 1
     
     env = get_oss_cad_env()
@@ -648,13 +691,12 @@ def clean():
         TB_DIR / "sim_build",
         TB_DIR / "__pycache__",
         PROJECT_ROOT / "__pycache__",
+        SYNTH_DIR / "voxel_bin",
+        SYNTH_DIR / "gradient_map",
     ]
     
     files_to_clean = [
         TB_DIR / "results.xml",
-        SYNTH_DIR / "uart_gesture_top.json",
-        SYNTH_DIR / "uart_gesture_top.asc",
-        SYNTH_DIR / "uart_gesture_top.v",
     ]
     
     for d in dirs_to_clean:
@@ -748,36 +790,34 @@ def main():
             print("  Activate:  .venv\\Scripts\\activate")
         else:
             print("  Activate:  source .venv/bin/activate")
-        print("  Run tests:       python setup.py test")
-        print("  Synth (legacy):  python setup.py synth")
-        print("  Synth (UART):    python setup.py synth-uart")
-        print("  Flash (legacy):  python setup.py flash")
-        print("  Flash (UART):    python setup.py flash-uart")
+        print("  Run tests:       python setup.py test [voxel_bin|gradient_map]")
+        print("  Synth:           python setup.py synth [voxel_bin|gradient_map]")
+        print("  Flash:           python setup.py flash [voxel_bin|gradient_map]")
         return 0
     
     command = args[0].lower()
-    
+    arch_arg = args[1] if len(args) > 1 else None
+
     if command in ["test", "verify", "sim"]:
-        module = args[1] if len(args) > 1 else "test_spatiotemporal_classifier"
+        module = arch_arg or "test_voxel_bin"
         return run_tests(module)
     elif command in ["synth", "synthesis", "build"]:
-        return run_synthesis()
-    elif command in ["synth-uart"]:
-        return run_synthesis_uart()
+        arch = arch_arg or "voxel_bin"  # default for synth
+        if arch not in ("voxel_bin", "gradient_map"):
+            print_error(f"Unknown architecture: {arch}. Use voxel_bin or gradient_map.")
+            return 1
+        return run_synthesis(arch)
     elif command in ["flash", "program", "prog"]:
+        arch = arch_arg or "voxel_bin"  # default for flash
+        if arch not in ("voxel_bin", "gradient_map"):
+            print_error(f"Unknown architecture: {arch}. Use voxel_bin or gradient_map.")
+            return 1
         return flash_fpga(
             port=options["port"],
             serial=options["serial"],
             vid=options["vid"],
             pid=options["pid"],
-        )
-    elif command in ["flash-uart"]:
-        return flash_fpga(
-            port=options["port"],
-            serial=options["serial"],
-            vid=options["vid"],
-            pid=options["pid"],
-            bitfile_name="gradient_map_top.bit",
+            arch=arch,
         )
     elif command == "clean":
         return clean()

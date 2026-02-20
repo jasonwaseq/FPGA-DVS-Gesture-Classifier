@@ -45,8 +45,8 @@ def main():
     cocotb_lib_dir = os.path.join(venv_dir, "Lib", "site-packages", "cocotb", "libs")
     python_exe = os.path.join(venv_dir, "Scripts", "python.exe")
     
-    env["MODULE"] = "test_gesture_top"  # Legacy
-    env["COCOTB_TEST_MODULES"] = "test_gesture_top"  # Cocotb 2.0+
+    env["MODULE"] = "test_gradient_map"
+    env["COCOTB_TEST_MODULES"] = "test_gradient_map"  # Cocotb 2.0+
     env["TOPLEVEL"] = "gesture_top"
     env["TOPLEVEL_LANG"] = "verilog"
     env["COCOTB_RESULTS_FILE"] = os.path.join(build_dir, "results.xml")

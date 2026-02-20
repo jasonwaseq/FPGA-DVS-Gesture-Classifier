@@ -13,15 +13,15 @@ python3 -m venv .venv
 .venv/bin/python -m pip install --upgrade pip
 .venv/bin/python setup.py
 
-# Verify, synthesize, flash
-.venv/bin/python setup.py test
-.venv/bin/python setup.py synth-uart
-.venv/bin/python setup.py flash-uart
+# Verify, synthesize, flash (specify architecture: voxel_bin or gradient_map)
+.venv/bin/python setup.py test gradient_map
+.venv/bin/python setup.py synth gradient_map
+.venv/bin/python setup.py flash gradient_map
 ```
 
-## Flashing the FPGA (Current Architecture - Gradient-Map)
+## Flashing the FPGA
 
-The current Gradient-Map architecture (`gradient_map_top`) receives DVS events via UART and outputs ASCII gesture classifications. This is the recommended configuration for hardware validation.
+Synthesize and flash by architecture name. Both architectures are actively maintained.
 
 ### Prerequisites
 
@@ -34,25 +34,29 @@ The current Gradient-Map architecture (`gradient_map_top`) receives DVS events v
 **Option 1: Using setup.py (recommended)**
 
 ```bash
-# Synthesize the UART-enabled bitstream
-python setup.py synth-uart
+# Synthesize by architecture (voxel_bin or gradient_map)
+python setup.py synth voxel_bin      # Build voxel_bin_top.bit
+python setup.py synth gradient_map  # Build gradient_map_top.bit
 
-# Flash to FPGA
-python setup.py flash-uart
+# Flash by architecture
+python setup.py flash voxel_bin      # Flash voxel_bin_top.bit
+python setup.py flash gradient_map   # Flash gradient_map_top.bit
 ```
 
 **Option 2: Using Makefile directly**
 
 ```bash
 cd synth
-make -f Makefile.uart clean    # Clean previous builds (optional)
-make -f Makefile.uart          # Build bitstream
-make -f Makefile.uart prog     # Program FPGA
+# Voxel-bin architecture
+make -f Makefile clean && make -f Makefile && make -f Makefile prog
+
+# Gradient-map architecture
+make -f Makefile.uart clean && make -f Makefile.uart && make -f Makefile.uart prog
 ```
 
-### Configuration Parameters
+### Configuration Parameters (Gradient-Map)
 
-The current architecture uses these default parameters (configurable in `rtl/gradient_map_architecture/gradient_map_top.sv`):
+The gradient-map architecture uses these default parameters (configurable in `rtl/gradient_map_architecture/gradient_map_top.sv`):
 
 - `MIN_MASS_THRESH = 2000`: Minimum accumulated mass threshold for gesture detection (tuned for webcam emulation)
 - `FRAME_PERIOD_MS = 50`: Classification frame period in milliseconds
@@ -84,6 +88,8 @@ The FPGA will output ASCII gesture classifications (`UP\r\n`, `DOWN\r\n`, etc.) 
 - Voxel-Bin architecture RTL: [rtl/voxel_bin_architecture](rtl/voxel_bin_architecture)
 - Gradient-Map architecture RTL: [rtl/gradient_map_architecture](rtl/gradient_map_architecture)
 - Tests: [tb](tb)
+  - Voxel-bin cocotb tests: [tb/voxel_bin_architecture](tb/voxel_bin_architecture) (main: `test_voxel_bin.py`)
+  - Gradient-map cocotb tests: [tb/gradient_map_architecture](tb/gradient_map_architecture) (main: `test_gradient_map.py`)
 - Scripts and tools: [tools](tools)
 - Generated build outputs: [synth](synth)
 
@@ -133,9 +139,9 @@ The current RTL is a streaming, single-pass pipeline that converts EVT 2.0 DVS e
 - `uart_debug` outputs gesture class and confidence over UART.
 - LEDs reflect heartbeat, activity, and detected direction in [rtl/gesture_top.sv](rtl/gesture_top.sv).
 
-## Gradient-Map architecture (current, ASCII UART)
+## Gradient-Map architecture
 
-The Gradient-Map architecture is the streaming, single-pass pipeline that converts EVT 2.0 DVS events into a gesture label using a time-surface plus spatio-temporal classifier. Events arrive as 32-bit EVT2 words (or via optional 5-byte UART mock input) and are processed in order on a single clock domain.
+The Gradient-Map architecture is a streaming, single-pass pipeline that converts EVT 2.0 DVS events into a gesture label using a time-surface plus spatio-temporal classifier. Events arrive as 32-bit EVT2 words (or via optional 5-byte UART mock input) and are processed in order on a single clock domain.
 
 **High-level pipeline**: EVT2 words -> FIFO -> EVT2 decoder -> Time-surface encoder (exponential decay) -> Spatio-temporal classifier (gradient-map / systolic array) -> UART debug output
 
@@ -154,57 +160,37 @@ The Gradient-Map architecture is the streaming, single-pass pipeline that conver
 
 ### How to test, synthesize, and flash (Gradient-Map)
 
-- **Test (gesture_top focused)**:
-
-  ```bash
-  python setup.py test test_gesture_top
-  ```
-
-- **Test (full spatio-temporal pipeline)**:
-
-  ```bash
-  cd tb
-  make -f Makefile.spatio run
-  ```
-
-- **Synthesize (UART validation wrapper)**:
-
-  ```bash
-  python setup.py synth-uart   # builds gradient_map_top.bit
-  ```
-
-- **Flash (UART validation wrapper)**:
-
-  ```bash
-  python setup.py flash-uart   # flashes gradient_map_top.bit
-  ```
-
-## Voxel-Bin architecture (legacy)
-
-The voxel-bin architecture is preserved in [rtl/voxel_bin_architecture](rtl/voxel_bin_architecture). It uses the earlier module split and naming scheme (for example `SpatialCompressor`, `TemporalAccumulator`, `MotionComputer`) and is kept for reference only. It is not maintained and may not match current tests or tools.
-
-### Flashing the Voxel-Bin Architecture
-
-The voxel-bin architecture (`voxel_bin_top`) uses different thresholds (`MIN_EVENT_THRESH=20`, `MOTION_THRESH=8`) and supports echo/status/config commands. To flash the voxel-bin bitstream:
-
 ```bash
-# Synthesize legacy design (voxel_bin_top)
-python setup.py synth
+# Run main cocotb tests
+python setup.py test gradient_map
+# Or from tb folder:
+cd tb/gradient_map_architecture && make -f Makefile.gesture test
 
-# Flash legacy bitstream (voxel_bin_top)
-python setup.py flash
+# Synthesize and flash
+python setup.py synth gradient_map   # builds gradient_map_top.bit
+python setup.py flash gradient_map  # flashes gradient_map_top.bit
 ```
 
-Or using Makefile:
+## Voxel-Bin architecture
+
+The voxel-bin architecture uses a dual-accumulator sliding-window design with spatial compression (320×320 → 16×16) and temporal binning. It is actively maintained alongside the gradient-map architecture.
+
+**Key modules**: `SpatialCompressor`, `TemporalAccumulator`, `MotionComputer`, `GestureClassifier`
+
+### How to test, synthesize, and flash (Voxel-Bin)
 
 ```bash
-cd synth
-make -f Makefile clean
-make -f Makefile
-make -f Makefile prog
+# Run main cocotb tests
+python setup.py test voxel_bin
+# Or from tb folder:
+cd tb/voxel_bin_architecture && make test
+
+# Synthesize and flash
+python setup.py synth voxel_bin   # builds voxel_bin_top.bit
+python setup.py flash voxel_bin  # flashes voxel_bin_top.bit
 ```
 
-**Note**: The legacy architecture uses binary gesture responses (not ASCII) and includes echo test support. The `fpga_gesture_validator.py` tool is designed for the legacy architecture.
+**Note**: The voxel-bin architecture uses binary gesture responses (not ASCII) and supports echo/status/config UART commands. The `fpga_gesture_validator.py` tool is designed for this architecture.
 
 ## UART protocol
 
@@ -233,7 +219,7 @@ X, Y coordinates range from 0-319.
 | LEFT | `LEFT\r\n` |
 | RIGHT | `RIGHT\r\n` |
 
-### Receive from FPGA (legacy architecture - `voxel_bin_top`)
+### Receive from FPGA (`voxel_bin_top`)
 
 **Gesture response** (2 bytes):
 
@@ -248,7 +234,7 @@ X, Y coordinates range from 0-319.
 - Bit 1: FIFO full
 - Bit 0: FIFO empty
 
-### Special commands (legacy architecture only)
+### Special commands (voxel_bin architecture only)
 
 | Send | Response | Description |
 |------|----------|-------------|
@@ -262,12 +248,12 @@ X, Y coordinates range from 0-319.
 | Command | Description |
 |---------|-------------|
 | `python setup.py` | Setup venv, install packages, detect OSS CAD Suite |
-| `python setup.py test test_dvs_gesture` | Run voxel-bin architecture tests (legacy UART binary path) |
-| `python setup.py test test_gesture_top` | Run Gradient-Map architecture tests (`gesture_top`) |
-| `python setup.py synth-uart` | Synthesize Gradient-Map UART validation design (`gradient_map_top`) |
-| `python setup.py flash-uart` | Flash Gradient-Map UART validation bitstream (`gradient_map_top.bit`) |
-| `python setup.py synth` | Synthesize voxel-bin legacy design (`voxel_bin_top`) |
-| `python setup.py flash` | Flash voxel-bin legacy bitstream (`voxel_bin_top.bit`) |
+| `python setup.py test voxel_bin` | Run voxel-bin cocotb tests (`test_voxel_bin.py`) |
+| `python setup.py test gradient_map` | Run gradient-map cocotb tests (`test_gradient_map.py`) |
+| `python setup.py synth voxel_bin` | Synthesize voxel-bin design (`voxel_bin_top.bit`) |
+| `python setup.py synth gradient_map` | Synthesize gradient-map design (`gradient_map_top.bit`) |
+| `python setup.py flash voxel_bin` | Flash voxel-bin bitstream |
+| `python setup.py flash gradient_map` | Flash gradient-map bitstream |
 | `python setup.py clean` | Remove build artifacts |
 
 ## Hardware validation pipeline (GenX320 + STM32 + iCEBreaker)
@@ -276,11 +262,14 @@ End-to-end hardware validation of gesture classification using a live DVS sensor
 
 **Setup**: Prophesee GenX320 sensor -> STM32 board -> USB CDC -> Laptop -> UART -> iCEBreaker FPGA
 
-### Step 1: Build and flash the UART validation bitstream
+### Step 1: Build and flash the gradient-map bitstream
 
 The `gradient_map_top` wrapper enables UART event input (`UART_RX_ENABLE=1`), ties off the unused parallel bus, and provides an internal power-on reset.
 
-See the [Flashing the FPGA](#flashing-the-fpga-current-architecture) section above for detailed instructions.
+```bash
+python setup.py synth gradient_map
+python setup.py flash gradient_map
+```
 
 ### Step 2: Capture a raw EVT stream from the GenX320
 

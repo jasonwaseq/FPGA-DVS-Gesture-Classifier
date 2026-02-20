@@ -216,30 +216,22 @@ module TimeSurfaceBinning #(
         if (rst) begin
             readout_busy <= 1'b0;
             readout_start <= 1'b0;
-            readout_valid <= 1'b0;
             rd_bin_offset <= '0;
             rd_cell_ctr <= '0;
         end else begin
             readout_start <= 1'b0;
-            readout_valid <= 1'b0;
-            
+
             if (trigger_readout) begin
                 readout_busy <= 1'b1;
                 readout_start <= 1'b1; // Signal start of stream
                 rd_bin_offset <= '0;
                 rd_cell_ctr <= '0;
             end else if (readout_busy) begin
-                // Stream data
-                readout_valid <= 1'b1; // The data at ram_addr (set previous cycle) is available now?
-                // Sync RAM usually has 1 cycle latency.
-                // We need to pipeline the valid signal.
-                
-                // Advance counters
+                // Advance counters (readout_valid driven by assign from readout_valid_d)
                 if (rd_cell_ctr == CELLS_PER_BIN - 1) begin
                     rd_cell_ctr <= '0;
                     if (rd_bin_offset == READOUT_BINS - 1) begin
                         readout_busy <= 1'b0;
-                        readout_valid <= 1'b0; // Stop
                     end else begin
                         rd_bin_offset <= rd_bin_offset + 1'b1;
                     end
@@ -304,26 +296,72 @@ module TimeSurfaceBinning #(
     // Output assignments
     assign readout_data = ram_rdata; // Latched from RAM
     
-    // RAM Logic
+    // =========================================================================
+    // Dual-Port BRAM Implementation
+    // Port A: Write (Events/Clearing) - can read for read-modify-write
+    // Port B: Read (Readout) - independent read port, 1-cycle latency
+    // =========================================================================
+    // Port A signals for write operations
+    logic [CELL_ADDR_BITS-1:0] port_a_addr;
+    logic [COUNTER_BITS-1:0] port_a_rdata;  // Read data from Port A
+    logic [COUNTER_BITS-1:0] port_a_wdata;
+    logic port_a_wen;
+    
+    // Port B signals for readout (read-only)
+    // rd_addr is already defined above
+    
+    // Port A: Handle writes (clearing and events)
+    // For events: Read-Modify-Write pipeline (2 cycles)
+    logic event_valid_pipe;
+    logic [CELL_ADDR_BITS-1:0] evt_addr_pipe;
+    logic [COUNTER_BITS-1:0] evt_read_data;
+    
     always_ff @(posedge clk) begin
-        if (state == S_CLEAR) begin
-            // 1. Priority: Clearing
-            mem[clear_addr] <= '0;
-            // During clear, we ignore events? Or buffer them?
-            // "skip many bins ahead and clear...".
-            // Implementation: Dropping events during clear (21us) is acceptable for this prototype.
-        end else begin
-            // 2. Event Integration
-            if (event_valid) begin
-                 if (mem[evt_addr] != {COUNTER_BITS{1'b1}}) // Saturate
-                    mem[evt_addr] <= mem[evt_addr] + 1'b1;
-            end
-        end
+        // Port A read (registered for read-modify-write)
+        port_a_rdata <= mem[port_a_addr];
         
-        // Read Port (for Readout)
-        // Note: inferring Block RAM usually requires registering the address
+        // Pipeline event address and valid
+        event_valid_pipe <= event_valid;
+        evt_addr_pipe <= evt_addr;
+        evt_read_data <= port_a_rdata;  // Capture read data for write
+        
+        // Port A write
+        if (port_a_wen) begin
+            mem[port_a_addr] <= port_a_wdata;
+        end
+    end
+    
+    // Port B: Read port for readout (independent, no conflicts)
+    always_ff @(posedge clk) begin
         if (readout_busy) begin
-            ram_rdata <= mem[rd_addr];
+            ram_rdata <= mem[rd_addr];  // Port B read
+        end
+    end
+    
+    // Port A address and write control
+    always_comb begin
+        port_a_addr = '0;
+        port_a_wdata = '0;
+        port_a_wen = 1'b0;
+        
+        if (state == S_CLEAR) begin
+            // Priority: Clearing (direct write, no read needed)
+            port_a_addr = clear_addr;
+            port_a_wdata = '0;
+            port_a_wen = 1'b1;
+        end else if (event_valid_pipe) begin
+            // Event Integration: Write using pipelined read data
+            port_a_addr = evt_addr_pipe;
+            if (evt_read_data != {COUNTER_BITS{1'b1}}) begin
+                port_a_wdata = evt_read_data + 1'b1;  // Increment
+            end else begin
+                port_a_wdata = evt_read_data;  // Saturate
+            end
+            port_a_wen = 1'b1;
+        end else if (event_valid) begin
+            // First cycle: initiate read (address set, write disabled)
+            port_a_addr = evt_addr;
+            port_a_wen = 1'b0;  // Read only
         end
     end
     

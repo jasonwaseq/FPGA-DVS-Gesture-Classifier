@@ -43,8 +43,11 @@ module flatten_buffer #(
 
     // Output Vector
     output logic                          flat_valid,
-    output logic [VALUE_BITS-1:0]         flat_data [0:NUM_CELLS-1]
+    output logic [NUM_CELLS*VALUE_BITS-1:0] flat_data
 );
+
+    // Internal unpacked array
+    logic [VALUE_BITS-1:0] flat_data_int [0:NUM_CELLS-1];
 
     // -------------------------------------------------------------------------
     // FSM
@@ -124,7 +127,7 @@ module flatten_buffer #(
                 // -----------------------------------------------------------
                 S_SCAN: begin
                     // Capture current valid value
-                    flat_data[capture_cnt[$clog2(NUM_CELLS)-1:0]] <= ts_val;
+                    flat_data_int[capture_cnt[$clog2(NUM_CELLS)-1:0]] <= ts_val;
                     capture_cnt <= capture_cnt + 1'b1;
 
                     // Continue issuing addresses ahead (capped at NUM_CELLS-1)
@@ -158,5 +161,13 @@ module flatten_buffer #(
             endcase
         end
     end
+
+    // Convert unpacked array to packed array for output
+    genvar i;
+    generate
+        for (i = 0; i < NUM_CELLS; i = i + 1) begin : gen_pack
+            assign flat_data[i*VALUE_BITS +: VALUE_BITS] = flat_data_int[i];
+        end
+    endgenerate
 
 endmodule

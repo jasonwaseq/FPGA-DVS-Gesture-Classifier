@@ -75,6 +75,16 @@ module gesture_top #(
     end
     
     // -------------------------------------------------------------------------
+    // Input FIFO signals (declared early - referenced in UART RX generate block)
+    // -------------------------------------------------------------------------
+    logic        fifo_rd_en;
+    logic [31:0] fifo_rd_data;
+    logic        fifo_empty;
+    logic        fifo_full;
+    logic        fifo_wr_en;
+    logic [31:0] fifo_wr_data;
+
+    // -------------------------------------------------------------------------
     // UART RX (5-byte legacy event protocol)
     // -------------------------------------------------------------------------
     localparam EVT_CD_OFF = 4'h0;
@@ -167,13 +177,6 @@ module gesture_top #(
     // -------------------------------------------------------------------------
     // Input FIFO (EVT 2.0 buffering)
     // -------------------------------------------------------------------------
-    logic        fifo_rd_en;
-    logic [31:0] fifo_rd_data;
-    logic        fifo_empty;
-    logic        fifo_full;
-    logic        fifo_wr_en;
-    logic [31:0] fifo_wr_data;
-    
     input_fifo #(
         .DEPTH(256),
         .PTR_BITS(8),

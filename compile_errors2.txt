@@ -1,1 +1,0 @@
-rtl/gesture_top.sv:145: warning: always_comb process has no sensitivities.
