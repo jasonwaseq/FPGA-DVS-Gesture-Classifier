@@ -79,11 +79,11 @@ module evt2_decoder #(
     // Strategy: x_raw >> 4 (divide by 16) → range 0..19; clamp to 15.
     // Cell 0..15 each covers 20 sensor pixels.
     // -------------------------------------------------------------------------
-    wire [5:0] x_grid_raw6 = x_raw[8:3];   // 6 bits, value 0..39
-    wire [5:0] y_grid_raw6 = y_raw[8:3];
+    wire [4:0] x_grid_raw5 = x_raw[8:4];   // 5 bits, value 0..19
+    wire [4:0] y_grid_raw5 = y_raw[8:4];
 
-    wire [GRID_BITS-1:0] x_grid = (x_grid_raw6 > {2'b0, 4'd15}) ? 4'd15 : x_grid_raw6[GRID_BITS-1:0];
-    wire [GRID_BITS-1:0] y_grid = (y_grid_raw6 > {2'b0, 4'd15}) ? 4'd15 : y_grid_raw6[GRID_BITS-1:0];
+    wire [GRID_BITS-1:0] x_grid = (x_grid_raw5 > 5'd15) ? 4'd15 : x_grid_raw5[GRID_BITS-1:0];
+    wire [GRID_BITS-1:0] y_grid = (y_grid_raw5 > 5'd15) ? 4'd15 : y_grid_raw5[GRID_BITS-1:0];
     
     // -------------------------------------------------------------------------
     // Timestamp Reconstruction

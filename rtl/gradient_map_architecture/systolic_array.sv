@@ -98,10 +98,23 @@ module systolic_array #(
     endgenerate
 
     // -------------------------------------------------------------------------
-    // Argmax
+    // Combinational Argmax (blocking assignments for correct priority chain)
     // -------------------------------------------------------------------------
-    logic signed [ACC_BITS-1:0] max_score;
-    integer k, i;
+    logic signed [ACC_BITS-1:0] comb_max_score;
+    logic [1:0]                 comb_best_class;
+
+    always_comb begin
+        comb_max_score  = acc[0];
+        comb_best_class = 2'd0;
+        for (int ci = 1; ci < NUM_CLASSES; ci = ci + 1) begin
+            if ($signed(acc[ci]) > $signed(comb_max_score)) begin
+                comb_max_score  = acc[ci];
+                comb_best_class = 2'(ci);
+            end
+        end
+    end
+
+    integer k;
 
     always_ff @(posedge clk) begin
         if (rst) begin
@@ -112,7 +125,6 @@ module systolic_array #(
             pipe_valid_r <= 1'b0;
             result_valid <= 1'b0;
             best_class   <= '0;
-            max_score    <= '0;
             for (k = 0; k < NUM_CLASSES; k = k + 1) begin
                 acc  [k] <= '0;
                 acc_r[k] <= '0;
@@ -171,20 +183,11 @@ module systolic_array #(
 
                 // -----------------------------------------------------------
                 S_ARGMAX: begin
-                    // Latch final accs
+                    // Latch final accs and combinational argmax result
                     for (k = 0; k < NUM_CLASSES; k = k + 1)
                         acc_r[k] <= acc[k];
 
-                    // Argmax
-                    max_score  <= acc[0];
-                    best_class <= 2'd0;
-                    for (i = 1; i < NUM_CLASSES; i = i + 1) begin
-                        if ($signed(acc[i]) > $signed(max_score)) begin
-                            max_score  <= acc[i];
-                            best_class <= 2'(i);
-                        end
-                    end
-
+                    best_class   <= comb_best_class;
                     result_valid <= 1'b1;
                     state        <= S_IDLE;
                 end

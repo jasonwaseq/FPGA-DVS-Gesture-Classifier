@@ -66,6 +66,7 @@ module time_surface_encoder #(
     // -------------------------------------------------------------------------
     logic [TS_BITS-1:0]  raw_ts;
     logic [VALUE_BITS-1:0] ts_mem_value;  // Linear decay output (not used)
+    logic                ts_mem_cell_valid;  // Per-cell written flag
 
     time_surface_memory #(
         .GRID_SIZE  (GRID_SIZE),
@@ -75,17 +76,18 @@ module time_surface_encoder #(
         .MAX_VALUE  (MAX_VALUE),
         .DECAY_SHIFT(DECAY_SHIFT)
     ) u_ts_mem (
-        .clk         (clk),
-        .rst         (rst),
-        .t_now       (t_now),
-        .event_valid (event_valid),
-        .event_x     (event_x),
-        .event_y     (event_y),
-        .event_ts    (event_ts),
-        .read_enable (read_enable),
-        .read_addr   (read_addr),
-        .read_value  (ts_mem_value),  // Discard; we recompute below
-        .read_ts_raw (raw_ts)
+        .clk            (clk),
+        .rst            (rst),
+        .t_now          (t_now),
+        .event_valid    (event_valid),
+        .event_x        (event_x),
+        .event_y        (event_y),
+        .event_ts       (event_ts),
+        .read_enable    (read_enable),
+        .read_addr      (read_addr),
+        .read_value     (ts_mem_value),  // Discard; we recompute below
+        .read_ts_raw    (raw_ts),
+        .read_cell_valid(ts_mem_cell_valid)
     );
 
     assign read_ts_raw = raw_ts;
@@ -98,31 +100,39 @@ module time_surface_encoder #(
     //
     // Two registered stages maintain the same 2-cycle latency as
     // time_surface_memory so feature-scan pipeline timing is unchanged.
+    //
+    // Cells not yet written always produce 0 via the cell_valid pipeline.
     // -------------------------------------------------------------------------
 
     // Stage 1 registers (capture BRAM output on same cycle it becomes valid)
     logic [TS_BITS-1:0]   delta_t_r1;
     logic [TS_BITS-1:0]   decay_steps_r1;
+    logic                 cell_valid_r1;   // Pipelined cell_valid flag
 
     always_ff @(posedge clk) begin
         if (rst) begin
-            delta_t_r1    <= '0;
+            delta_t_r1     <= '0;
             decay_steps_r1 <= '0;
+            cell_valid_r1  <= 1'b0;
         end else if (read_enable) begin
             // Δt handles 16-bit wrap-around naturally via unsigned subtraction
-            delta_t_r1    <= t_now - raw_ts;
+            delta_t_r1     <= t_now - raw_ts;
             decay_steps_r1 <= (t_now - raw_ts) >> DECAY_SHIFT;
+            cell_valid_r1  <= ts_mem_cell_valid;
         end
     end
 
     // Stage 2: apply exponential decay via arithmetic right-shift
     // Value = 255 >> decay_steps  (255 when decay_steps=0, 127 after 1 half-life, …)
     // If decay_steps >= VALUE_BITS the value underflows to 0.
+    // Unwritten cells always produce 0.
     always_ff @(posedge clk) begin
         if (rst) begin
             read_value <= '0;
         end else begin
-            if (decay_steps_r1 >= TS_BITS'(VALUE_BITS)) begin
+            if (!cell_valid_r1) begin
+                read_value <= '0;
+            end else if (decay_steps_r1 >= TS_BITS'(VALUE_BITS)) begin
                 read_value <= '0;
             end else begin
                 // right-shift by decay_steps (number of half-lives elapsed)

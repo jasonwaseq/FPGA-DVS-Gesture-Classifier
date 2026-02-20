@@ -283,6 +283,38 @@ class FPGAGestureInterface:
             except queue.Empty:
                 break
         self._ascii_line_buffer.clear()
+
+    def realign_parser(self):
+        """Send padding bytes to realign the 5-byte UART event parser.
+
+        After stray command bytes (e.g. from auto-detection probes), the
+        gradient_map FPGA's 5-byte parser may be mid-packet. We flush it
+        by sending 4 zero bytes — in the worst case the parser has consumed
+        1 stray byte, so 4 more zeros complete the packet as a harmless
+        all-zero event, restoring alignment for subsequent real events.
+        """
+        self._send_bytes(bytes(4))
+        time.sleep(0.01)
+        self.clear_rx_buffer()
+
+    def detect_architecture(self) -> str:
+        """Auto-detect FPGA architecture by probing with a voxel_bin echo.
+
+        Sends 0xFF (voxel_bin echo command). If the FPGA replies with 0x55,
+        it's running voxel_bin. Otherwise we assume gradient_map and realign
+        the 5-byte event parser that consumed the stray probe byte.
+        """
+        self.clear_rx_buffer()
+        self._send_byte(0xFF)
+        response = self._receive_byte(timeout=0.3)
+        if response == 0x55:
+            print("Auto-detected architecture: voxel_bin (echo 0x55 received)")
+            return Architecture.VOXEL_BIN
+        else:
+            print("Auto-detected architecture: gradient_map (no echo response)")
+            # The probe byte entered the 5-byte parser — realign it
+            self.realign_parser()
+            return Architecture.GRADIENT_MAP
     
     # -------------------------------------------------------------------------
     # UART Commands
@@ -726,8 +758,8 @@ Examples:
                         help=f'Baud rate (default: {DEFAULT_BAUD_RATE})')
     parser.add_argument('--arch', '-a', type=str,
                         choices=['voxel_bin', 'gradient_map'],
-                        default='voxel_bin',
-                        help='FPGA architecture: voxel_bin (binary protocol) or gradient_map (ASCII only)')
+                        default=None,
+                        help='FPGA architecture (auto-detected if omitted): voxel_bin (binary) or gradient_map (ASCII)')
     parser.add_argument('--list-ports', action='store_true',
                         help='List available serial ports')
     parser.add_argument('--test', '-t', type=str, 
@@ -754,15 +786,24 @@ Examples:
         print("\nERROR: --port is required")
         return 1
     
-    architecture = args.arch
-    if architecture == "gradient_map":
-        print("Using gradient_map protocol (ASCII gesture output)")
+    # --- Architecture selection (explicit or auto-detect) --------------------
+    if args.arch is not None:
+        architecture = args.arch
+        if architecture == "gradient_map":
+            print("Using gradient_map protocol (ASCII gesture output)")
+        else:
+            print("Using voxel_bin protocol (binary + echo/status/config)")
+        fpga = FPGAGestureInterface(args.port, args.baud, architecture=architecture)
+        if not fpga.connect():
+            return 1
     else:
-        print("Using voxel_bin protocol (binary + echo/status/config)")
-    
-    fpga = FPGAGestureInterface(args.port, args.baud, architecture=architecture)
-    if not fpga.connect():
-        return 1
+        # Auto-detect: connect first with a temporary architecture, then probe
+        fpga = FPGAGestureInterface(args.port, args.baud,
+                                    architecture=Architecture.VOXEL_BIN)
+        if not fpga.connect():
+            return 1
+        architecture = fpga.detect_architecture()
+        fpga.architecture = architecture
     
     try:
         if not test_connection(fpga):
@@ -786,6 +827,8 @@ Examples:
             if architecture != Architecture.GRADIENT_MAP:
                 test_status(fpga)
                 test_config(fpga)
+            else:
+                print("\n(gradient_map: echo/status/config tests skipped — not supported)")
             test_noise_rejection(fpga)
             test_all_gestures(fpga)
         elif args.gesture:

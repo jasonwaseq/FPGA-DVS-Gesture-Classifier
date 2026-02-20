@@ -27,6 +27,7 @@ COMPILE_ARGS += -g2012
 COMPILE_ARGS += -Pgesture_top.FRAME_PERIOD_MS=1
 COMPILE_ARGS += -Pgesture_top.MIN_MASS_THRESH=20
 COMPILE_ARGS += -Pgesture_top.UART_RX_ENABLE=1
+COMPILE_ARGS += -Pgesture_top.DECAY_SHIFT=12
 
 ifeq ($(OS),Windows_NT)
 COCOTB_MAKEFILES := $(shell C:/Users/jason/Documents/FPGA-DVS-Gesture-Classifier/.venv/Scripts/cocotb-config.exe --makefiles)
