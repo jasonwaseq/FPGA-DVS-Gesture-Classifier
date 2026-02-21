@@ -1,14 +1,12 @@
 `timescale 1ns/1ps
 
-// Simple UART Receiver - 8N1
-// Fixed baud rate via CLKS_PER_BIT parameter
-// Uses SYNCHRONOUS reset (active-high) for iCE40 compatibility
+// UART Receiver - 8N1, synchronous active-high reset
 
 module uart_rx #(
-    parameter CLKS_PER_BIT = 104  // 12MHz / 115200 = 104
+    parameter CLKS_PER_BIT = 104  // 12MHz / 115200
 )(
     input  logic clk,
-    input  logic rst,       // Synchronous, active-high reset
+    input  logic rst,
     input  logic rx,
     output logic [7:0] data,
     output logic valid
@@ -51,19 +49,17 @@ module uart_rx #(
                 IDLE: begin
                     clk_cnt <= 8'd0;
                     bit_idx <= 3'd0;
-                    if (rx_d == 1'b0) begin  // Start bit detected
+                    if (rx_d == 1'b0)
                         state <= START;
-                    end
                 end
 
                 START: begin
-                    // Sample at middle of start bit
                     if (clk_cnt == (CLKS_PER_BIT - 1) / 2) begin
                         if (rx_d == 1'b0) begin
                             clk_cnt <= 8'd0;
                             state <= DATA;
                         end else begin
-                            state <= IDLE;  // False start
+                            state <= IDLE;
                         end
                     end else begin
                         clk_cnt <= clk_cnt + 1'b1;
@@ -89,7 +85,7 @@ module uart_rx #(
                     if (clk_cnt == CLKS_PER_BIT - 1) begin
                         clk_cnt <= 8'd0;
                         state <= IDLE;
-                        if (rx_d == 1'b1) begin  // Valid stop bit
+                        if (rx_d == 1'b1) begin
                             data <= rx_data;
                             valid <= 1'b1;
                         end

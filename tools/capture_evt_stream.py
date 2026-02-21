@@ -19,10 +19,6 @@ def wait_for_key():
 
 
 def detect_best_offset(data: bytes, sample_words: int = 50000):
-    """
-    Returns (best_offset, valid_ratio, type_counts_for_best).
-    Uses EVT2 type = (word >> 28) & 0xF, little-endian words.
-    """
     best = (None, -1.0, None)
 
     for off in range(4):
@@ -35,7 +31,6 @@ def detect_best_offset(data: bytes, sample_words: int = 50000):
         valid = 0
         total = 0
 
-        # scan first n words
         base = off
         for i in range(n):
             w = int.from_bytes(data[base + 4 * i : base + 4 * i + 4], "little", signed=False)
@@ -59,7 +54,6 @@ def write_aligned(raw_path: str, aligned_path: str = "aligned.bin", sample_words
     if off is None:
         raise RuntimeError("Could not determine alignment (file too small).")
 
-    # Trim to 32-bit boundary from chosen offset
     aligned = raw[off:]
     aligned = aligned[: (len(aligned) // 4) * 4]
 
@@ -233,7 +227,6 @@ def main():
     print("Raw bytes written:", total)
     print("Raw file:", args.outfile)
 
-    # Auto-align
     off, ratio, counts, raw_len, aligned_len = write_aligned(
         args.outfile, aligned_path=args.aligned, sample_words=args.sample_words
     )
@@ -247,7 +240,6 @@ def main():
     for k, v in counts.most_common(10):
         print(f"    type {k:>2}: {v}")
 
-    # Analyze aligned data for EVT2 sanity
     stats = analyze_evt2(args.aligned, args)
     print("\nEVT2 validation report:")
     print(f"  Analyzed bytes: {stats['analyzed_bytes']} (words: {stats['max_words']})")

@@ -1,6 +1,5 @@
 TOPLEVEL_LANG = verilog
 
-# RTL sources for voxel-bin architecture (UART top + accelerator)
 RTL_DIR = ../../rtl
 VERILOG_SOURCES = $(RTL_DIR)/voxel_bin_architecture/dvs_gesture_accel.sv \
                   $(RTL_DIR)/voxel_bin_architecture/TemporalAccumulator.sv \
@@ -15,17 +14,12 @@ VERILOG_SOURCES = $(RTL_DIR)/voxel_bin_architecture/dvs_gesture_accel.sv \
                   $(RTL_DIR)/uart_rx.sv \
                   $(RTL_DIR)/uart_tx.sv
 
-# Default: test UART top module (full voxel-bin system)
 TOPLEVEL ?= voxel_bin_top
 MODULE ?= test_voxel_bin
 
 SIM = icarus
 
-# Enable SystemVerilog
 COMPILE_ARGS += -g2012
-
-# Override CYCLES_PER_BIN for fast simulation
-# Use 600 cycles (enough for basic testing, classification will be truncated)
 COMPILE_ARGS += -Pvoxel_bin_top.CYCLES_PER_BIN=600
 
 ifeq ($(OS),Windows_NT)

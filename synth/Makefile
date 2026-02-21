@@ -1,7 +1,3 @@
-# Ice40 Synthesis Makefile for UART Validation Mode
-# Time-Surface DVS Gesture Classifier receiving events via UART
-# Target: Lattice iCE40UP5K on iCEBreaker board
-
 PROJ = gradient_map_top
 PCF = icebreaker.pcf
 DEVICE = up5k
@@ -25,34 +21,26 @@ RTL_FILES = $(RTL_DIR)/uart_tx.sv \
 
 all: $(PROJ).bit
 
-# Convert SystemVerilog to Verilog for Yosys
 $(PROJ).v: $(RTL_FILES)
 	sv2v $(RTL_FILES) -w $@
 
-# Synthesis
 $(PROJ).json: $(PROJ).v
 	yosys -p "read_verilog $<; synth_ice40 -top $(PROJ) -json $@"
 
-# Place and Route
 $(PROJ).asc: $(PROJ).json $(PCF)
 	nextpnr-ice40 --$(DEVICE) --package $(PACKAGE) --json $< --pcf $(PCF) --asc $@ --freq 12
 
-# Bitstream generation
 $(PROJ).bit: $(PROJ).asc
 	icepack $< $@
 
-# Program the FPGA
 prog: $(PROJ).bit
 	iceprog $<
 
-# Resource utilization report
 report: $(PROJ).json
 	yosys -p "read_json $<; stat"
 
-# Timing analysis
 timing: $(PROJ).asc
 	icetime -d $(DEVICE) -m -r $(PROJ).timing $<
-	@echo "Timing report saved to $(PROJ).timing"
 
 clean:
 	rm -f $(PROJ).v $(PROJ).json $(PROJ).asc $(PROJ).bit $(PROJ).timing

@@ -92,7 +92,6 @@ def main():
     t = threading.Thread(target=read_fpga, daemon=True)
     t.start()
 
-    # Initial alignment probe
     probe = sin.read(args.chunk)
     if len(probe) >= 16:
         off, ratio, counts = detect_best_offset(probe)
@@ -109,12 +108,9 @@ def main():
             data = sin.read(args.chunk)
             if data:
                 buf.extend(data)
-
-            # Process complete words
             n = (len(buf) // 4) * 4
             if n == 0:
                 continue
-
             for i in range(0, n, 4):
                 w = int.from_bytes(buf[i:i+4], "little")
                 stats["words"] += 1
@@ -131,10 +127,7 @@ def main():
                         stats["cd_events"] += 1
                     else:
                         stats["dropped"] += 1
-
-            # Keep remainder for next read
             buf = buf[n:]
-
             now = time.time()
             if now - stats["last_report"] >= 1.0:
                 print(

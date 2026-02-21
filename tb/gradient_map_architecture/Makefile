@@ -1,6 +1,5 @@
 TOPLEVEL_LANG = verilog
 
-# RTL files for Gradient-Map architecture
 RTL_DIR = ../../rtl
 VERILOG_SOURCES = $(RTL_DIR)/uart_tx.sv \
                   $(RTL_DIR)/uart_rx.sv \
@@ -20,10 +19,7 @@ MODULE = test_gradient_map
 
 SIM = icarus
 
-# Enable SystemVerilog
 COMPILE_ARGS += -g2012
-
-# Faster simulation: reduce frame period for testing
 COMPILE_ARGS += -Pgesture_top.FRAME_PERIOD_MS=1
 COMPILE_ARGS += -Pgesture_top.MIN_MASS_THRESH=20
 COMPILE_ARGS += -Pgesture_top.UART_RX_ENABLE=1
