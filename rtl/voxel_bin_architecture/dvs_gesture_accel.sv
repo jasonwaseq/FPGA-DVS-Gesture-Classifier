@@ -9,7 +9,8 @@ module dvs_gesture_accel #(
     parameter FIFO_DEPTH         = 16,
     parameter MIN_EVENT_THRESH   = 20,
     parameter MOTION_THRESH      = 8,
-    parameter PERSISTENCE_COUNT  = 2
+    parameter PERSISTENCE_COUNT  = 2,
+    parameter CYCLES_PER_BIN     = 0  // 0 = auto-compute from WINDOW_MS/NUM_BINS
 )(
     input  logic        clk,
     input  logic        rst,
@@ -117,7 +118,8 @@ module dvs_gesture_accel #(
         .READOUT_BINS  (NUM_BINS),
         .GRID_SIZE     (GRID_SIZE),
         .COUNTER_BITS  (COUNTER_BITS),
-        .PARALLEL_READS(PARALLEL_READS)
+        .PARALLEL_READS(PARALLEL_READS),
+        .CYCLES_PER_BIN(CYCLES_PER_BIN)
     ) u_time_surface_binning (
         .clk           (clk),
         .rst           (rst),
@@ -184,24 +186,32 @@ module dvs_gesture_accel #(
         end
     endgenerate
 
+    logic signed [ACC_BITS-1:0] sys_scores [0:NUM_CLASSES-1];
+    generate
+        genvar gi;
+        for (gi = 0; gi < NUM_CLASSES; gi = gi + 1) begin : gen_unpack_sys_scores
+            assign sys_scores[gi] = sys_scores_flat[(gi+1)*ACC_BITS-1 : gi*ACC_BITS];
+        end
+    endgenerate
+
     logic signed [ACC_BITS-1:0] best_score;
-    logic signed [ACC_BITS-1:0] score_slice;
     logic [ACC_BITS-1:0]        abs_best_score;
+    logic                       score_above_thresh;
+
+    // Minimum score threshold: prevents noise from triggering gestures.
+    // With 35 gesture events, expected score ~50-200.
+    // With 5 random events, expected score <20.
+    localparam integer MIN_SCORE_THRESH = 30;
 
     always_comb begin
-        case (sys_best_class)
-            2'd0: score_slice = sys_scores_flat[1*ACC_BITS-1:0*ACC_BITS];
-            2'd1: score_slice = sys_scores_flat[2*ACC_BITS-1:1*ACC_BITS];
-            2'd2: score_slice = sys_scores_flat[3*ACC_BITS-1:2*ACC_BITS];
-            2'd3: score_slice = sys_scores_flat[4*ACC_BITS-1:3*ACC_BITS];
-            default: score_slice = '0;
-        endcase
-        best_score = score_slice;
+        best_score = sys_scores[sys_best_class];
 
         if (best_score < 0)
             abs_best_score = -best_score;
         else
             abs_best_score = best_score;
+
+        score_above_thresh = (abs_best_score >= MIN_SCORE_THRESH);
     end
 
     logic [17:0] pseudo_mag_x, pseudo_mag_y;
@@ -216,7 +226,7 @@ module dvs_gesture_accel #(
         .rst              (rst),
         .class_gesture    (sys_best_class),
         .class_valid      (sys_result_valid),
-        .class_pass       (sys_result_valid),
+        .class_pass       (sys_result_valid && score_above_thresh),
         .abs_delta_x      (pseudo_mag_x),
         .abs_delta_y      (pseudo_mag_y),
         .gesture          (gesture),

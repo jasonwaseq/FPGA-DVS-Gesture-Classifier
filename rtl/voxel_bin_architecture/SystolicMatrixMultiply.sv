@@ -24,6 +24,7 @@ module SystolicMatrixMultiply #(
 );
 
     localparam CNT_BITS      = $clog2(NUM_CELLS + 4);
+    localparam ADDR_BITS     = $clog2(NUM_CELLS);
     localparam PARALLEL_BITS = $clog2(PARALLEL_INPUTS);
     localparam CYCLES_NEEDED = (NUM_CELLS + PARALLEL_INPUTS - 1) / PARALLEL_INPUTS;
 
@@ -36,7 +37,8 @@ module SystolicMatrixMultiply #(
 
     state_t state;
 
-    logic [CNT_BITS-1:0] cell_cnt;
+    logic [CNT_BITS-1:0] cell_cnt;      // counts feature_valid pulses (address generation)
+    logic [CNT_BITS-1:0] acc_cnt;       // one cycle behind cell_cnt (for accumulate bounds check)
 
     logic signed [ACC_BITS-1:0] acc   [0:NUM_CLASSES-1];
     logic signed [ACC_BITS-1:0] acc_r [0:NUM_CLASSES-1];
@@ -80,6 +82,7 @@ module SystolicMatrixMultiply #(
         if (rst) begin
             state        <= S_IDLE;
             cell_cnt     <= '0;
+            acc_cnt      <= '0;
             w_addr_flat  <= '0;
             feat_pipe_r  <= '0;
             pipe_valid_r <= 1'b0;
@@ -100,8 +103,10 @@ module SystolicMatrixMultiply #(
                         for (k = 0; k < NUM_CLASSES; k = k + 1)
                             acc[k] <= '0;
                         cell_cnt <= '0;
+                        acc_cnt  <= '0;
+                        // Pre-load address for first batch (cell 0..PARALLEL_INPUTS-1)
                         for (int p = 0; p < PARALLEL_INPUTS; p = p + 1)
-                            w_addr_flat[(p+1)*$clog2(NUM_CELLS)-1 : p*$clog2(NUM_CELLS)] <= p;
+                            w_addr_flat[p*ADDR_BITS +: ADDR_BITS] <= p;
                         state <= S_RUNNING;
                     end
                 end
@@ -109,24 +114,25 @@ module SystolicMatrixMultiply #(
                 S_RUNNING: begin
                     feat_pipe_r <= feature_in;
 
+                    // Accumulate the pipelined data; acc_cnt tracks which batch this is
                     if (pipe_valid_r) begin
                         for (int p = 0; p < PARALLEL_INPUTS; p = p + 1) begin
-                            if ((cell_cnt * PARALLEL_INPUTS + p) < NUM_CELLS) begin
+                            if ((acc_cnt * PARALLEL_INPUTS + p) < NUM_CELLS) begin
                                 for (k = 0; k < NUM_CLASSES; k = k + 1) begin
                                     acc[k] <= acc[k] +
                                         ACC_BITS'($signed({1'b0, feat_vals[p]}) * $signed(w[p][k]));
                                 end
                             end
                         end
+                        acc_cnt <= acc_cnt + 1'b1;
                     end
 
                     if (feature_valid) begin
                         pipe_valid_r <= 1'b1;
                         cell_cnt <= cell_cnt + 1'b1;
+                        // Load address for current batch; data arrives next cycle when pipe_valid_r=1
                         for (int p = 0; p < PARALLEL_INPUTS; p = p + 1) begin
-                            if ((cell_cnt * PARALLEL_INPUTS + p + PARALLEL_INPUTS) < NUM_CELLS) begin
-                                w_addr_flat[(p+1)*$clog2(NUM_CELLS)-1 : p*$clog2(NUM_CELLS)] <= (cell_cnt + 1) * PARALLEL_INPUTS + p;
-                            end
+                            w_addr_flat[p*ADDR_BITS +: ADDR_BITS] <= cell_cnt * PARALLEL_INPUTS + p;
                         end
 
                         if (cell_cnt >= CNT_BITS'(CYCLES_NEEDED - 1))
@@ -135,6 +141,17 @@ module SystolicMatrixMultiply #(
                 end
 
                 S_DRAIN: begin
+                    // Drain the last pipelined batch
+                    if (pipe_valid_r) begin
+                        for (int p = 0; p < PARALLEL_INPUTS; p = p + 1) begin
+                            if ((acc_cnt * PARALLEL_INPUTS + p) < NUM_CELLS) begin
+                                for (k = 0; k < NUM_CLASSES; k = k + 1) begin
+                                    acc[k] <= acc[k] +
+                                        ACC_BITS'($signed({1'b0, feat_vals[p]}) * $signed(w[p][k]));
+                                end
+                            end
+                        end
+                    end
                     pipe_valid_r <= 1'b0;
                     state        <= S_ARGMAX;
                 end

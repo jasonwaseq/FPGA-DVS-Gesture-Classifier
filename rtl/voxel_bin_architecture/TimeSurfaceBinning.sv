@@ -11,7 +11,8 @@ module TimeSurfaceBinning #(
     parameter READOUT_BINS   = 4,
     parameter GRID_SIZE      = 16,
     parameter COUNTER_BITS   = 6,
-    parameter PARALLEL_READS = 4
+    parameter PARALLEL_READS = 4,
+    parameter CYCLES_PER_BIN = 0  // 0 = auto-compute from WINDOW_MS/NUM_BINS
 )(
     input  logic        clk,
     input  logic        rst,
@@ -25,8 +26,9 @@ module TimeSurfaceBinning #(
 );
 
     localparam integer BIN_DURATION_MS     = WINDOW_MS / NUM_BINS;
-    localparam integer CYCLES_PER_BIN      = (CLK_FREQ_HZ / 1000) * BIN_DURATION_MS;
-    localparam integer TIMER_BITS          = $clog2(CYCLES_PER_BIN + 1);
+    localparam integer CYCLES_PER_BIN_AUTO = (CLK_FREQ_HZ / 1000) * BIN_DURATION_MS;
+    localparam integer CYCLES_PER_BIN_USE  = (CYCLES_PER_BIN == 0) ? CYCLES_PER_BIN_AUTO : CYCLES_PER_BIN;
+    localparam integer TIMER_BITS          = $clog2(CYCLES_PER_BIN_USE + 1);
     localparam integer CELLS_PER_BIN       = GRID_SIZE * GRID_SIZE;
     localparam integer TOTAL_CELLS         = NUM_BINS * CELLS_PER_BIN;
     localparam integer CELL_ADDR_BITS      = $clog2(TOTAL_CELLS);
@@ -73,7 +75,7 @@ module TimeSurfaceBinning #(
             trigger_readout <= 1'b0;
 
             if (state == S_IDLE || state == S_READOUT) begin
-                if (bin_timer >= CYCLES_PER_BIN - 1) begin
+                if (bin_timer >= CYCLES_PER_BIN_USE - 1) begin
                     bin_timer <= '0;
 
                     if (current_bin_idx == NUM_BINS - 1)
@@ -132,16 +134,18 @@ module TimeSurfaceBinning #(
         end
     end
 
-    // Chronological readout: oldest bin first
+    // Chronological readout: current_bin_idx first (oldest, being cleared),
+    // then wrapping through the ring buffer to the newest filled bin.
+    // The clear and readout happen concurrently; readout sees pre-clear values.
     logic [BIN_IDX_BITS:0]   calc_bin_idx;
     logic [BIN_IDX_BITS-1:0] actual_rd_bin_idx;
 
     always_comb begin
-        calc_bin_idx = current_bin_idx + NUM_BINS - READOUT_BINS + rd_bin_offset;
+        calc_bin_idx = current_bin_idx + rd_bin_offset;
         if (calc_bin_idx >= NUM_BINS)
             actual_rd_bin_idx = calc_bin_idx - NUM_BINS;
         else
-            actual_rd_bin_idx = calc_bin_idx[BIN_IDX_BITS-1:0];
+            actual_rd_bin_idx = calc_bin_idx;
     end
 
     logic [CELL_ADDR_BITS-1:0] port_a_addr;
@@ -151,7 +155,6 @@ module TimeSurfaceBinning #(
 
     logic                      event_valid_pipe;
     logic [CELL_ADDR_BITS-1:0] evt_addr_pipe;
-    logic [COUNTER_BITS-1:0]   evt_read_data;
 
     logic [CELL_ADDR_BITS-1:0] clear_addr;
     logic [CELL_ADDR_BITS-1:0] evt_addr;
@@ -163,7 +166,6 @@ module TimeSurfaceBinning #(
         port_a_rdata     <= mem[port_a_addr];
         event_valid_pipe <= event_valid;
         evt_addr_pipe    <= evt_addr;
-        evt_read_data    <= port_a_rdata;
 
         if (port_a_wen)
             mem[port_a_addr] <= port_a_wdata;
@@ -190,7 +192,7 @@ module TimeSurfaceBinning #(
 
     always_comb begin
         for (int i = 0; i < PARALLEL_READS; i = i + 1)
-            readout_data[(i+1)*COUNTER_BITS-1 : i*COUNTER_BITS] = ram_rdata_parallel[i];
+            readout_data[i*COUNTER_BITS +: COUNTER_BITS] = ram_rdata_parallel[i];
     end
 
     always_comb begin
@@ -204,7 +206,7 @@ module TimeSurfaceBinning #(
             port_a_wen   = 1'b1;
         end else if (event_valid_pipe) begin
             port_a_addr  = evt_addr_pipe;
-            port_a_wdata = (evt_read_data != {COUNTER_BITS{1'b1}}) ? evt_read_data + 1'b1 : evt_read_data;
+            port_a_wdata = (port_a_rdata != {COUNTER_BITS{1'b1}}) ? port_a_rdata + 1'b1 : port_a_rdata;
             port_a_wen   = 1'b1;
         end else if (event_valid) begin
             port_a_addr = evt_addr;

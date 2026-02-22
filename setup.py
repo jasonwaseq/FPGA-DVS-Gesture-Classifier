@@ -103,52 +103,81 @@ def get_pip_cmd():
     return VENV_PATH / "bin" / "pip"
 
 def get_oss_cad_bin():
-    common_paths = [
-        Path.home() / "Documents" / "oss-cad-suite",
-        Path.home() / "Documents" / "oss-cad-suite-windows",
-        Path.home() / "oss-cad-suite",
-        Path("C:/oss-cad-suite"),
-        Path.home() / "Documents" / "oss-cad-suite" / "oss-cad-suite",
+    iverilog_exe = "iverilog.exe" if sys.platform == "win32" else "iverilog"
+
+    # 1. Project-local install (preferred — placed here by setup.py download)
+    candidates = [
+        OSS_CAD_PATH / "oss-cad-suite",  # nested layout from Windows self-extractor
+        OSS_CAD_PATH,                     # flat layout from tgz extraction
     ]
-    
-    for p in common_paths:
-        if p.exists() and (p / "bin").exists():
-            if (p / "bin" / "iverilog.exe" if sys.platform == "win32" else p / "bin" / "iverilog").exists():
-                return p
-    
-    if OSS_CAD_PATH.exists():
-        nested = OSS_CAD_PATH / "oss-cad-suite"
-        if nested.exists() and (nested / "bin").exists():
-            if (nested / "bin" / "iverilog.exe" if sys.platform == "win32" else nested / "bin" / "iverilog").exists():
-                return nested
-        if (OSS_CAD_PATH / "bin").exists():
-            if (OSS_CAD_PATH / "bin" / "iverilog.exe" if sys.platform == "win32" else OSS_CAD_PATH / "bin" / "iverilog").exists():
-                return OSS_CAD_PATH
-    
+
+    # 2. Common user-level install locations (cross-platform, no hardcoded usernames)
+    candidates += [
+        Path.home() / "oss-cad-suite",
+        Path("/opt/oss-cad-suite"),       # devcontainer / Linux system install
+    ]
+
+    for p in candidates:
+        if p.exists() and (p / "bin" / iverilog_exe).exists():
+            return p
+
+    # 3. Fall back to whatever is already on PATH
+    if shutil.which("iverilog"):
+        # Return a sentinel that signals "use PATH directly"
+        return Path("__PATH__")
+
     return None
 
 def get_oss_cad_env():
     oss_root = get_oss_cad_bin()
     if oss_root is None:
         return None
-    
+
     env = os.environ.copy()
+
+    # Sentinel: tools are already on PATH (e.g. devcontainer, system install)
+    if str(oss_root) == "__PATH__":
+        return env
+
     oss_bin = oss_root / "bin"
     oss_lib = oss_root / "lib"
-    
+
     env["PATH"] = f"{oss_bin}{os.pathsep}{oss_lib}{os.pathsep}{env.get('PATH', '')}"
     env["YOSYSHQ_ROOT"] = str(oss_root) + os.sep
     if (oss_root / "etc" / "cacert.pem").exists():
         env["SSL_CERT_FILE"] = str(oss_root / "etc" / "cacert.pem")
-    env["PYTHON_EXECUTABLE"] = str(oss_lib / "python3.exe") if sys.platform == "win32" else str(oss_lib / "python3")
-    env["QT_PLUGIN_PATH"] = str(oss_lib / "qt5" / "plugins")
     env["QT_LOGGING_RULES"] = "*=false"
     env["GTK_EXE_PREFIX"] = str(oss_root)
     env["GTK_DATA_PREFIX"] = str(oss_root)
     env["GDK_PIXBUF_MODULEDIR"] = str(oss_lib / "gdk-pixbuf-2.0" / "2.10.0" / "loaders")
     env["GDK_PIXBUF_MODULE_FILE"] = str(oss_lib / "gdk-pixbuf-2.0" / "2.10.0" / "loaders.cache")
     env["OPENFPGALOADER_SOJ_DIR"] = str(oss_root / "share" / "openFPGALoader")
-    
+
+    # Shared library search path for Linux — detect the multiarch tuple dynamically
+    # so this works on x86_64, aarch64, and any other Linux architecture.
+    if sys.platform.startswith("linux"):
+        import subprocess as _sp
+        try:
+            multiarch = _sp.check_output(
+                ["dpkg-architecture", "-qDEB_HOST_MULTIARCH"],
+                stderr=_sp.DEVNULL, text=True
+            ).strip()
+        except Exception:
+            import platform as _plat
+            _machine = _plat.machine()
+            _arch_map = {
+                "x86_64": "x86_64-linux-gnu",
+                "aarch64": "aarch64-linux-gnu",
+                "armv7l": "arm-linux-gnueabihf",
+            }
+            multiarch = _arch_map.get(_machine, f"{_machine}-linux-gnu")
+        lib_dirs = [
+            f"/lib/{multiarch}",
+            f"/usr/lib/{multiarch}",
+        ]
+        existing = env.get("LD_LIBRARY_PATH", "")
+        env["LD_LIBRARY_PATH"] = os.pathsep.join(lib_dirs + ([existing] if existing else []))
+
     return env
 
 def run_cmd(cmd, env=None, cwd=None, check=True):
@@ -190,19 +219,25 @@ def setup_venv():
 
 def install_packages():
     print_step("2/3", "Installing Python packages...")
-    
+
     pip = get_pip_cmd()
     if not pip.exists():
         print_error("pip not found in virtual environment")
         return False
-    
+
     run_cmd([str(pip), "install", "--upgrade", "pip"], check=False)
-    result = run_cmd([str(pip), "install"] + PYTHON_PACKAGES)
+
+    req_file = PROJECT_ROOT / "requirements.txt"
+    if req_file.exists():
+        result = run_cmd([str(pip), "install", "-r", str(req_file)])
+    else:
+        result = run_cmd([str(pip), "install"] + PYTHON_PACKAGES)
+
     if result is None:
         print_error("Failed to install packages")
         return False
-    
-    print_success(f"Installed: {', '.join(PYTHON_PACKAGES)}")
+
+    print_success(f"Installed packages from {'requirements.txt' if req_file.exists() else 'PYTHON_PACKAGES list'}")
     return True
 
 def setup_oss_cad_suite():
@@ -254,8 +289,17 @@ def setup_oss_cad_suite():
 
 
 ARCH_TEST_CONFIG = {
-    "voxel_bin": (RTL_FILES, "voxel_bin_top", TB_DIR / "voxel_bin_architecture", ["-DCLKS_PER_BIT=4", "-DMIN_EVENT_THRESH=4", "-DMOTION_THRESH=2"], ["-Pvoxel_bin_top.CYCLES_PER_BIN=600"]),
-    "gradient_map": (RTL_FILES_GESTURE, "gesture_top", TB_DIR / "gradient_map_architecture", [], ["-Pgesture_top.FRAME_PERIOD_MS=1", "-Pgesture_top.MIN_MASS_THRESH=20", "-Pgesture_top.UART_RX_ENABLE=1"]),
+    "voxel_bin": (RTL_FILES, "voxel_bin_top", TB_DIR / "voxel_bin_architecture", [], [
+        "-Pvoxel_bin_top.CYCLES_PER_BIN=2000",
+        "-Pvoxel_bin_top.BAUD_RATE=3000000",
+        "-Pvoxel_bin_top.WINDOW_MS=40",
+    ]),
+    "gradient_map": (RTL_FILES_GESTURE, "gesture_top", TB_DIR / "gradient_map_architecture", [], [
+        "-Pgesture_top.FRAME_PERIOD_MS=1",
+        "-Pgesture_top.MIN_MASS_THRESH=20",
+        "-Pgesture_top.UART_RX_ENABLE=1",
+        "-Pgesture_top.DECAY_SHIFT=12",
+    ]),
 }
 
 
@@ -322,8 +366,9 @@ def run_tests(test_module=None):
     env["TOPLEVEL"] = toplevel
     env["TOPLEVEL_LANG"] = "verilog"
     env["PYTHONPATH"] = str(tb_dir)
-    if sys.platform.startswith("linux") and not use_system_iverilog:
-        env["LD_LIBRARY_PATH"] = "/lib/x86_64-linux-gnu:/usr/lib/x86_64-linux-gnu"
+    env.setdefault("WAVES", "0")
+    env.setdefault("COCOTB_LOG_LEVEL", "WARNING")
+    env.setdefault("COCOTB_REDUCED_LOG_FMT", "1")
     
     if sys.platform == "win32":
         python_version = f"{sys.version_info.major}{sys.version_info.minor}"
@@ -600,7 +645,10 @@ def clean():
     print_header("Cleaning Build Artifacts")
     
     dirs_to_clean = [
-        TB_DIR / "sim_build",
+        TB_DIR / "voxel_bin_architecture" / "sim_build",
+        TB_DIR / "voxel_bin_architecture" / "__pycache__",
+        TB_DIR / "gradient_map_architecture" / "sim_build",
+        TB_DIR / "gradient_map_architecture" / "__pycache__",
         TB_DIR / "__pycache__",
         PROJECT_ROOT / "__pycache__",
         SYNTH_DIR / "voxel_bin",
@@ -608,6 +656,8 @@ def clean():
     ]
     
     files_to_clean = [
+        TB_DIR / "voxel_bin_architecture" / "results.xml",
+        TB_DIR / "gradient_map_architecture" / "results.xml",
         TB_DIR / "results.xml",
     ]
     

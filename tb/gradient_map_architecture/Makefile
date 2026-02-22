@@ -25,16 +25,41 @@ COMPILE_ARGS += -Pgesture_top.MIN_MASS_THRESH=20
 COMPILE_ARGS += -Pgesture_top.UART_RX_ENABLE=1
 COMPILE_ARGS += -Pgesture_top.DECAY_SHIFT=12
 
+# Suppress waveform dumping and reduce log verbosity for faster runs
+export WAVES ?= 0
+export COCOTB_LOG_LEVEL ?= WARNING
+export COCOTB_REDUCED_LOG_FMT ?= 1
+
+# On Windows, locate the venv and OSS CAD Suite relative to the project root,
+# falling back to any installation already on PATH.
 ifeq ($(OS),Windows_NT)
-COCOTB_MAKEFILES := $(shell C:/Users/jason/Documents/FPGA-DVS-Gesture-Classifier/.venv/Scripts/cocotb-config.exe --makefiles)
-include $(COCOTB_MAKEFILES)/Makefile.sim
+  PROJECT_ROOT := $(realpath ../..)
+  VENV_SCRIPTS := $(PROJECT_ROOT)/.venv/Scripts
+  # Prefer the project-local OSS CAD Suite; fall back to a system install.
+  OSS_CAD_LOCAL := $(PROJECT_ROOT)/oss-cad-suite/bin
+  ifneq ($(wildcard $(OSS_CAD_LOCAL)/iverilog.exe),)
+    OSS_CAD_BIN := $(OSS_CAD_LOCAL)
+  else
+    OSS_CAD_BIN :=
+  endif
+  export PATH := $(VENV_SCRIPTS):$(OSS_CAD_BIN):$(PATH)
+  COCOTB_MAKEFILES := $(shell "$(VENV_SCRIPTS)/cocotb-config.exe" --makefiles 2>/dev/null)
+  include $(COCOTB_MAKEFILES)/Makefile.sim
+  SHELL := $(shell where bash.exe 2>/dev/null | head -1)
+  ifeq ($(SHELL),)
+    SHELL := cmd.exe
+  endif
 else
-include $(shell cocotb-config --makefiles)/Makefile.sim
+  include $(shell cocotb-config --makefiles)/Makefile.sim
 endif
 
-.PHONY: test clean_all
+.PHONY: test test_full clean_all
 
 test:
+	$(MAKE) sim
+
+test_full:
+	$(MAKE) clean
 	$(MAKE) sim
 
 clean_all:

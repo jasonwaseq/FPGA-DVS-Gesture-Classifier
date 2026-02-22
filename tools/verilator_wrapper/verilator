@@ -1,0 +1,12 @@
+#!/bin/sh
+# Thin wrapper so tools that expect a 'verilator' binary work with OSS CAD Suite.
+# OSS CAD Suite ships the actual binary as verilator_bin (or verilator_bin.exe on Windows).
+# The wrapper resolves it from PATH so no absolute paths are needed.
+if command -v verilator_bin.exe >/dev/null 2>&1; then
+    exec verilator_bin.exe "$@"
+elif command -v verilator_bin >/dev/null 2>&1; then
+    exec verilator_bin "$@"
+else
+    echo "verilator_bin not found. Make sure OSS CAD Suite is on your PATH." >&2
+    exit 1
+fi

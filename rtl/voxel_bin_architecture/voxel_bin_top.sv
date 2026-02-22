@@ -78,7 +78,8 @@ module voxel_bin_top #(
         .SENSOR_RES        (SENSOR_RES),
         .MIN_EVENT_THRESH  (MIN_EVENT_THRESH),
         .MOTION_THRESH     (MOTION_THRESH),
-        .PERSISTENCE_COUNT (PERSISTENCE_COUNT)
+        .PERSISTENCE_COUNT (PERSISTENCE_COUNT),
+        .CYCLES_PER_BIN    (CYCLES_PER_BIN)
     ) u_accel (
         .clk                (clk),
         .rst                (rst),

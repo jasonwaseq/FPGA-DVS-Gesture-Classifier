@@ -1,0 +1,16 @@
+# Python dependencies for simulation, testing, and host-side tools.
+# Install with:  pip install -r requirements.txt
+# Or let setup.py manage everything:  python setup.py
+
+# Simulation / verification
+cocotb
+pytest
+
+# Numerical processing (weight generation, event processing)
+numpy
+
+# Host-side camera emulator and event tools
+opencv-python-headless
+
+# UART communication with the FPGA
+pyserial

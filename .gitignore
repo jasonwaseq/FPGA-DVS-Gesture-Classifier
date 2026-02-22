@@ -1,18 +1,18 @@
 
-# Build artifacts
+# ── Synthesis outputs ────────────────────────────────────────────────────────
 synth/build/
 synth/icestorm_icebreaker/build/
-synth/*.json
-synth/*.asc
-synth/*.bit
-synth/*.log
-synth/*.rpt
-synth/*.v
+synth/**/*.json
+synth/**/*.asc
+synth/**/*.bit
+synth/**/*.log
+synth/**/*.rpt
+synth/**/*.v
 
-# Generated Verilog/SystemVerilog
+# ── Generated Verilog/SystemVerilog ─────────────────────────────────────────
 *.sv2v.v
 
-# Python
+# ── Python ───────────────────────────────────────────────────────────────────
 .venv/
 .wsl-venv/
 __pycache__/
@@ -20,36 +20,41 @@ __pycache__/
 *.pyo
 .pytest_cache/
 
-# Python packaging
+# ── Python packaging ─────────────────────────────────────────────────────────
 build/
 dist/
 *.egg-info/
 
-# OSS CAD Suite (downloaded by setup script)
+# ── OSS CAD Suite (downloaded by setup.py) ───────────────────────────────────
 oss-cad-suite/
 
-# Cocotb simulation
-tb/sim_build/
-tb/sim_build_gesture/
-tb/results.xml
-tb/**/results.xml
+# ── Cocotb / Icarus simulation ───────────────────────────────────────────────
+**/sim_build/
+**/sim_build_gesture/
+**/results.xml
 *.vvp
+dump.vcd
+*.vcd
 
-# OS-specific files
+# ── Verilator build artifacts ────────────────────────────────────────────────
+obj_dir/
+
+# ── OS-specific files ────────────────────────────────────────────────────────
 .DS_Store
 Thumbs.db
+desktop.ini
 
-# Editor files
+# ── Editor / IDE files ───────────────────────────────────────────────────────
 .vscode/
 .idea/
 *.swp
 *.swo
 *~
 
-# Temporary files
+# ── Temporary / backup files ─────────────────────────────────────────────────
 *.tmp
 *.bak
 
-# Generated activation script
+# ── Generated activation scripts (created by setup.py) ───────────────────────
 activate.ps1
 activate.sh
