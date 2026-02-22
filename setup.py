@@ -288,6 +288,81 @@ def setup_oss_cad_suite():
     return True
 
 
+def _find_libpython():
+    """Return the absolute path to the Python shared library for the running interpreter.
+
+    cocotb's GPI layer needs to dlopen() libpython at simulation time.  The
+    plain `python3` apt package on Debian/Ubuntu does not ship the .so; it is
+    provided by `python3-dev` / `libpython3.x`.  We try several strategies so
+    this works across distros, venvs, and conda environments.
+    """
+    import sysconfig
+
+    ver = f"{sys.version_info.major}.{sys.version_info.minor}"
+
+    # Candidate library names (most-specific first)
+    names = [
+        f"libpython{ver}.so.1.0",
+        f"libpython{ver}.so",
+        f"libpython{ver}m.so.1.0",
+        f"libpython{ver}m.so",
+        f"libpython3.so",
+    ]
+
+    # Directories to search
+    search_dirs = []
+
+    # 1. The venv's lib directory (works when Python was built with --enable-shared)
+    venv_lib = VENV_PATH / "lib"
+    if venv_lib.exists():
+        search_dirs += [str(d) for d in venv_lib.iterdir() if d.is_dir()]
+
+    # 2. The base interpreter's LIBDIR and MULTIARCH lib paths
+    libdir = sysconfig.get_config_var("LIBDIR")
+    if libdir:
+        search_dirs.append(libdir)
+
+    # 3. Standard system library paths
+    import platform as _plat
+    machine = _plat.machine()
+    arch_map = {
+        "x86_64": "x86_64-linux-gnu",
+        "aarch64": "aarch64-linux-gnu",
+        "armv7l": "arm-linux-gnueabihf",
+    }
+    multiarch = arch_map.get(machine, f"{machine}-linux-gnu")
+    search_dirs += [
+        f"/usr/lib/{multiarch}",
+        f"/lib/{multiarch}",
+        "/usr/lib",
+        "/lib",
+        f"/usr/lib/python{ver}",
+        f"/usr/local/lib",
+    ]
+
+    for d in search_dirs:
+        for name in names:
+            candidate = Path(d) / name
+            if candidate.exists():
+                return str(candidate)
+
+    # 4. Last resort: ask ldconfig
+    try:
+        out = subprocess.check_output(
+            ["ldconfig", "-p"], stderr=subprocess.DEVNULL, text=True
+        )
+        for line in out.splitlines():
+            for name in names[:-1]:  # skip the generic libpython3.so
+                if name in line and "=>" in line:
+                    path = line.split("=>")[-1].strip()
+                    if Path(path).exists():
+                        return path
+    except Exception:
+        pass
+
+    return None
+
+
 ARCH_TEST_CONFIG = {
     "voxel_bin": (RTL_FILES, "voxel_bin_top", TB_DIR / "voxel_bin_architecture", [], [
         "-Pvoxel_bin_top.CYCLES_PER_BIN=2000",
@@ -370,11 +445,18 @@ def run_tests(test_module=None):
     env.setdefault("COCOTB_LOG_LEVEL", "WARNING")
     env.setdefault("COCOTB_REDUCED_LOG_FMT", "1")
     
+    # cocotb's GPI layer dlopen()s the Python shared library at runtime.
+    # We must tell it exactly where to find it, otherwise it fails with
+    # "cannot open shared object file" even when Python itself runs fine.
     if sys.platform == "win32":
         python_version = f"{sys.version_info.major}{sys.version_info.minor}"
         dll_name = f"python{python_version}.dll"
         env["LIBPYTHON_LOC"] = str(Path(sys.base_prefix) / dll_name)
         env["PYGPI_PYTHON_BIN"] = str(python)
+    elif sys.platform.startswith("linux"):
+        libpython = _find_libpython()
+        if libpython:
+            env["LIBPYTHON_LOC"] = libpython
     
     sim_build = tb_dir / "sim_build"
     sim_build.mkdir(parents=True, exist_ok=True)

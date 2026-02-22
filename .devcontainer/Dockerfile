@@ -5,6 +5,8 @@ ARG INSTALL_ZSH="true"
 ARG TARGETARCH
 
 # System packages: build tools, Python, GTKWave, Icarus Verilog (fallback simulator)
+# libpython3-dev is required so that cocotb's GPI layer can dlopen libpython3.x.so
+# at simulation runtime (the plain python3 package does not ship the shared library).
 RUN apt-get update && apt-get install -y --no-install-recommends \
     wget \
     unzip \
@@ -14,6 +16,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     build-essential \
     libgmp-dev \
     python3 \
+    python3-dev \
     python3-pip \
     python3-venv \
     gtkwave \

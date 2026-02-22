@@ -8,9 +8,20 @@ There are two ways to use this project: inside the **VS Code Dev Container** (re
 
 ---
 
-## Option 1 — Dev Container (recommended)
+## Option 1 — Dev Container
 
-The repo ships a `.devcontainer/` that provides a fully configured Ubuntu environment with OSS CAD Suite (Yosys, nextpnr, iceprog, Icarus Verilog), sv2v, GTKWave, and all Python dependencies pre-installed.
+The repo ships a `.devcontainer/` that provides a fully configured Ubuntu environment with OSS CAD Suite (Yosys, nextpnr, Icarus Verilog), sv2v, GTKWave, and all Python dependencies pre-installed.
+
+> **What works in the devcontainer vs. locally**
+>
+> | Task | Devcontainer | Local |
+> |------|:---:|:---:|
+> | Simulation / cocotb tests | ✅ | ✅ |
+> | Synthesis (Yosys + nextpnr) | ✅ | ✅ |
+> | Flash FPGA (`iceprog`) | ❌ | ✅ |
+> | DVS camera emulator / UART tools | ❌ | ✅ |
+>
+> GitHub Codespaces and local Dev Containers do not have access to USB devices, so `iceprog` and any tool that opens a serial port to the FPGA must be run on your local machine. Synthesize inside the container, copy the `.bit` file out, and flash locally.
 
 ### Prerequisites
 
@@ -51,19 +62,12 @@ python3 setup.py synth voxel_bin      # → synth/voxel_bin/voxel_bin_top.bit
 python3 setup.py synth gradient_map   # → synth/gradient_map/gradient_map_top.bit
 ```
 
-### Flash (devcontainer)
+### Flash and FPGA tools (devcontainer — local machine required)
 
-Plug in the iCEBreaker FPGA **before** starting the container (or reconnect it). The container forwards USB devices automatically via Docker.
+The devcontainer cannot access USB devices, so flashing and any tool that communicates with the FPGA over UART must be done on your **local machine**.
 
-```bash
-python3 setup.py flash voxel_bin
-python3 setup.py flash gradient_map
-```
-
-> **Linux host note:** if `iceprog` reports a permission error, add your user to the `plugdev` group on the host:
-> ```bash
-> sudo usermod -aG plugdev $USER   # then log out and back in
-> ```
+1. After synthesizing inside the container, copy the bitstream to your local machine (VS Code's Explorer panel lets you right-click and download files, or use `scp`/`gh codespace cp`).
+2. Follow the [local flash instructions](#4-flash-local) below using your local Python environment.
 
 ---
 
