@@ -1,12 +1,14 @@
 """
-Cocotb testbench for voxel-bin DVS gesture accelerator.
-Tests: UART echo/status/config/reset, event injection, gesture classification (UP/DOWN/LEFT/RIGHT),
-noise rejection, multiple gestures, and high event rate stress.
+Cocotb testbench for voxel_bin_raw_top.
+Events arrive as 5-byte UART packets [X_HI, X_LO, Y_HI, Y_LO, POL];
+control bytes 0xFF/FE/FD/FC provide echo/status/config/reset.
+Tests: UART echo/status/config/reset, event injection, gesture classification
+(UP/DOWN/LEFT/RIGHT), noise rejection, multiple gestures, high event rate stress.
 """
 
 import cocotb
 from cocotb.clock import Clock
-from cocotb.triggers import RisingEdge, ClockCycles, Timer
+from cocotb.triggers import RisingEdge, ClockCycles
 import random
 
 CLK_FREQ_HZ = 12_000_000
@@ -19,18 +21,16 @@ WINDOW_MS = 40
 MIN_EVENT_THRESH = 20
 MOTION_THRESH = 8
 
-# Each DVS event = 5 bytes * 10 bits/byte * CLKS_PER_BIT = 200 cycles
 CYCLES_PER_EVENT = 5 * 10 * CLKS_PER_BIT  # = 200 cycles
-# CYCLES_PER_BIN is overridden in Makefile to 2000
 CYCLES_PER_BIN_SIM = 2000
-# 4 bins * 2000 = 8000 cycles window; 35 events * 200 = 7000 cycles fits in one window
-NUM_GESTURE_EVENTS = 35  # must fit in 4-bin window to preserve temporal gradient
+NUM_GESTURE_EVENTS = 35
 
-GESTURE_UP = 0
-GESTURE_DOWN = 1
-GESTURE_LEFT = 2
+GESTURE_UP    = 0
+GESTURE_DOWN  = 1
+GESTURE_LEFT  = 2
 GESTURE_RIGHT = 3
 GESTURE_NAMES = {0: "UP", 1: "DOWN", 2: "LEFT", 3: "RIGHT"}
+
 
 async def uart_send_byte(dut, byte_val):
     dut.uart_rx.value = 0
@@ -125,41 +125,33 @@ async def check_gesture_response(dut, receiver, timeout_cycles=200000):
         byte2 = await receiver.get_byte(timeout_cycles=50000)
         if byte2 is None:
             byte2 = 0
-        
         gesture = byte1 & 0x03
         confidence = (byte2 >> 4) & 0x0F
-        # Consume any duplicate gesture outputs in the queue
         receiver.clear()
         return gesture, confidence
-    
     return None, None
 
 
-def generate_gesture_events(gesture, n=300, noise=0.02, start_pos=None, end_pos=None):
-    """Generate (x, y, pol) events for a linear gesture swipe."""
+def generate_gesture_events(gesture, n=300, noise=0.02):
     events = []
     cx, cy = 160, 160
     motion_range = 140
-    
-    if start_pos is None or end_pos is None:
-        if gesture == GESTURE_UP:
-            start_pos = (cx, cy + motion_range // 2)
-            end_pos = (cx, cy - motion_range // 2)
-        elif gesture == GESTURE_DOWN:
-            start_pos = (cx, cy - motion_range // 2)
-            end_pos = (cx, cy + motion_range // 2)
-        elif gesture == GESTURE_LEFT:
-            start_pos = (cx + motion_range // 2, cy)
-            end_pos = (cx - motion_range // 2, cy)
-        elif gesture == GESTURE_RIGHT:
-            start_pos = (cx - motion_range // 2, cy)
-            end_pos = (cx + motion_range // 2, cy)
-        else:
-            raise ValueError(f"Unknown gesture {gesture}")
-    
+    if gesture == GESTURE_UP:
+        start_pos = (cx, cy + motion_range // 2)
+        end_pos   = (cx, cy - motion_range // 2)
+    elif gesture == GESTURE_DOWN:
+        start_pos = (cx, cy - motion_range // 2)
+        end_pos   = (cx, cy + motion_range // 2)
+    elif gesture == GESTURE_LEFT:
+        start_pos = (cx + motion_range // 2, cy)
+        end_pos   = (cx - motion_range // 2, cy)
+    elif gesture == GESTURE_RIGHT:
+        start_pos = (cx - motion_range // 2, cy)
+        end_pos   = (cx + motion_range // 2, cy)
+    else:
+        raise ValueError(f"Unknown gesture {gesture}")
     sx, sy = start_pos
     ex, ey = end_pos
-
     for i in range(n):
         t = i / max(1, n - 1)
         if random.random() < noise:
@@ -168,10 +160,7 @@ def generate_gesture_events(gesture, n=300, noise=0.02, start_pos=None, end_pos=
             spread = 18
             x = int(sx + (ex - sx) * t + random.gauss(0, spread / 3))
             y = int(sy + (ey - sy) * t + random.gauss(0, spread / 3))
-            x = max(0, min(319, x))
-            y = max(0, min(319, y))
-            events.append((x, y, 1))
-    
+            events.append((max(0, min(319, x)), max(0, min(319, y)), 1))
     return events
 
 
@@ -181,9 +170,8 @@ async def setup_test(dut):
     dut.uart_rx.value = 1
     await ClockCycles(dut.clk, 100)
     assert dut.uart_tx.value == 1, "TX should be idle high"
-    # Soft reset to clear all state and restart bin timer
     await uart_send_byte(dut, 0xFC)
-    await ClockCycles(dut.clk, 500)  # Wait for reset to propagate and initial clear
+    await ClockCycles(dut.clk, 500)
     dut._log.info("Setup complete")
 
 
@@ -194,7 +182,6 @@ async def test_uart_echo(dut):
     recv_task = cocotb.start_soon(uart_receive_byte(dut, timeout_cycles=50000))
     await uart_send_byte(dut, 0xFF)
     response = await recv_task
-    
     assert response is not None, "No response received"
     assert response == 0x55, f"Expected 0x55, got 0x{response:02X}"
     dut._log.info("UART Echo Test PASSED")
@@ -207,7 +194,6 @@ async def test_status_query(dut):
     recv_task = cocotb.start_soon(uart_receive_byte(dut, timeout_cycles=50000))
     await uart_send_byte(dut, 0xFE)
     response = await recv_task
-    
     assert response is not None, "No response received"
     assert (response & 0xF0) == 0xB0, f"Expected 0xBx, got 0x{response:02X}"
     dut._log.info(f"Status byte: 0x{response:02X}")
@@ -221,12 +207,9 @@ async def test_config_query(dut):
     recv_task1 = cocotb.start_soon(uart_receive_byte(dut, timeout_cycles=50000))
     await uart_send_byte(dut, 0xFD)
     byte1 = await recv_task1
-    
     assert byte1 is not None, "No first byte received"
-    
     byte2 = await uart_receive_byte(dut, timeout_cycles=50000)
     assert byte2 is not None, "No second byte received"
-    
     assert byte1 == MIN_EVENT_THRESH, f"MIN_EVENT_THRESH mismatch: got {byte1}, expected {MIN_EVENT_THRESH}"
     assert byte2 == MOTION_THRESH, f"MOTION_THRESH mismatch: got {byte2}, expected {MOTION_THRESH}"
     dut._log.info("Config Query Test PASSED")
@@ -243,7 +226,6 @@ async def test_soft_reset(dut):
     recv_task = cocotb.start_soon(uart_receive_byte(dut, timeout_cycles=50000))
     await uart_send_byte(dut, 0xFF)
     response = await recv_task
-    
     assert response == 0x55, "System should still respond after reset"
     dut._log.info("Soft Reset Test PASSED")
 
@@ -253,12 +235,11 @@ async def test_event_injection(dut):
     """Inject events via UART and verify system still responds"""
     await setup_test(dut)
     for i in range(10):
-        await send_dvs_event(dut, 160 + i*5, 160 + i*5, 1)
+        await send_dvs_event(dut, 160 + i * 5, 160 + i * 5, 1)
         await ClockCycles(dut.clk, 50)
     recv_task = cocotb.start_soon(uart_receive_byte(dut, timeout_cycles=50000))
     await uart_send_byte(dut, 0xFE)
     response = await recv_task
-    
     assert response is not None, "No status response after events"
     assert (response & 0xF0) == 0xB0, f"Expected 0xBx, got 0x{response:02X}"
     dut._log.info("Event Injection Test PASSED")
@@ -268,22 +249,15 @@ async def gesture_test(dut, gesture, expected_class, description):
     await setup_test(dut)
     receiver = UartReceiver(dut)
     try:
-        # Send events with no inter-event gap.
-        # With CYCLES_PER_BIN=2000 and 4 bins, window = 8000 cycles.
-        # 35 events * 200 cycles/event = 7000 cycles fits in one window.
         events = generate_gesture_events(gesture, n=NUM_GESTURE_EVENTS, noise=0.01)
         dut._log.info(f"Sending {len(events)} events for {GESTURE_NAMES[gesture]} gesture")
         await send_event_stream(dut, events, inter_event_gap=0)
-        dut._log.info(f"Events sent, waiting for classification...")
-        # Wait for bin rotation and readout/classification
+        dut._log.info("Events sent, waiting for classification...")
         window_cycles = 6 * CYCLES_PER_BIN_SIM
-
         gesture_detected = False
         detected_class = None
         confidence = None
-        max_attempts = 10
-
-        for attempt in range(max_attempts):
+        for attempt in range(10):
             gesture_class, conf = await check_gesture_response(dut, receiver, timeout_cycles=window_cycles)
             dut._log.info(f"Attempt {attempt+1}: got class={gesture_class}, conf={conf}")
             if gesture_class is not None:
@@ -294,67 +268,14 @@ async def gesture_test(dut, gesture, expected_class, description):
                 break
     finally:
         receiver.stop()
-
     assert gesture_detected, (
-        f"Gesture {GESTURE_NAMES[expected_class]} not detected after {max_attempts} attempts. "
-        f"Check thresholds, event generation, and window timing."
+        f"Gesture {GESTURE_NAMES[expected_class]} not detected after 10 attempts."
     )
     assert detected_class == expected_class, (
         f"Wrong gesture detected: got {GESTURE_NAMES.get(detected_class, '?')}, "
         f"expected {GESTURE_NAMES[expected_class]}"
     )
-    
     dut._log.info(f"{description} PASSED (confidence={confidence})")
-
-
-@cocotb.test()
-async def test_gesture_debug(dut):
-    """Debug: send UP events and monitor internal signals."""
-    await setup_test(dut)
-    events = generate_gesture_events(GESTURE_UP, n=NUM_GESTURE_EVENTS, noise=0.01)
-    dut._log.info(f"Sending {len(events)} UP events")
-    await send_event_stream(dut, events, inter_event_gap=0)
-    dut._log.info("Events sent, monitoring for gesture_valid...")
-    # Monitor for gesture_valid and readout_start for 20000 cycles
-    readout_seen = False
-    result_valid_seen = False
-    for i in range(20000):
-        await RisingEdge(dut.clk)
-        try:
-            gv = dut.u_accel.gesture_valid.value
-            if gv == 1:
-                g = dut.u_accel.gesture.value
-                dut._log.info(f"  gesture_valid=1 at cycle {i}, gesture={g}")
-                break
-            rs = dut.u_accel.u_time_surface_binning.readout_start.value
-            if rs == 1 and not readout_seen:
-                readout_seen = True
-                dut._log.info(f"  readout_start=1 at cycle {i}")
-            rv = dut.u_accel.u_systolic_array.result_valid.value
-            if rv == 1 and not result_valid_seen:
-                result_valid_seen = True
-                score_above = dut.u_accel.score_above_thresh.value
-                best_class = dut.u_accel.u_systolic_array.best_class.value
-                abs_score = dut.u_accel.abs_best_score.value
-                # Try to read accumulator scores
-                try:
-                    scores = []
-                    for k in range(4):
-                        s = dut.u_accel.u_systolic_array.acc_r[k].value
-                        scores.append(int(s.signed_integer) if hasattr(s, 'signed_integer') else int(s))
-                    dut._log.info(f"  result_valid=1 at cycle {i}, best_class={best_class}, abs_score={abs_score}, score_above={score_above}")
-                    dut._log.info(f"  scores: {scores}")
-                except Exception as e2:
-                    dut._log.info(f"  result_valid=1 at cycle {i}, best_class={best_class}, abs_score={abs_score}, score_above={score_above} (score read err: {e2})")
-        except Exception as e:
-            if i < 5:
-                dut._log.warning(f"  Exception at cycle {i}: {e}")
-    else:
-        dut._log.warning("No gesture_valid in 20000 cycles")
-        if not readout_seen:
-            dut._log.warning("  readout_start never seen!")
-        if not result_valid_seen:
-            dut._log.warning("  result_valid never seen!")
 
 
 @cocotb.test()
@@ -385,12 +306,10 @@ async def test_multiple_gestures(dut):
         (GESTURE_UP, 0, "UP"),
         (GESTURE_DOWN, 1, "DOWN"),
         (GESTURE_LEFT, 2, "LEFT"),
-        (GESTURE_RIGHT, 3, "RIGHT")
+        (GESTURE_RIGHT, 3, "RIGHT"),
     ]
-    
     detected_gestures = []
     window_cycles = 6 * CYCLES_PER_BIN_SIM
-    
     receiver = UartReceiver(dut)
     try:
         for gesture, expected_class, name in gestures_to_test:
@@ -398,7 +317,6 @@ async def test_multiple_gestures(dut):
             events = generate_gesture_events(gesture, n=NUM_GESTURE_EVENTS, noise=0.01)
             receiver.clear()
             await send_event_stream(dut, events, inter_event_gap=0)
-            
             gesture_found = False
             for attempt in range(5):
                 gesture_class, conf = await check_gesture_response(dut, receiver, timeout_cycles=window_cycles)
@@ -409,10 +327,8 @@ async def test_multiple_gestures(dut):
                     break
                 elif gesture_class is not None:
                     dut._log.warning(f"Got spurious {GESTURE_NAMES.get(gesture_class, '?')} while expecting {name}")
-            
             if not gesture_found:
                 dut._log.warning(f"{name} not detected")
-            # Wait for bins to clear before next gesture
             await ClockCycles(dut.clk, 4 * CYCLES_PER_BIN_SIM)
     finally:
         receiver.stop()

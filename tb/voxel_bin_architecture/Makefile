@@ -1,28 +1,44 @@
 TOPLEVEL_LANG = verilog
 
 RTL_DIR = ../../rtl
-VERILOG_SOURCES = $(RTL_DIR)/voxel_bin_architecture/dvs_gesture_accel.sv \
-                  $(RTL_DIR)/voxel_bin_architecture/TemporalAccumulator.sv \
-                  $(RTL_DIR)/voxel_bin_architecture/SpatialCompressor.sv \
-                  $(RTL_DIR)/voxel_bin_architecture/OutputRegister.sv \
-                  $(RTL_DIR)/voxel_bin_architecture/MotionComputer.sv \
-                  $(RTL_DIR)/voxel_bin_architecture/InputFIFO.sv \
-                  $(RTL_DIR)/voxel_bin_architecture/TimeSurfaceBinning.sv \
-                  $(RTL_DIR)/voxel_bin_architecture/WeightROM.sv \
-                  $(RTL_DIR)/voxel_bin_architecture/SystolicMatrixMultiply.sv \
-                  $(RTL_DIR)/voxel_bin_architecture/voxel_bin_top.sv \
-                  $(RTL_DIR)/uart_rx.sv \
-                  $(RTL_DIR)/uart_tx.sv
 
-TOPLEVEL = voxel_bin_top
-MODULE = test_voxel_bin
+VOXEL_BIN_SOURCES = $(RTL_DIR)/voxel_bin_architecture/dvs_gesture_accel.sv \
+                    $(RTL_DIR)/voxel_bin_architecture/TemporalAccumulator.sv \
+                    $(RTL_DIR)/voxel_bin_architecture/SpatialCompressor.sv \
+                    $(RTL_DIR)/voxel_bin_architecture/OutputRegister.sv \
+                    $(RTL_DIR)/voxel_bin_architecture/MotionComputer.sv \
+                    $(RTL_DIR)/voxel_bin_architecture/InputFIFO.sv \
+                    $(RTL_DIR)/voxel_bin_architecture/TimeSurfaceBinning.sv \
+                    $(RTL_DIR)/voxel_bin_architecture/WeightROM.sv \
+                    $(RTL_DIR)/voxel_bin_architecture/SystolicMatrixMultiply.sv \
+                    $(RTL_DIR)/uart_rx.sv \
+                    $(RTL_DIR)/uart_tx.sv
+
+# Default target: raw (UART sensor input)
+TARGET ?= raw
+
+ifeq ($(TARGET),raw)
+  VERILOG_SOURCES = $(VOXEL_BIN_SOURCES) \
+                    $(RTL_DIR)/voxel_bin_architecture/voxel_bin_raw_top.sv
+  TOPLEVEL = voxel_bin_raw_top
+  MODULE   = test_voxel_bin_raw
+  COMPILE_ARGS += -Pvoxel_bin_raw_top.CYCLES_PER_BIN=2000
+  COMPILE_ARGS += -Pvoxel_bin_raw_top.BAUD_RATE=3000000
+  COMPILE_ARGS += -Pvoxel_bin_raw_top.WINDOW_MS=40
+else ifeq ($(TARGET),processed)
+  VERILOG_SOURCES = $(VOXEL_BIN_SOURCES) \
+                    $(RTL_DIR)/voxel_bin_architecture/voxel_bin_processed_top.sv
+  TOPLEVEL = voxel_bin_processed_top
+  MODULE   = test_voxel_bin_processed
+  COMPILE_ARGS += -Pvoxel_bin_processed_top.CYCLES_PER_BIN=2000
+  COMPILE_ARGS += -Pvoxel_bin_processed_top.WINDOW_MS=40
+else
+  $(error Unknown TARGET=$(TARGET). Use TARGET=raw or TARGET=processed)
+endif
 
 SIM = icarus
 
 COMPILE_ARGS += -g2012
-COMPILE_ARGS += -Pvoxel_bin_top.CYCLES_PER_BIN=2000
-COMPILE_ARGS += -Pvoxel_bin_top.BAUD_RATE=3000000
-COMPILE_ARGS += -Pvoxel_bin_top.WINDOW_MS=40
 
 # Suppress waveform dumping and reduce log verbosity for faster runs
 export WAVES ?= 0
@@ -34,7 +50,6 @@ export COCOTB_REDUCED_LOG_FMT ?= 1
 ifeq ($(OS),Windows_NT)
   PROJECT_ROOT := $(realpath ../..)
   VENV_SCRIPTS := $(PROJECT_ROOT)/.venv/Scripts
-  # Prefer the project-local OSS CAD Suite; fall back to a system install.
   OSS_CAD_LOCAL := $(PROJECT_ROOT)/oss-cad-suite/bin
   ifneq ($(wildcard $(OSS_CAD_LOCAL)/iverilog.exe),)
     OSS_CAD_BIN := $(OSS_CAD_LOCAL)
@@ -52,14 +67,19 @@ else
   include $(shell cocotb-config --makefiles)/Makefile.sim
 endif
 
-.PHONY: test test_full clean_all
+.PHONY: test test_raw test_processed test_full clean_all
 
-test:
-	$(MAKE) sim
+test: test_raw
+
+test_raw:
+	$(MAKE) sim TARGET=raw
+
+test_processed:
+	$(MAKE) sim TARGET=processed
 
 test_full:
-	$(MAKE) clean
-	$(MAKE) sim
+	$(MAKE) clean && $(MAKE) sim TARGET=raw
+	$(MAKE) clean && $(MAKE) sim TARGET=processed
 
 clean_all:
 	rm -rf sim_build results.xml __pycache__

@@ -1,10 +1,13 @@
-// UART top for DVS Gesture Accelerator
-// RX: 5-byte event packets [X_HI, X_LO, Y_HI, Y_LO, POL]; control bytes 0xFF/FE/FD/FC
-// TX: [0xA0|gesture, confidence] on detection
+// Top-level for voxel-bin DVS gesture accelerator — raw UART sensor input.
+// Events arrive as 5-byte UART packets [X_HI, X_LO, Y_HI, Y_LO, POL];
+// control bytes 0xFF/FE/FD/FC provide echo/status/config/reset.
+// TX: [0xA0|gesture, confidence] on detection.
+// No external reset pin; power-on reset and soft-reset are generated internally.
+// Target: Lattice iCE40UP5K on iCEBreaker board.
 
 `timescale 1ns/1ps
 
-module voxel_bin_top #(
+module voxel_bin_raw_top #(
     parameter CLK_FREQ          = 12_000_000,
     parameter BAUD_RATE         = 115200,
     parameter WINDOW_MS         = 400,
@@ -81,21 +84,21 @@ module voxel_bin_top #(
         .PERSISTENCE_COUNT (PERSISTENCE_COUNT),
         .CYCLES_PER_BIN    (CYCLES_PER_BIN)
     ) u_accel (
-        .clk                (clk),
-        .rst                (rst),
-        .event_valid        (event_valid),
-        .event_x            (event_x),
-        .event_y            (event_y),
-        .event_polarity     (event_polarity),
-        .event_ts           (event_ts),
-        .event_ready        (event_ready),
-        .gesture            (gesture),
-        .gesture_valid      (gesture_valid),
-        .gesture_confidence (gesture_confidence),
-        .debug_event_count  (debug_event_count),
-        .debug_state        (debug_state),
-        .debug_fifo_empty   (debug_fifo_empty),
-        .debug_fifo_full    (debug_fifo_full),
+        .clk                 (clk),
+        .rst                 (rst),
+        .event_valid         (event_valid),
+        .event_x             (event_x),
+        .event_y             (event_y),
+        .event_polarity      (event_polarity),
+        .event_ts            (event_ts),
+        .event_ready         (event_ready),
+        .gesture             (gesture),
+        .gesture_valid       (gesture_valid),
+        .gesture_confidence  (gesture_confidence),
+        .debug_event_count   (debug_event_count),
+        .debug_state         (debug_state),
+        .debug_fifo_empty    (debug_fifo_empty),
+        .debug_fifo_full     (debug_fifo_full),
         .debug_temporal_phase(accel_temporal_phase)
     );
 

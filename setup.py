@@ -26,7 +26,7 @@ PYTHON_PACKAGES = [
     "pyserial",
 ]
 
-RTL_FILES = [
+VOXEL_BIN_CORE_FILES = [
     "uart_rx.sv",
     "uart_tx.sv",
     "voxel_bin_architecture/InputFIFO.sv",
@@ -39,27 +39,54 @@ RTL_FILES = [
     "voxel_bin_architecture/WeightROM.sv",
     "voxel_bin_architecture/SystolicMatrixMultiply.sv",
     "voxel_bin_architecture/dvs_gesture_accel.sv",
-    "voxel_bin_architecture/voxel_bin_top.sv",
 ]
 
-RTL_FILES_GESTURE = [
+RTL_FILES_VOXEL_RAW = VOXEL_BIN_CORE_FILES + [
+    "voxel_bin_architecture/voxel_bin_raw_top.sv",
+]
+
+RTL_FILES_VOXEL_PROCESSED = VOXEL_BIN_CORE_FILES + [
+    "voxel_bin_architecture/voxel_bin_processed_top.sv",
+]
+
+# Keep legacy alias so any external references don't break
+RTL_FILES = RTL_FILES_VOXEL_RAW
+
+GRADIENT_MAP_CORE_FILES = [
     "uart_tx.sv",
     "uart_rx.sv",
     "uart_debug.sv",
     "gradient_map_architecture/input_fifo.sv",
     "gradient_map_architecture/evt2_decoder.sv",
     "gradient_map_architecture/time_surface_memory.sv",
-    "gradient_map_architecture/flatten_buffer.sv",
     "gradient_map_architecture/weight_rom.sv",
     "gradient_map_architecture/systolic_array.sv",
     "gradient_map_architecture/spatio_temporal_classifier.sv",
     "gradient_map_architecture/time_surface_encoder.sv",
-    "gradient_map_architecture/gesture_top.sv",
 ]
 
-RTL_FILES_UART = RTL_FILES_GESTURE + [
-    "gradient_map_architecture/gradient_map_top.sv",
+RTL_FILES_GRADIENT_RAW = GRADIENT_MAP_CORE_FILES + [
+    "gradient_map_architecture/gradient_map_raw_top.sv",
 ]
+
+GRADIENT_MAP_PROCESSED_FILES = [
+    "uart_tx.sv",
+    "uart_rx.sv",
+    "uart_debug.sv",
+    "gradient_map_architecture/time_surface_memory.sv",
+    "gradient_map_architecture/weight_rom.sv",
+    "gradient_map_architecture/systolic_array.sv",
+    "gradient_map_architecture/spatio_temporal_classifier.sv",
+    "gradient_map_architecture/time_surface_encoder.sv",
+]
+
+RTL_FILES_GRADIENT_PROCESSED = GRADIENT_MAP_PROCESSED_FILES + [
+    "gradient_map_architecture/gradient_map_processed_top.sv",
+]
+
+# Keep legacy aliases
+RTL_FILES_GESTURE = GRADIENT_MAP_CORE_FILES
+RTL_FILES_UART = RTL_FILES_GRADIENT_RAW
 
 OSS_CAD_URLS = {
     ("Windows", "AMD64"): "https://github.com/YosysHQ/oss-cad-suite-build/releases/download/2024-11-21/oss-cad-suite-windows-x64-20241121.exe",
@@ -364,16 +391,35 @@ def _find_libpython():
 
 
 ARCH_TEST_CONFIG = {
-    "voxel_bin": (RTL_FILES, "voxel_bin_top", TB_DIR / "voxel_bin_architecture", [], [
-        "-Pvoxel_bin_top.CYCLES_PER_BIN=2000",
-        "-Pvoxel_bin_top.BAUD_RATE=3000000",
-        "-Pvoxel_bin_top.WINDOW_MS=40",
+    "voxel_bin_raw": (RTL_FILES_VOXEL_RAW, "voxel_bin_raw_top", TB_DIR / "voxel_bin_architecture", [], [
+        "-Pvoxel_bin_raw_top.CYCLES_PER_BIN=2000",
+        "-Pvoxel_bin_raw_top.BAUD_RATE=3000000",
+        "-Pvoxel_bin_raw_top.WINDOW_MS=40",
     ]),
-    "gradient_map": (RTL_FILES_GESTURE, "gesture_top", TB_DIR / "gradient_map_architecture", [], [
-        "-Pgesture_top.FRAME_PERIOD_MS=1",
-        "-Pgesture_top.MIN_MASS_THRESH=20",
-        "-Pgesture_top.UART_RX_ENABLE=1",
-        "-Pgesture_top.DECAY_SHIFT=12",
+    "voxel_bin_processed": (RTL_FILES_VOXEL_PROCESSED, "voxel_bin_processed_top", TB_DIR / "voxel_bin_architecture", [], [
+        "-Pvoxel_bin_processed_top.CYCLES_PER_BIN=2000",
+        "-Pvoxel_bin_processed_top.WINDOW_MS=40",
+    ]),
+    "gradient_map_raw": (RTL_FILES_GRADIENT_RAW, "gradient_map_raw_top", TB_DIR / "gradient_map_architecture", [], [
+        "-Pgradient_map_raw_top.FRAME_PERIOD_MS=1",
+        "-Pgradient_map_raw_top.MIN_MASS_THRESH=20",
+        "-Pgradient_map_raw_top.DECAY_SHIFT=12",
+    ]),
+    "gradient_map_processed": (RTL_FILES_GRADIENT_PROCESSED, "gradient_map_processed_top", TB_DIR / "gradient_map_architecture", [], [
+        "-Pgradient_map_processed_top.FRAME_PERIOD_MS=1",
+        "-Pgradient_map_processed_top.MIN_MASS_THRESH=20",
+        "-Pgradient_map_processed_top.DECAY_SHIFT=12",
+    ]),
+    # Legacy aliases
+    "voxel_bin": (RTL_FILES_VOXEL_RAW, "voxel_bin_raw_top", TB_DIR / "voxel_bin_architecture", [], [
+        "-Pvoxel_bin_raw_top.CYCLES_PER_BIN=2000",
+        "-Pvoxel_bin_raw_top.BAUD_RATE=3000000",
+        "-Pvoxel_bin_raw_top.WINDOW_MS=40",
+    ]),
+    "gradient_map": (RTL_FILES_GRADIENT_RAW, "gradient_map_raw_top", TB_DIR / "gradient_map_architecture", [], [
+        "-Pgradient_map_raw_top.FRAME_PERIOD_MS=1",
+        "-Pgradient_map_raw_top.MIN_MASS_THRESH=20",
+        "-Pgradient_map_raw_top.DECAY_SHIFT=12",
     ]),
 }
 
@@ -381,16 +427,27 @@ ARCH_TEST_CONFIG = {
 def run_tests(test_module=None):
     print_header("Running cocotb Verification Tests")
 
-    if test_module in ("test_voxel_bin", "voxel_bin"):
-        arch = "voxel_bin"
-        test_module = "test_voxel_bin"
-    elif test_module in ("test_gradient_map", "gradient_map"):
-        arch = "gradient_map"
-        test_module = "test_gradient_map"
+    TEST_MODULE_MAP = {
+        "voxel_bin_raw":          ("voxel_bin_raw",       "test_voxel_bin_raw"),
+        "test_voxel_bin_raw":     ("voxel_bin_raw",       "test_voxel_bin_raw"),
+        "voxel_bin_processed":    ("voxel_bin_processed", "test_voxel_bin_processed"),
+        "test_voxel_bin_processed": ("voxel_bin_processed", "test_voxel_bin_processed"),
+        "gradient_map_raw":       ("gradient_map_raw",    "test_gradient_map_raw"),
+        "test_gradient_map_raw":  ("gradient_map_raw",    "test_gradient_map_raw"),
+        "gradient_map_processed": ("gradient_map_processed", "test_gradient_map_processed"),
+        "test_gradient_map_processed": ("gradient_map_processed", "test_gradient_map_processed"),
+        # Legacy aliases
+        "voxel_bin":              ("voxel_bin_raw",       "test_voxel_bin_raw"),
+        "test_voxel_bin":         ("voxel_bin_raw",       "test_voxel_bin_raw"),
+        "gradient_map":           ("gradient_map_raw",    "test_gradient_map_raw"),
+        "test_gradient_map":      ("gradient_map_raw",    "test_gradient_map_raw"),
+    }
+    key = test_module or "voxel_bin_raw"
+    if key in TEST_MODULE_MAP:
+        arch, test_module = TEST_MODULE_MAP[key]
     else:
-        # Default to voxel_bin for backward compatibility
-        arch = "voxel_bin"
-        test_module = test_module or "test_voxel_bin"
+        arch = "voxel_bin_raw"
+        test_module = "test_voxel_bin_raw"
 
     rtl_files, toplevel, tb_dir, defines, param_overrides = ARCH_TEST_CONFIG[arch]
     
@@ -497,7 +554,7 @@ def run_tests(test_module=None):
     return result.returncode
 
 
-def _synthesize(top_module, rtl_files, pcf_name, label="", arch_dir=None):
+def _synthesize(top_module, rtl_files, pcf_name, label="", arch_dir=None, allow_unconstrained=False):
     display = label or top_module
     print_header(f"Synthesizing {display} for iCE40 UP5K")
 
@@ -538,14 +595,17 @@ def _synthesize(top_module, rtl_files, pcf_name, label="", arch_dir=None):
     print_success("Synthesis complete")
 
     print("\nRunning nextpnr place and route...")
-    result = subprocess.run([
+    nextpnr_cmd = [
         "nextpnr-ice40",
         "--up5k", "--package", "sg48",
         "--json", str(output_json),
         "--pcf", str(pcf_file),
         "--asc", str(output_asc),
         "--freq", "12"
-    ], env=env, cwd=SYNTH_DIR)
+    ]
+    if allow_unconstrained:
+        nextpnr_cmd.append("--pcf-allow-unconstrained")
+    result = subprocess.run(nextpnr_cmd, env=env, cwd=SYNTH_DIR)
     if result.returncode != 0:
         print_error("Place and route failed")
         return 1
@@ -572,35 +632,75 @@ def _synthesize(top_module, rtl_files, pcf_name, label="", arch_dir=None):
 
 
 ARCH_SYNTH_CONFIG = {
-    "voxel_bin": (
-        "voxel_bin_top",
-        RTL_FILES,
+    # (top_module, rtl_files, pcf_name, label, subdir, allow_unconstrained)
+    "voxel_bin_raw": (
+        "voxel_bin_raw_top",
+        RTL_FILES_VOXEL_RAW,
         "icebreaker.pcf",
-        "Voxel-bin (voxel_bin_top)",
+        "Voxel-bin raw/UART (voxel_bin_raw_top)",
         "voxel_bin",
+        False,
+    ),
+    "voxel_bin_processed": (
+        "voxel_bin_processed_top",
+        RTL_FILES_VOXEL_PROCESSED,
+        "icebreaker_processed_voxel_bin.pcf",
+        "Voxel-bin processed/bus (voxel_bin_processed_top)",
+        "voxel_bin",
+        True,
+    ),
+    "gradient_map_raw": (
+        "gradient_map_raw_top",
+        RTL_FILES_GRADIENT_RAW,
+        "icebreaker.pcf",
+        "Gradient-map raw/UART (gradient_map_raw_top)",
+        "gradient_map",
+        False,
+    ),
+    "gradient_map_processed": (
+        "gradient_map_processed_top",
+        RTL_FILES_GRADIENT_PROCESSED,
+        "icebreaker_processed_gradient_map.pcf",
+        "Gradient-map processed/bus (gradient_map_processed_top)",
+        "gradient_map",
+        False,
+    ),
+    # Legacy aliases
+    "voxel_bin": (
+        "voxel_bin_raw_top",
+        RTL_FILES_VOXEL_RAW,
+        "icebreaker.pcf",
+        "Voxel-bin raw/UART (voxel_bin_raw_top)",
+        "voxel_bin",
+        False,
     ),
     "gradient_map": (
-        "gradient_map_top",
-        RTL_FILES_UART,
+        "gradient_map_raw_top",
+        RTL_FILES_GRADIENT_RAW,
         "icebreaker.pcf",
-        "Gradient-map UART (gradient_map_top)",
+        "Gradient-map raw/UART (gradient_map_raw_top)",
         "gradient_map",
+        False,
     ),
 }
 
 
 def run_synthesis(arch):
     if arch not in ARCH_SYNTH_CONFIG:
-        print_error(f"Unknown architecture: {arch}. Use voxel_bin or gradient_map.")
+        print_error(
+            f"Unknown architecture: {arch}. "
+            "Use voxel_bin_raw, voxel_bin_processed, gradient_map_raw, or gradient_map_processed."
+        )
         return 1
 
-    top_module, rtl_files, pcf_name, label, subdir = ARCH_SYNTH_CONFIG[arch]
+    top_module, rtl_files, pcf_name, label, subdir, allow_unconstrained = ARCH_SYNTH_CONFIG[arch]
     return _synthesize(
         top_module=top_module,
         rtl_files=rtl_files,
         pcf_name=pcf_name,
         label=label,
         arch_dir=subdir,
+        allow_unconstrained=allow_unconstrained,
     )
 
 def list_ftdi_devices():
@@ -645,9 +745,13 @@ def flash_fpga(port=None, serial=None, vid=None, pid=None, bitfile_name=None, ar
     print_header("Flashing FPGA")
 
     if bitfile_name is None and arch is not None:
-        bitfile_name = "voxel_bin_top.bit" if arch == "voxel_bin" else "gradient_map_top.bit"
+        if arch in ARCH_SYNTH_CONFIG:
+            top_module = ARCH_SYNTH_CONFIG[arch][0]
+            bitfile_name = f"{top_module}.bit"
+        else:
+            bitfile_name = f"{arch}.bit"
     if bitfile_name is None:
-        bitfile_name = "voxel_bin_top.bit"
+        bitfile_name = "voxel_bin_raw_top.bit"
 
     oss_root = get_oss_cad_bin()
     if oss_root is None:
@@ -655,7 +759,7 @@ def flash_fpga(port=None, serial=None, vid=None, pid=None, bitfile_name=None, ar
         return 1
     
     if arch is not None and arch in ARCH_SYNTH_CONFIG:
-        _, _, _, _, subdir = ARCH_SYNTH_CONFIG[arch]
+        _, _, _, _, subdir, _ = ARCH_SYNTH_CONFIG[arch]
         bitfile_dir = SYNTH_DIR / subdir
     else:
         bitfile_dir = SYNTH_DIR
@@ -663,7 +767,7 @@ def flash_fpga(port=None, serial=None, vid=None, pid=None, bitfile_name=None, ar
     bitfile = bitfile_dir / bitfile_name
     if not bitfile.exists():
         print_error(f"Bitstream not found: {bitfile}")
-        print("  Run 'python setup.py synth voxel_bin' or 'python setup.py synth gradient_map' first")
+        print("  Run 'python setup.py synth <arch>' first (e.g. synth voxel_bin_raw)")
         return 1
     
     env = get_oss_cad_env()
@@ -828,9 +932,9 @@ def main():
             print("  Activate:  .venv\\Scripts\\activate")
         else:
             print("  Activate:  source .venv/bin/activate")
-        print("  Run tests:       python setup.py test [voxel_bin|gradient_map]")
-        print("  Synth:           python setup.py synth [voxel_bin|gradient_map]")
-        print("  Flash:           python setup.py flash [voxel_bin|gradient_map]")
+        print("  Run tests:       python setup.py test [voxel_bin_raw|voxel_bin_processed|gradient_map_raw|gradient_map_processed]")
+        print("  Synth:           python setup.py synth [voxel_bin_raw|voxel_bin_processed|gradient_map_raw|gradient_map_processed]")
+        print("  Flash:           python setup.py flash [voxel_bin_raw|voxel_bin_processed|gradient_map_raw|gradient_map_processed]")
         return 0
     
     command = args[0].lower()
@@ -840,15 +944,17 @@ def main():
         module = arch_arg or "test_voxel_bin"
         return run_tests(module)
     elif command in ["synth", "synthesis", "build"]:
-        arch = arch_arg or "voxel_bin"
-        if arch not in ("voxel_bin", "gradient_map"):
-            print_error(f"Unknown architecture: {arch}. Use voxel_bin or gradient_map.")
+        arch = arch_arg or "voxel_bin_raw"
+        if arch not in ARCH_SYNTH_CONFIG:
+            valid = ", ".join(k for k in ARCH_SYNTH_CONFIG if not k in ("voxel_bin", "gradient_map"))
+            print_error(f"Unknown architecture: {arch}. Use one of: {valid}")
             return 1
         return run_synthesis(arch)
     elif command in ["flash", "program", "prog"]:
-        arch = arch_arg or "voxel_bin"
-        if arch not in ("voxel_bin", "gradient_map"):
-            print_error(f"Unknown architecture: {arch}. Use voxel_bin or gradient_map.")
+        arch = arch_arg or "voxel_bin_raw"
+        if arch not in ARCH_SYNTH_CONFIG:
+            valid = ", ".join(k for k in ARCH_SYNTH_CONFIG if not k in ("voxel_bin", "gradient_map"))
+            print_error(f"Unknown architecture: {arch}. Use one of: {valid}")
             return 1
         return flash_fpga(
             port=options["port"],

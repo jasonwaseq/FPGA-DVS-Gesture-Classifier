@@ -41,25 +41,26 @@ The repo ships a `.devcontainer/` that provides a fully configured Ubuntu enviro
 ### Run tests (devcontainer)
 
 ```bash
-# Voxel-bin architecture
-python3 setup.py test voxel_bin
+# Voxel-bin — UART sensor input
+python3 setup.py test voxel_bin_raw
 
-# Gradient-map architecture
-python3 setup.py test gradient_map
-```
+# Voxel-bin — pre-decoded event bus
+python3 setup.py test voxel_bin_processed
 
-Or invoke the Makefiles directly (all tools are on PATH inside the container):
+# Gradient-map — UART sensor input
+python3 setup.py test gradient_map_raw
 
-```bash
-cd tb/voxel_bin_architecture && make test
-cd tb/gradient_map_architecture && make test
+# Gradient-map — pre-decoded EVT2 word bus
+python3 setup.py test gradient_map_processed
 ```
 
 ### Synthesize (devcontainer)
 
 ```bash
-python3 setup.py synth voxel_bin      # → synth/voxel_bin/voxel_bin_top.bit
-python3 setup.py synth gradient_map   # → synth/gradient_map/gradient_map_top.bit
+python3 setup.py synth voxel_bin_raw          # → synth/voxel_bin/voxel_bin_raw_top.bit
+python3 setup.py synth voxel_bin_processed    # → synth/voxel_bin/voxel_bin_processed_top.bit
+python3 setup.py synth gradient_map_raw       # → synth/gradient_map/gradient_map_raw_top.bit
+python3 setup.py synth gradient_map_processed # → synth/gradient_map/gradient_map_processed_top.bit
 ```
 
 ### Flash and FPGA tools (devcontainer — local machine required)
@@ -109,21 +110,35 @@ If OSS CAD Suite is already installed system-wide (e.g. via Homebrew on macOS or
 
 ### 2. Run tests (local)
 
+Each architecture has two tops — `raw` (UART sensor input) and `processed` (pre-decoded event bus):
+
 ```bash
 # Using setup.py (works on all platforms)
-python3 setup.py test voxel_bin
-python3 setup.py test gradient_map
+python3 setup.py test voxel_bin_raw
+python3 setup.py test voxel_bin_processed
+python3 setup.py test gradient_map_raw
+python3 setup.py test gradient_map_processed
 
 # Or using the Makefiles (Linux/macOS, or Windows with Git bash on PATH)
-cd tb/voxel_bin_architecture && make test
-cd tb/gradient_map_architecture && make test
+cd tb/voxel_bin_architecture  && make test_raw
+cd tb/voxel_bin_architecture  && make test_processed
+cd tb/gradient_map_architecture && make test_raw
+cd tb/gradient_map_architecture && make test_processed
 ```
 
 ### 3. Synthesize (local)
 
 ```bash
-python3 setup.py synth voxel_bin      # → synth/voxel_bin/voxel_bin_top.bit
-python3 setup.py synth gradient_map   # → synth/gradient_map/gradient_map_top.bit
+python3 setup.py synth voxel_bin_raw          # → synth/voxel_bin/voxel_bin_raw_top.bit
+python3 setup.py synth voxel_bin_processed    # → synth/voxel_bin/voxel_bin_processed_top.bit
+python3 setup.py synth gradient_map_raw       # → synth/gradient_map/gradient_map_raw_top.bit
+python3 setup.py synth gradient_map_processed # → synth/gradient_map/gradient_map_processed_top.bit
+
+# Or via the synth Makefile
+cd synth && make ARCH=voxel_bin    TARGET=raw
+cd synth && make ARCH=voxel_bin    TARGET=processed
+cd synth && make ARCH=gradient_map TARGET=raw
+cd synth && make ARCH=gradient_map TARGET=processed
 ```
 
 ### 4. Flash (local)
@@ -131,8 +146,10 @@ python3 setup.py synth gradient_map   # → synth/gradient_map/gradient_map_top.
 Connect the iCEBreaker FPGA via USB, then:
 
 ```bash
-python3 setup.py flash voxel_bin
-python3 setup.py flash gradient_map
+python3 setup.py flash voxel_bin_raw
+python3 setup.py flash voxel_bin_processed
+python3 setup.py flash gradient_map_raw
+python3 setup.py flash gradient_map_processed
 ```
 
 **Windows**: run PowerShell as Administrator if `iceprog` reports an access error.
@@ -160,12 +177,16 @@ pip install -r requirements.txt
 | Command | Description |
 |---------|-------------|
 | `python3 setup.py` | Setup venv, install packages, detect/download OSS CAD Suite |
-| `python3 setup.py test voxel_bin` | Run voxel-bin cocotb tests |
-| `python3 setup.py test gradient_map` | Run gradient-map cocotb tests |
-| `python3 setup.py synth voxel_bin` | Synthesize voxel-bin → `voxel_bin_top.bit` |
-| `python3 setup.py synth gradient_map` | Synthesize gradient-map → `gradient_map_top.bit` |
-| `python3 setup.py flash voxel_bin` | Flash voxel-bin bitstream |
-| `python3 setup.py flash gradient_map` | Flash gradient-map bitstream |
+| `python3 setup.py test voxel_bin_raw` | Run voxel-bin UART tests |
+| `python3 setup.py test voxel_bin_processed` | Run voxel-bin event-bus tests |
+| `python3 setup.py test gradient_map_raw` | Run gradient-map UART tests |
+| `python3 setup.py test gradient_map_processed` | Run gradient-map event-bus tests |
+| `python3 setup.py synth voxel_bin_raw` | Synthesize → `voxel_bin_raw_top.bit` |
+| `python3 setup.py synth voxel_bin_processed` | Synthesize → `voxel_bin_processed_top.bit` |
+| `python3 setup.py synth gradient_map_raw` | Synthesize → `gradient_map_raw_top.bit` |
+| `python3 setup.py synth gradient_map_processed` | Synthesize → `gradient_map_processed_top.bit` |
+| `python3 setup.py flash voxel_bin_raw` | Flash voxel-bin UART bitstream |
+| `python3 setup.py flash gradient_map_raw` | Flash gradient-map UART bitstream |
 | `python3 setup.py clean` | Remove all build artifacts |
 
 ---
@@ -219,7 +240,8 @@ Both architectures are streaming, single-pass DVS pipelines on a single clock do
 | Feature | Decaying time-surface (16×16) | 3D histogram — 5 time bins × 16×16 grid |
 | Classifier | Systolic MAC over 256-cell surface | Systolic MAC over 1280-element flattened bins |
 | UART output | ASCII (`UP\r\n`, etc.) | Binary 2-byte gesture packet |
-| Top module | `gradient_map_top` | `voxel_bin_top` |
+| Raw top (UART sensor) | `gradient_map_raw_top` | `voxel_bin_raw_top` |
+| Processed top (event bus) | `gradient_map_processed_top` | `voxel_bin_processed_top` |
 
 ---
 
@@ -233,8 +255,9 @@ Default grid is **16×16** (256 cells) for iCE40 UP5K fit.
 
 | Module | File |
 |--------|------|
-| Top-level integration + LED control | `rtl/gradient_map_architecture/gesture_top.sv` |
-| UART validation wrapper (synthesis top) | `rtl/gradient_map_architecture/gradient_map_top.sv` |
+| Core pipeline + LED control | `rtl/gradient_map_architecture/gesture_top.sv` |
+| Raw synthesis top (UART sensor input) | `rtl/gradient_map_architecture/gradient_map_raw_top.sv` |
+| Processed synthesis top (event bus input) | `rtl/gradient_map_architecture/gradient_map_processed_top.sv` |
 | EVT2 decoder + 320×320 → 16×16 downsample | `rtl/gradient_map_architecture/evt2_decoder.sv` |
 | Input FIFO (128 × 32-bit BRAM) | `rtl/gradient_map_architecture/input_fifo.sv` |
 | Time-surface BRAM (last-event timestamps) | `rtl/gradient_map_architecture/time_surface_memory.sv` |
@@ -252,14 +275,16 @@ Default grid is **16×16** (256 cells) for iCE40 UP5K fit.
 | `FRAME_PERIOD_MS` | 50 | Classification frame period (ms) |
 | `DECAY_SHIFT` | 6 | Time-surface exponential decay rate |
 | `BAUD_RATE` | 115200 | UART baud rate |
-| `UART_RX_ENABLE` | 0 | Enable 5-byte UART event input (set 1 for synthesis) |
+
 
 ### How to test, synthesize, and flash
 
 ```bash
-python3 setup.py test gradient_map
-python3 setup.py synth gradient_map
-python3 setup.py flash gradient_map
+python3 setup.py test gradient_map_raw
+python3 setup.py test gradient_map_processed
+python3 setup.py synth gradient_map_raw
+python3 setup.py synth gradient_map_processed
+python3 setup.py flash gradient_map_raw
 ```
 
 ---
@@ -274,7 +299,8 @@ Default is **5 temporal bins** for iCE40 UP5K fit.
 
 | Module | File |
 |--------|------|
-| Top-level with UART commands | `rtl/voxel_bin_architecture/voxel_bin_top.sv` |
+| Raw synthesis top (UART sensor input) | `rtl/voxel_bin_architecture/voxel_bin_raw_top.sv` |
+| Processed synthesis top (event bus input) | `rtl/voxel_bin_architecture/voxel_bin_processed_top.sv` |
 | Full pipeline wrapper | `rtl/voxel_bin_architecture/dvs_gesture_accel.sv` |
 | Event FIFO (ready/valid) | `rtl/voxel_bin_architecture/InputFIFO.sv` |
 | 320×320 → 16×16 coordinate map | `rtl/voxel_bin_architecture/SpatialCompressor.sv` |
@@ -286,9 +312,11 @@ Default is **5 temporal bins** for iCE40 UP5K fit.
 ### How to test, synthesize, and flash
 
 ```bash
-python3 setup.py test voxel_bin
-python3 setup.py synth voxel_bin
-python3 setup.py flash voxel_bin
+python3 setup.py test voxel_bin_raw
+python3 setup.py test voxel_bin_processed
+python3 setup.py synth voxel_bin_raw
+python3 setup.py synth voxel_bin_processed
+python3 setup.py flash voxel_bin_raw
 ```
 
 ---
@@ -353,8 +381,8 @@ End-to-end validation using a live DVS sensor.
 ### Step 1: Build and flash
 
 ```bash
-python3 setup.py synth gradient_map
-python3 setup.py flash gradient_map
+python3 setup.py synth gradient_map_raw
+python3 setup.py flash gradient_map_raw
 ```
 
 ### Step 2: Capture a raw EVT stream
