@@ -29,16 +29,13 @@ PYTHON_PACKAGES = [
 VOXEL_BIN_CORE_FILES = [
     "uart_rx.sv",
     "uart_tx.sv",
-    "voxel_bin_architecture/InputFIFO.sv",
-    "voxel_bin_architecture/SpatialCompressor.sv",
-    "voxel_bin_architecture/TemporalAccumulator.sv",
-    "voxel_bin_architecture/MotionComputer.sv",
-    "voxel_bin_architecture/GestureClassifier.sv",
-    "voxel_bin_architecture/OutputRegister.sv",
-    "voxel_bin_architecture/TimeSurfaceBinning.sv",
-    "voxel_bin_architecture/WeightROM.sv",
-    "voxel_bin_architecture/SystolicMatrixMultiply.sv",
-    "voxel_bin_architecture/dvs_gesture_accel.sv",
+    "voxel_bin_architecture/input_fifo.sv",
+    "voxel_bin_architecture/evt2_decoder.sv",
+    "voxel_bin_architecture/voxel_binning.sv",
+    "voxel_bin_architecture/systolic_array.sv",
+    "voxel_bin_architecture/gesture_classifier.sv",
+    "voxel_bin_architecture/weight_ram.sv",
+    "voxel_bin_architecture/voxel_bin_core.sv",
 ]
 
 RTL_FILES_VOXEL_RAW = VOXEL_BIN_CORE_FILES + [
@@ -58,31 +55,18 @@ GRADIENT_MAP_CORE_FILES = [
     "uart_debug.sv",
     "gradient_map_architecture/input_fifo.sv",
     "gradient_map_architecture/evt2_decoder.sv",
-    "gradient_map_architecture/time_surface_memory.sv",
-    "gradient_map_architecture/weight_rom.sv",
+    "gradient_map_architecture/gradient_mapping.sv",
     "gradient_map_architecture/systolic_array.sv",
-    "gradient_map_architecture/spatio_temporal_classifier.sv",
-    "gradient_map_architecture/time_surface_encoder.sv",
+    "gradient_map_architecture/weight_ram.sv",
+    "gradient_map_architecture/gesture_classifier.sv",
+    "gradient_map_architecture/gradient_map_core.sv",
 ]
 
 RTL_FILES_GRADIENT_RAW = GRADIENT_MAP_CORE_FILES + [
-    "gradient_map_architecture/gradient_map_raw_top.sv",
+    "gradient_map_architecture/gradient_map_top.sv",
 ]
 
-GRADIENT_MAP_PROCESSED_FILES = [
-    "uart_tx.sv",
-    "uart_rx.sv",
-    "uart_debug.sv",
-    "gradient_map_architecture/time_surface_memory.sv",
-    "gradient_map_architecture/weight_rom.sv",
-    "gradient_map_architecture/systolic_array.sv",
-    "gradient_map_architecture/spatio_temporal_classifier.sv",
-    "gradient_map_architecture/time_surface_encoder.sv",
-]
-
-RTL_FILES_GRADIENT_PROCESSED = GRADIENT_MAP_PROCESSED_FILES + [
-    "gradient_map_architecture/gradient_map_processed_top.sv",
-]
+RTL_FILES_GRADIENT_PROCESSED = RTL_FILES_GRADIENT_RAW
 
 # Keep legacy aliases
 RTL_FILES_GESTURE = GRADIENT_MAP_CORE_FILES

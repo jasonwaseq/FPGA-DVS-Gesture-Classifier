@@ -2,15 +2,13 @@ TOPLEVEL_LANG = verilog
 
 RTL_DIR = ../../rtl
 
-VOXEL_BIN_SOURCES = $(RTL_DIR)/voxel_bin_architecture/dvs_gesture_accel.sv \
-                    $(RTL_DIR)/voxel_bin_architecture/TemporalAccumulator.sv \
-                    $(RTL_DIR)/voxel_bin_architecture/SpatialCompressor.sv \
-                    $(RTL_DIR)/voxel_bin_architecture/OutputRegister.sv \
-                    $(RTL_DIR)/voxel_bin_architecture/MotionComputer.sv \
-                    $(RTL_DIR)/voxel_bin_architecture/InputFIFO.sv \
-                    $(RTL_DIR)/voxel_bin_architecture/TimeSurfaceBinning.sv \
-                    $(RTL_DIR)/voxel_bin_architecture/WeightROM.sv \
-                    $(RTL_DIR)/voxel_bin_architecture/SystolicMatrixMultiply.sv \
+VOXEL_BIN_SOURCES = $(RTL_DIR)/voxel_bin_architecture/voxel_bin_core.sv \
+                    $(RTL_DIR)/voxel_bin_architecture/input_fifo.sv \
+                    $(RTL_DIR)/voxel_bin_architecture/evt2_decoder.sv \
+                    $(RTL_DIR)/voxel_bin_architecture/voxel_binning.sv \
+                    $(RTL_DIR)/voxel_bin_architecture/systolic_array.sv \
+                    $(RTL_DIR)/voxel_bin_architecture/gesture_classifier.sv \
+                    $(RTL_DIR)/voxel_bin_architecture/weight_ram.sv \
                     $(RTL_DIR)/uart_rx.sv \
                     $(RTL_DIR)/uart_tx.sv
 
@@ -19,21 +17,14 @@ TARGET ?= raw
 
 ifeq ($(TARGET),raw)
   VERILOG_SOURCES = $(VOXEL_BIN_SOURCES) \
-                    $(RTL_DIR)/voxel_bin_architecture/voxel_bin_raw_top.sv
-  TOPLEVEL = voxel_bin_raw_top
+                    $(RTL_DIR)/voxel_bin_architecture/voxel_bin_top.sv
+  TOPLEVEL = voxel_bin_top
   MODULE   = test_voxel_bin_raw
-  COMPILE_ARGS += -Pvoxel_bin_raw_top.CYCLES_PER_BIN=2000
-  COMPILE_ARGS += -Pvoxel_bin_raw_top.BAUD_RATE=3000000
-  COMPILE_ARGS += -Pvoxel_bin_raw_top.WINDOW_MS=40
-else ifeq ($(TARGET),processed)
-  VERILOG_SOURCES = $(VOXEL_BIN_SOURCES) \
-                    $(RTL_DIR)/voxel_bin_architecture/voxel_bin_processed_top.sv
-  TOPLEVEL = voxel_bin_processed_top
-  MODULE   = test_voxel_bin_processed
-  COMPILE_ARGS += -Pvoxel_bin_processed_top.CYCLES_PER_BIN=2000
-  COMPILE_ARGS += -Pvoxel_bin_processed_top.WINDOW_MS=40
+  COMPILE_ARGS += -Pvoxel_bin_top.CYCLES_PER_BIN=2000
+  COMPILE_ARGS += -Pvoxel_bin_top.BAUD_RATE=3000000
+  COMPILE_ARGS += -Pvoxel_bin_top.WINDOW_MS=40
 else
-  $(error Unknown TARGET=$(TARGET). Use TARGET=raw or TARGET=processed)
+  $(error Unknown TARGET=$(TARGET). Only TARGET=raw is supported)
 endif
 
 SIM = icarus

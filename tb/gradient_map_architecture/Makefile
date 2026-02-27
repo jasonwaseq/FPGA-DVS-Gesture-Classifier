@@ -2,47 +2,30 @@ TOPLEVEL_LANG = verilog
 
 RTL_DIR = ../../rtl
 
-GRADIENT_MAP_RAW_SOURCES = $(RTL_DIR)/uart_tx.sv \
-                           $(RTL_DIR)/uart_rx.sv \
-                           $(RTL_DIR)/uart_debug.sv \
-                           $(RTL_DIR)/gradient_map_architecture/input_fifo.sv \
-                           $(RTL_DIR)/gradient_map_architecture/evt2_decoder.sv \
-                           $(RTL_DIR)/gradient_map_architecture/time_surface_memory.sv \
-                           $(RTL_DIR)/gradient_map_architecture/time_surface_encoder.sv \
-                           $(RTL_DIR)/gradient_map_architecture/weight_rom.sv \
-                           $(RTL_DIR)/gradient_map_architecture/systolic_array.sv \
-                           $(RTL_DIR)/gradient_map_architecture/spatio_temporal_classifier.sv
-
-GRADIENT_MAP_PROCESSED_SOURCES = $(RTL_DIR)/uart_tx.sv \
-                                  $(RTL_DIR)/uart_rx.sv \
-                                  $(RTL_DIR)/uart_debug.sv \
-                                  $(RTL_DIR)/gradient_map_architecture/time_surface_memory.sv \
-                                  $(RTL_DIR)/gradient_map_architecture/time_surface_encoder.sv \
-                                  $(RTL_DIR)/gradient_map_architecture/weight_rom.sv \
-                                  $(RTL_DIR)/gradient_map_architecture/systolic_array.sv \
-                                  $(RTL_DIR)/gradient_map_architecture/spatio_temporal_classifier.sv
+GRADIENT_MAP_COMMON_SOURCES = $(RTL_DIR)/uart_tx.sv \
+                              $(RTL_DIR)/uart_rx.sv \
+                              $(RTL_DIR)/uart_debug.sv \
+                              $(RTL_DIR)/gradient_map_architecture/input_fifo.sv \
+                              $(RTL_DIR)/gradient_map_architecture/evt2_decoder.sv \
+                              $(RTL_DIR)/gradient_map_architecture/gradient_mapping.sv \
+                              $(RTL_DIR)/gradient_map_architecture/gradient_map_core.sv \
+                              $(RTL_DIR)/gradient_map_architecture/weight_ram.sv \
+                              $(RTL_DIR)/gradient_map_architecture/systolic_array.sv \
+                              $(RTL_DIR)/gradient_map_architecture/gesture_classifier.sv
 
 # Default target: raw (UART sensor input)
 TARGET ?= raw
 
 ifeq ($(TARGET),raw)
-  VERILOG_SOURCES = $(GRADIENT_MAP_RAW_SOURCES) \
-                    $(RTL_DIR)/gradient_map_architecture/gradient_map_raw_top.sv
-  TOPLEVEL = gradient_map_raw_top
+  VERILOG_SOURCES = $(GRADIENT_MAP_COMMON_SOURCES) \
+                    $(RTL_DIR)/gradient_map_architecture/gradient_map_top.sv
+  TOPLEVEL = gradient_map_top
   MODULE   = test_gradient_map_raw
-  COMPILE_ARGS += -Pgradient_map_raw_top.FRAME_PERIOD_MS=1
-  COMPILE_ARGS += -Pgradient_map_raw_top.MIN_MASS_THRESH=20
-  COMPILE_ARGS += -Pgradient_map_raw_top.DECAY_SHIFT=12
-else ifeq ($(TARGET),processed)
-  VERILOG_SOURCES = $(GRADIENT_MAP_PROCESSED_SOURCES) \
-                    $(RTL_DIR)/gradient_map_architecture/gradient_map_processed_top.sv
-  TOPLEVEL = gradient_map_processed_top
-  MODULE   = test_gradient_map_processed
-  COMPILE_ARGS += -Pgradient_map_processed_top.FRAME_PERIOD_MS=1
-  COMPILE_ARGS += -Pgradient_map_processed_top.MIN_MASS_THRESH=20
-  COMPILE_ARGS += -Pgradient_map_processed_top.DECAY_SHIFT=12
+  COMPILE_ARGS += -Pgradient_map_top.FRAME_PERIOD_MS=1
+  COMPILE_ARGS += -Pgradient_map_top.MIN_MASS_THRESH=20
+  COMPILE_ARGS += -Pgradient_map_top.DECAY_SHIFT=12
 else
-  $(error Unknown TARGET=$(TARGET). Use TARGET=raw or TARGET=processed)
+  $(error Unknown TARGET=$(TARGET). Only TARGET=raw is supported)
 endif
 
 SIM = icarus

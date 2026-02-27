@@ -144,9 +144,15 @@ python dvs_camera_emulator.py --shot-noise 0.0005 --preview  # More background n
 
 ### Output Options
 
-**Save events to file:**
+**Save events to file (EVT 2.0 format, default):**
 ```bash
 python dvs_camera_emulator.py --save recording.bin --preview
+python dvs_camera_emulator.py --save recording.bin --format evt2 --preview  # explicit
+```
+
+**Save events to file (legacy DVS1 format):**
+```bash
+python dvs_camera_emulator.py --save recording.bin --format dvs1 --preview
 ```
 
 **Send to FPGA via UART:**
@@ -199,6 +205,7 @@ python dvs_camera_emulator.py --help
 | `--fps` | 30 | Target frame rate |
 | `--preview` | False | Show preview window |
 | `--save` | None | Save events to binary file |
+| `--format` | evt2 | Output format: `evt2` (Prophesee EVT 2.0) or `dvs1` (legacy) |
 | `--noise-filter` | 3 | Gaussian blur kernel size |
 | `--max-events` | 1000 | Max events per frame to send |
 | `--loop` | False | Loop video file playback |
@@ -305,14 +312,29 @@ $$\log(I_{current}) - \log(I_{reference}) > \theta$$
 
 ## Event File Format
 
-Binary files saved by the emulator use this format:
+### EVT 2.0 (default, `--format evt2`)
+
+The default output format matches the Prophesee EVT 2.0 protocol used by the GenX320 sensor and decoded by `evt2_decoder.sv`. Each packet is a **32-bit little-endian word**:
+
+| Bits | Field | Description |
+|------|-------|-------------|
+| `[31:28]` | `type` | `0x0`=CD_OFF, `0x1`=CD_ON, `0x8`=TIME_HIGH |
+| `[27:22]` | `ts_lsb` | 6-bit timestamp LSB (microseconds) |
+| `[21:11]` | `x` | 11-bit X coordinate (0–319) |
+| `[10:0]` | `y` | 11-bit Y coordinate (0–319) |
+
+TIME_HIGH packets carry the upper 28 bits of the microsecond timestamp in `[27:0]` and are emitted whenever the upper bits change. The full timestamp is reconstructed as `{time_high[27:0], ts_lsb[5:0]}` (34-bit microseconds).
+
+No file header — the stream begins directly with EVT 2.0 words, identical to a raw capture from the sensor.
+
+### DVS1 (legacy, `--format dvs1`)
 
 ```
 Header: "DVS1" (4 bytes)
 Events: [x(2), y(2), polarity(1), timestamp_us(4)] = 9 bytes each
 ```
 
-All values are little-endian.
+All values are little-endian. Used by `dvs_event_player.py`.
 
 ## Troubleshooting
 

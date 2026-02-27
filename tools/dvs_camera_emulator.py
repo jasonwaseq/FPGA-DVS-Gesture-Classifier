@@ -491,7 +491,7 @@ class UARTOutputHandler:
 
 
 class FileOutputHandler:
-    """Saves DVS events to a binary file."""
+    """Saves DVS events to a binary file in DVS1 custom format."""
     
     def __init__(self, filename: str):
         self.filename = filename
@@ -501,7 +501,7 @@ class FileOutputHandler:
     def open(self):
         self.file = open(self.filename, 'wb')
         self.file.write(b'DVS1')
-        print(f"Saving events to: {self.filename}")
+        print(f"Saving events to: {self.filename} (DVS1 format)")
     
     def close(self):
         if self.file:
@@ -514,6 +514,65 @@ class FileOutputHandler:
             self.file.write(data)
             self.events_written += 1
     
+    def write_events(self, events: List[DVSEvent]):
+        for event in events:
+            self.write_event(event)
+
+
+class EVT2FileOutputHandler:
+    """Saves DVS events to a binary file in Prophesee EVT 2.0 format.
+
+    Each packet is a 32-bit little-endian word:
+      [31:28] type  — 0x0=CD_OFF, 0x1=CD_ON, 0x8=TIME_HIGH
+      [27:22] ts_lsb — 6-bit timestamp LSB (microseconds)
+      [21:11] x     — 11-bit X coordinate (0–319)
+      [10:0]  y     — 11-bit Y coordinate (0–319)
+
+    TIME_HIGH packets carry the upper 28 bits of the timestamp in [27:0]
+    and are emitted whenever the upper bits change.
+    """
+
+    EVT_CD_OFF    = 0x0
+    EVT_CD_ON     = 0x1
+    EVT_TIME_HIGH = 0x8
+
+    def __init__(self, filename: str):
+        self.filename = filename
+        self.file = None
+        self.events_written = 0
+        self._last_time_high: int = -1
+
+    def open(self):
+        self.file = open(self.filename, 'wb')
+        print(f"Saving events to: {self.filename} (EVT 2.0 format)")
+
+    def close(self):
+        if self.file:
+            self.file.close()
+            print(f"Saved {self.events_written} events to {self.filename}")
+
+    def _write_word(self, word: int):
+        self.file.write(struct.pack('<I', word))
+
+    def write_event(self, event: DVSEvent):
+        if not self.file:
+            return
+        ts = event.timestamp_us
+        time_high = (ts >> 6) & 0x0FFFFFFF
+        ts_lsb    = ts & 0x3F
+
+        if time_high != self._last_time_high:
+            th_word = (self.EVT_TIME_HIGH << 28) | time_high
+            self._write_word(th_word)
+            self._last_time_high = time_high
+
+        pkt_type = self.EVT_CD_ON if event.polarity else self.EVT_CD_OFF
+        x = event.x & 0x7FF
+        y = event.y & 0x7FF
+        word = (pkt_type << 28) | (ts_lsb << 22) | (x << 11) | y
+        self._write_word(word)
+        self.events_written += 1
+
     def write_events(self, events: List[DVSEvent]):
         for event in events:
             self.write_event(event)
@@ -546,6 +605,8 @@ def main():
                         help='Show preview window')
     parser.add_argument('--save', type=str, default=None,
                         help='Save events to binary file')
+    parser.add_argument('--format', type=str, default='evt2', choices=['dvs1', 'evt2'],
+                        help='Output file format: evt2 (Prophesee EVT 2.0, default) or dvs1 (legacy custom)')
     parser.add_argument('--noise-filter', type=int, default=3,
                         help='Gaussian blur kernel size for noise filtering (default: 3, 0=disabled)')
     parser.add_argument('--max-events', type=int, default=1000,
@@ -613,7 +674,10 @@ def main():
             uart_handler = None
     
     if args.save:
-        file_handler = FileOutputHandler(args.save)
+        if args.format == 'evt2':
+            file_handler = EVT2FileOutputHandler(args.save)
+        else:
+            file_handler = FileOutputHandler(args.save)
         file_handler.open()
     
     paused = False

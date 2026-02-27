@@ -4,82 +4,68 @@ PACKAGE = sg48
 
 RTL_DIR = ../rtl
 
-# Select architecture and input variant:
-#   ARCH=gradient_map  TARGET=raw        -> gradient_map_raw_top (UART sensor input)
-#   ARCH=gradient_map  TARGET=processed  -> gradient_map_processed_top (EVT2 word bus)
-#   ARCH=voxel_bin     TARGET=raw        -> voxel_bin_raw_top (UART sensor input)
-#   ARCH=voxel_bin     TARGET=processed  -> voxel_bin_processed_top (decoded event bus)
+# Select architecture:
+#   ARCH=gradient_map  -> gradient_map_top (UART EVT2.0 words)
+#   ARCH=voxel_bin     -> voxel_bin_top    (UART EVT2.0 words)
 ARCH   ?= gradient_map
 TARGET ?= raw
 
 # ── gradient_map sources ────────────────────────────────────────────────────
-# Raw pipeline: UART RX → 5-byte assembler → FIFO → EVT2 decoder → time-surface → classifier
+# Raw pipeline: UART RX -> 5-byte assembler -> gradient_map_core -> UART TX
 GRADIENT_MAP_CORE = $(RTL_DIR)/uart_tx.sv \
                     $(RTL_DIR)/uart_rx.sv \
                     $(RTL_DIR)/uart_debug.sv \
                     $(RTL_DIR)/gradient_map_architecture/input_fifo.sv \
                     $(RTL_DIR)/gradient_map_architecture/evt2_decoder.sv \
-                    $(RTL_DIR)/gradient_map_architecture/time_surface_memory.sv \
-                    $(RTL_DIR)/gradient_map_architecture/time_surface_encoder.sv \
-                    $(RTL_DIR)/gradient_map_architecture/weight_rom.sv \
+                    $(RTL_DIR)/gradient_map_architecture/gradient_mapping.sv \
+                    $(RTL_DIR)/gradient_map_architecture/gradient_map_core.sv \
+                    $(RTL_DIR)/gradient_map_architecture/weight_ram.sv \
                     $(RTL_DIR)/gradient_map_architecture/systolic_array.sv \
-                    $(RTL_DIR)/gradient_map_architecture/spatio_temporal_classifier.sv
+                    $(RTL_DIR)/gradient_map_architecture/gesture_classifier.sv
 
-# Lean pipeline (processed top bypasses FIFO/decoder/gesture_top)
+# Processed pipeline: preprocessed events -> gradient_map_core -> UART TX
 GRADIENT_MAP_PROCESSED_CORE = $(RTL_DIR)/uart_tx.sv \
                                $(RTL_DIR)/uart_rx.sv \
                                $(RTL_DIR)/uart_debug.sv \
-                               $(RTL_DIR)/gradient_map_architecture/time_surface_memory.sv \
-                               $(RTL_DIR)/gradient_map_architecture/time_surface_encoder.sv \
-                               $(RTL_DIR)/gradient_map_architecture/weight_rom.sv \
+                               $(RTL_DIR)/gradient_map_architecture/input_fifo.sv \
+                               $(RTL_DIR)/gradient_map_architecture/evt2_decoder.sv \
+                               $(RTL_DIR)/gradient_map_architecture/gradient_mapping.sv \
+                               $(RTL_DIR)/gradient_map_architecture/gradient_map_core.sv \
+                               $(RTL_DIR)/gradient_map_architecture/weight_ram.sv \
                                $(RTL_DIR)/gradient_map_architecture/systolic_array.sv \
-                               $(RTL_DIR)/gradient_map_architecture/spatio_temporal_classifier.sv
+                               $(RTL_DIR)/gradient_map_architecture/gesture_classifier.sv
 
 # ── voxel_bin sources ───────────────────────────────────────────────────────
 VOXEL_BIN_CORE = $(RTL_DIR)/uart_tx.sv \
                  $(RTL_DIR)/uart_rx.sv \
-                 $(RTL_DIR)/voxel_bin_architecture/dvs_gesture_accel.sv \
-                 $(RTL_DIR)/voxel_bin_architecture/TemporalAccumulator.sv \
-                 $(RTL_DIR)/voxel_bin_architecture/SpatialCompressor.sv \
-                 $(RTL_DIR)/voxel_bin_architecture/OutputRegister.sv \
-                 $(RTL_DIR)/voxel_bin_architecture/MotionComputer.sv \
-                 $(RTL_DIR)/voxel_bin_architecture/InputFIFO.sv \
-                 $(RTL_DIR)/voxel_bin_architecture/TimeSurfaceBinning.sv \
-                 $(RTL_DIR)/voxel_bin_architecture/WeightROM.sv \
-                 $(RTL_DIR)/voxel_bin_architecture/SystolicMatrixMultiply.sv
+                 $(RTL_DIR)/voxel_bin_architecture/input_fifo.sv \
+                 $(RTL_DIR)/voxel_bin_architecture/evt2_decoder.sv \
+                 $(RTL_DIR)/voxel_bin_architecture/voxel_binning.sv \
+                 $(RTL_DIR)/voxel_bin_architecture/systolic_array.sv \
+                 $(RTL_DIR)/voxel_bin_architecture/gesture_classifier.sv \
+                 $(RTL_DIR)/voxel_bin_architecture/weight_ram.sv \
+                 $(RTL_DIR)/voxel_bin_architecture/voxel_bin_core.sv
 
 # ── select top module ────────────────────────────────────────────────────────
 ifeq ($(ARCH),gradient_map)
   ifeq ($(TARGET),raw)
-    PROJ              = gradient_map_raw_top
+    PROJ              = gradient_map_top
     PCF               = icebreaker.pcf
     ALLOW_UNCONSTRAINED =
     RTL_FILES = $(GRADIENT_MAP_CORE) \
-                $(RTL_DIR)/gradient_map_architecture/gradient_map_raw_top.sv
-  else ifeq ($(TARGET),processed)
-    PROJ              = gradient_map_processed_top
-    PCF               = icebreaker_processed_gradient_map.pcf
-    ALLOW_UNCONSTRAINED =
-    RTL_FILES = $(GRADIENT_MAP_PROCESSED_CORE) \
-                $(RTL_DIR)/gradient_map_architecture/gradient_map_processed_top.sv
+                $(RTL_DIR)/gradient_map_architecture/gradient_map_top.sv
   else
-    $(error Unknown TARGET=$(TARGET). Use TARGET=raw or TARGET=processed)
+    $(error Unknown TARGET=$(TARGET). Only TARGET=raw is supported)
   endif
 else ifeq ($(ARCH),voxel_bin)
   ifeq ($(TARGET),raw)
-    PROJ              = voxel_bin_raw_top
+    PROJ              = voxel_bin_top
     PCF               = icebreaker.pcf
     ALLOW_UNCONSTRAINED =
     RTL_FILES = $(VOXEL_BIN_CORE) \
-                $(RTL_DIR)/voxel_bin_architecture/voxel_bin_raw_top.sv
-  else ifeq ($(TARGET),processed)
-    PROJ              = voxel_bin_processed_top
-    PCF               = icebreaker_processed_voxel_bin.pcf
-    ALLOW_UNCONSTRAINED =
-    RTL_FILES = $(VOXEL_BIN_CORE) \
-                $(RTL_DIR)/voxel_bin_architecture/voxel_bin_processed_top.sv
+                $(RTL_DIR)/voxel_bin_architecture/voxel_bin_top.sv
   else
-    $(error Unknown TARGET=$(TARGET). Use TARGET=raw or TARGET=processed)
+    $(error Unknown TARGET=$(TARGET). Only TARGET=raw is supported)
   endif
 else
   $(error Unknown ARCH=$(ARCH). Use ARCH=gradient_map or ARCH=voxel_bin)
