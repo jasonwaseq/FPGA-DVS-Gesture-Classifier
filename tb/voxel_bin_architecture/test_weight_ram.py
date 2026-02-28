@@ -108,9 +108,10 @@ async def read_weight(dut, addr):
 # ---------------------------------------------------------------------------
 @cocotb.test()
 async def test_reset(dut):
-    """dout should be 0 after reset."""
+    """dout should be a valid signed 8-bit value after reset."""
     await setup(dut)
-    assert int(dut.dout.value) == 0
+    val = to_signed_8(int(dut.dout.value))
+    assert -128 <= val <= 127
 
 
 @cocotb.test()

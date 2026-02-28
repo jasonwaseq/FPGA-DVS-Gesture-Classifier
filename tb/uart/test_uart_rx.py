@@ -186,12 +186,14 @@ async def test_golden_model_random(dut):
     model = UartRxModel(CLKS_PER_BIT)
 
     bytes_to_send = [random.randint(0, 255) for _ in range(20)]
-    rx_waveform = [1] * 10  # idle
+    rx_waveform = [1] * (CLKS_PER_BIT * 10)  # idle
     for b in bytes_to_send:
-        rx_waveform.append(0)  # start
-        rx_waveform.extend([(b >> i) & 1 for i in range(8)])
-        rx_waveform.append(1)  # stop
-        rx_waveform.extend([1] * 2)  # inter-byte gap
+        rx_waveform.extend([0] * CLKS_PER_BIT)  # start
+        for i in range(8):
+            bit = (b >> i) & 1
+            rx_waveform.extend([bit] * CLKS_PER_BIT)
+        rx_waveform.extend([1] * CLKS_PER_BIT)  # stop
+        rx_waveform.extend([1] * (CLKS_PER_BIT * 2))  # inter-byte gap
 
     received_dut = []
     received_model = []

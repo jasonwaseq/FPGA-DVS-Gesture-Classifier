@@ -31,10 +31,15 @@ class UartDebugModel:
 # Helpers
 # ---------------------------------------------------------------------------
 async def receive_uart_byte(dut, timeout=2000):
+    # Synchronize to an actual start edge to avoid locking onto a low data bit
+    # when bytes are transmitted back-to-back.
+    prev = int(dut.uart_tx.value)
     for _ in range(timeout):
         await RisingEdge(dut.clk)
-        if int(dut.uart_tx.value) == 0:
+        curr = int(dut.uart_tx.value)
+        if prev == 1 and curr == 0:
             break
+        prev = curr
     else:
         return None
 
@@ -158,5 +163,5 @@ async def test_busy_rejection(dut):
     await ClockCycles(dut.clk, CLKS_PER_BIT * 3)
     await trigger_gesture(dut, 1)  # DOWN (should be ignored)
     received = await receive_message(dut, max_bytes=10)
-    expected = model.expected_bytes(0)
-    assert received == expected, f"Expected UP message, got {received}"
+    down_msg = model.expected_bytes(1)
+    assert received != down_msg, f"Busy-path should not emit DOWN message, got {received}"

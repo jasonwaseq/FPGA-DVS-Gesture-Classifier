@@ -9,6 +9,7 @@ export COCOTB_LOG_LEVEL ?= WARNING
 export COCOTB_REDUCED_LOG_FMT ?= 1
 
 TEST ?= uart_rx
+SIM_BUILD ?= sim_build_$(TEST)
 
 ifeq ($(TEST),uart_rx)
   VERILOG_SOURCES = $(RTL_DIR)/uart_rx.sv
@@ -77,14 +78,16 @@ else
   include $(shell cocotb-config --makefiles)/Makefile.sim
 endif
 
-.PHONY: all clean_all
+.PHONY: all test_all clean_all
 
-all:
+all: test_all
+
+test_all:
 	@for t in uart_rx uart_tx uart_debug; do \
 		echo "======== Running TEST=$$t ========"; \
-		$(MAKE) clean > /dev/null 2>&1; \
-		$(MAKE) sim TEST=$$t || exit 1; \
+		$(MAKE) clean TEST=$$t SIM_BUILD=sim_build_$$t > /dev/null 2>&1; \
+		$(MAKE) sim TEST=$$t SIM_BUILD=sim_build_$$t || exit 1; \
 	done
 
 clean_all:
-	rm -rf sim_build results.xml __pycache__
+	rm -rf sim_build* results.xml __pycache__

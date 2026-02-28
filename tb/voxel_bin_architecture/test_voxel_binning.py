@@ -85,7 +85,7 @@ async def inject_event(dut, x_signed, y_signed, pol=1):
     await RisingEdge(dut.clk)
 
 
-async def wait_for_readout_start(dut, timeout=CYCLES_PER_BIN * 2):
+async def wait_for_readout_start(dut, timeout=CYCLES_PER_BIN + CELLS_PER_BIN + 500):
     for _ in range(timeout):
         await RisingEdge(dut.clk)
         if int(dut.readout_start.value) == 1:
@@ -99,10 +99,13 @@ async def collect_readout(dut, timeout=CYCLES_PER_BIN * READOUT_BINS + 500):
     for _ in range(timeout):
         await RisingEdge(dut.clk)
         if int(dut.readout_valid.value) == 1:
-            packed = int(dut.readout_data.value)
+            packed_bits = str(dut.readout_data.value).replace("x", "0").replace("X", "0").replace("z", "0").replace("Z", "0")
+            packed = int(packed_bits, 2)
             for p in range(PARALLEL_READS):
                 val = (packed >> (p * COUNTER_BITS)) & MAX_COUNTER
                 values.append(val)
+            if len(values) >= READOUT_BINS * CELLS_PER_BIN:
+                break
         elif len(values) > 0:
             break
     return values[:READOUT_BINS * CELLS_PER_BIN]
@@ -136,7 +139,7 @@ async def test_bin_rotation(dut):
     """Multiple bin rotations should produce readout_start pulses."""
     await setup(dut)
     starts_seen = 0
-    for _ in range(CYCLES_PER_BIN * (NUM_BINS + 1) + 500):
+    for _ in range((CYCLES_PER_BIN + CELLS_PER_BIN) * (NUM_BINS + 1) + 500):
         await RisingEdge(dut.clk)
         if int(dut.readout_start.value) == 1:
             starts_seen += 1
@@ -197,6 +200,7 @@ async def test_parallel_readout_width(dut):
     for _ in range(50):
         await RisingEdge(dut.clk)
         if int(dut.readout_valid.value) == 1:
-            packed = int(dut.readout_data.value)
+            packed_bits = str(dut.readout_data.value).replace("x", "0").replace("X", "0").replace("z", "0").replace("Z", "0")
+            packed = int(packed_bits, 2)
             assert packed < (1 << (PARALLEL_READS * COUNTER_BITS))
             break

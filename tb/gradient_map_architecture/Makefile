@@ -28,6 +28,8 @@ ifeq ($(TEST),)
     VERILOG_SOURCES = $(RTL_DIR)/gradient_map_architecture/input_fifo.sv
     TOPLEVEL = input_fifo
     MODULE   = test_input_fifo
+    COMPILE_ARGS += -Pinput_fifo.DEPTH=8
+    COMPILE_ARGS += -Pinput_fifo.PTR_BITS=3
   else ifeq ($(TEST),evt2_decoder)
     VERILOG_SOURCES = $(RTL_DIR)/gradient_map_architecture/evt2_decoder.sv
     TOPLEVEL = evt2_decoder

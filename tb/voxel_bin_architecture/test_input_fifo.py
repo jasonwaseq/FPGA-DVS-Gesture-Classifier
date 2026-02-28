@@ -127,9 +127,9 @@ async def test_fill_to_capacity(dut):
     for i in range(DEPTH):
         dut.rd_en.value = 1
         await RisingEdge(dut.clk)
+        dut.rd_en.value = 0
         await RisingEdge(dut.clk)
         read_values.append(int(dut.rd_data.value))
-    dut.rd_en.value = 0
 
     assert read_values == list(range(1, DEPTH + 1)), f"Read back: {read_values}"
 

@@ -27,6 +27,8 @@ ifeq ($(TEST),)
     VERILOG_SOURCES = $(RTL_DIR)/voxel_bin_architecture/input_fifo.sv
     TOPLEVEL = input_fifo
     MODULE   = test_input_fifo
+    COMPILE_ARGS += -Pinput_fifo.DEPTH=8
+    COMPILE_ARGS += -Pinput_fifo.PTR_BITS=3
   else ifeq ($(TEST),evt2_decoder)
     VERILOG_SOURCES = $(RTL_DIR)/voxel_bin_architecture/evt2_decoder.sv
     TOPLEVEL = evt2_decoder
@@ -40,6 +42,7 @@ ifeq ($(TEST),)
     VERILOG_SOURCES = $(RTL_DIR)/voxel_bin_architecture/systolic_array.sv
     TOPLEVEL = systolic_array
     MODULE   = test_systolic_array
+    COMPILE_ARGS += -Psystolic_array.NUM_CELLS=16
   else ifeq ($(TEST),gesture_classifier)
     VERILOG_SOURCES = $(RTL_DIR)/voxel_bin_architecture/gesture_classifier.sv
     TOPLEVEL = gesture_classifier

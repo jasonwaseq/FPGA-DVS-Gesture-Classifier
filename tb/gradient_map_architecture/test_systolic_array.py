@@ -80,17 +80,26 @@ async def run_inference(dut, features, weights):
     """Start the systolic array, feed features, and wait for result."""
     dut.start.value = 1
     dut.feature_in.value = features[0] & ((1 << VALUE_BITS) - 1)
+    dut.w_data_flat.value = pack_weights_for_addr(weights, 0)
     await RisingEdge(dut.clk)
     dut.start.value = 0
 
-    for i in range(NUM_CELLS):
+    # First running cycle primes the feature pipeline.
+    dut.feature_in.value = features[0] & ((1 << VALUE_BITS) - 1)
+    dut.w_data_flat.value = pack_weights_for_addr(weights, 0)
+    await RisingEdge(dut.clk)
+
+    # During running, MAC uses previous cycle's feature with current weights.
+    for i in range(1, NUM_CELLS):
         dut.feature_in.value = features[i] & ((1 << VALUE_BITS) - 1)
-        w_addr = int(dut.w_addr.value) if hasattr(dut, 'w_addr') else i
-        w_addr = min(w_addr, NUM_CELLS - 1)
-        dut.w_data_flat.value = pack_weights_for_addr(weights, w_addr)
+        dut.w_data_flat.value = pack_weights_for_addr(weights, i - 1)
         await RisingEdge(dut.clk)
 
-    for _ in range(10):
+    # Drain cycle consumes the final feature with the final weight row.
+    dut.w_data_flat.value = pack_weights_for_addr(weights, NUM_CELLS - 1)
+    await RisingEdge(dut.clk)
+
+    for _ in range(12):
         await RisingEdge(dut.clk)
         if int(dut.result_valid.value) == 1:
             return int(dut.best_class.value)
@@ -146,29 +155,10 @@ async def test_golden_random(dut):
 
         expected_class, _ = model.compute(features, weights)
 
-        dut.start.value = 1
-        dut.feature_in.value = features[0]
-        await RisingEdge(dut.clk)
-        dut.start.value = 0
-
-        for i in range(NUM_CELLS):
-            dut.feature_in.value = features[i]
-            addr = int(dut.w_addr.value)
-            addr = min(addr, NUM_CELLS - 1)
-            dut.w_data_flat.value = pack_weights_for_addr(weights, addr)
-            await RisingEdge(dut.clk)
-
-        found = False
-        for _ in range(10):
-            await RisingEdge(dut.clk)
-            if int(dut.result_valid.value) == 1:
-                dut_class = int(dut.best_class.value)
-                assert dut_class == expected_class, \
-                    f"Trial {trial}: DUT={dut_class}, model={expected_class}"
-                found = True
-                break
-
-        assert found, f"Trial {trial}: no result_valid"
+        dut_class = await run_inference(dut, features, weights)
+        assert dut_class is not None, f"Trial {trial}: no result_valid"
+        assert dut_class == expected_class, \
+            f"Trial {trial}: DUT={dut_class}, model={expected_class}"
         await ClockCycles(dut.clk, 4)
 
 
