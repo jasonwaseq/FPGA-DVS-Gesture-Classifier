@@ -13,16 +13,14 @@ GRADIENT_MAP_COMMON_SOURCES = $(RTL_DIR)/uart_tx.sv \
                               $(RTL_DIR)/gradient_map_architecture/systolic_array.sv \
                               $(RTL_DIR)/gradient_map_architecture/gesture_classifier.sv
 
-# Default target: raw (UART sensor input)
-TARGET ?= raw
+# Default test target
 TEST ?=
 
-ifeq ($(TARGET),raw)
-  ifeq ($(TEST),)
-    VERILOG_SOURCES = $(GRADIENT_MAP_COMMON_SOURCES) \
-                      $(RTL_DIR)/gradient_map_architecture/gradient_map_top.sv
-    TOPLEVEL = gradient_map_top
-    MODULE   = test_gradient_map_raw
+ifeq ($(TEST),)
+  VERILOG_SOURCES = $(GRADIENT_MAP_COMMON_SOURCES) \
+                    $(RTL_DIR)/gradient_map_architecture/gradient_map_top.sv
+  TOPLEVEL = gradient_map_top
+  MODULE   = test_gradient_map
     COMPILE_ARGS += -Pgradient_map_top.FRAME_PERIOD_MS=1
     COMPILE_ARGS += -Pgradient_map_top.MIN_MASS_THRESH=20
     COMPILE_ARGS += -Pgradient_map_top.DECAY_SHIFT=12
@@ -51,16 +49,13 @@ ifeq ($(TARGET),raw)
     MODULE   = test_gesture_classifier
     COMPILE_ARGS += -Pgesture_classifier.FRAME_PERIOD_MS=1
     COMPILE_ARGS += -Pgesture_classifier.MIN_MASS_THRESH=20
-  else ifeq ($(TEST),weight_ram)
-    VERILOG_SOURCES = $(RTL_DIR)/gradient_map_architecture/weight_ram.sv
-    TOPLEVEL = weight_ram
-    MODULE   = test_weight_ram
-    COMPILE_ARGS += -Pweight_ram.CLASS_IDX=0
-  else
-    $(error Unknown TEST=$(TEST). Use: input_fifo, evt2_decoder, gradient_mapping, systolic_array, gesture_classifier, weight_ram)
-  endif
+else ifeq ($(TEST),weight_ram)
+  VERILOG_SOURCES = $(RTL_DIR)/gradient_map_architecture/weight_ram.sv
+  TOPLEVEL = weight_ram
+  MODULE   = test_weight_ram
+  COMPILE_ARGS += -Pweight_ram.CLASS_IDX=0
 else
-  $(error Unknown TARGET=$(TARGET). Only TARGET=raw is supported)
+  $(error Unknown TEST=$(TEST). Use: input_fifo, evt2_decoder, gradient_mapping, systolic_array, gesture_classifier, weight_ram)
 endif
 
 SIM = icarus
@@ -119,26 +114,20 @@ else
   include $(shell cocotb-config --makefiles)/Makefile.sim
 endif
 
-.PHONY: test test_raw test_processed test_full test_unit clean_all
+.PHONY: test test_full test_unit clean_all
 
-test: test_raw
-
-test_raw:
-	$(MAKE) sim TARGET=raw
-
-test_processed:
-	$(MAKE) sim TARGET=processed
+test:
+	$(MAKE) sim
 
 test_unit:
 	@for t in input_fifo evt2_decoder gradient_mapping systolic_array gesture_classifier weight_ram; do \
 		echo "======== Running TEST=$$t ========"; \
 		$(MAKE) clean > /dev/null 2>&1; \
-		$(MAKE) sim TARGET=raw TEST=$$t || exit 1; \
+		$(MAKE) sim TEST=$$t || exit 1; \
 	done
 
 test_full:
-	$(MAKE) clean && $(MAKE) sim TARGET=raw
-	$(MAKE) clean && $(MAKE) sim TARGET=processed
+	$(MAKE) clean && $(MAKE) sim
 
 clean_all:
 	rm -rf sim_build results.xml __pycache__

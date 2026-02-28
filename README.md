@@ -41,26 +41,17 @@ The repo ships a `.devcontainer/` that provides a fully configured Ubuntu enviro
 ### Run tests (devcontainer)
 
 ```bash
-# Voxel-bin — UART sensor input
-python3 setup.py test voxel_bin_raw
-
-# Voxel-bin — pre-decoded event bus
-python3 setup.py test voxel_bin_processed
-
-# Gradient-map — UART sensor input
-python3 setup.py test gradient_map_raw
-
-# Gradient-map — pre-decoded EVT2 word bus
-python3 setup.py test gradient_map_processed
+# Unit testbenches via Makefiles
+cd tb/voxel_bin_architecture && make test_unit
+cd tb/gradient_map_architecture && make test_unit
+cd tb/uart && make all
 ```
 
 ### Synthesize (devcontainer)
 
 ```bash
-python3 setup.py synth voxel_bin_raw          # → synth/voxel_bin/voxel_bin_raw_top.bit
-python3 setup.py synth voxel_bin_processed    # → synth/voxel_bin/voxel_bin_processed_top.bit
-python3 setup.py synth gradient_map_raw       # → synth/gradient_map/gradient_map_raw_top.bit
-python3 setup.py synth gradient_map_processed # → synth/gradient_map/gradient_map_processed_top.bit
+python3 setup.py synth voxel_bin      # -> synth/voxel_bin/voxel_bin_top.bit
+python3 setup.py synth gradient_map   # -> synth/gradient_map/gradient_map_top.bit
 ```
 
 ### Flash and FPGA tools (devcontainer — local machine required)
@@ -110,35 +101,29 @@ If OSS CAD Suite is already installed system-wide (e.g. via Homebrew on macOS or
 
 ### 2. Run tests (local)
 
-Each architecture has two tops — `raw` (UART sensor input) and `processed` (pre-decoded event bus):
+The current verification flow is cocotb unit testbenches per module.
 
 ```bash
-# Using setup.py (works on all platforms)
-python3 setup.py test voxel_bin_raw
-python3 setup.py test voxel_bin_processed
-python3 setup.py test gradient_map_raw
-python3 setup.py test gradient_map_processed
+# Unit suites (Linux/macOS or Windows with Git bash on PATH)
+cd tb/voxel_bin_architecture && make test_unit
+cd tb/gradient_map_architecture && make test_unit
+cd tb/uart && make all
 
-# Or using the Makefiles (Linux/macOS, or Windows with Git bash on PATH)
-cd tb/voxel_bin_architecture  && make test_raw
-cd tb/voxel_bin_architecture  && make test_processed
-cd tb/gradient_map_architecture && make test_raw
-cd tb/gradient_map_architecture && make test_processed
+# Run one module testbench explicitly
+cd tb/voxel_bin_architecture && make sim TEST=evt2_decoder
+cd tb/gradient_map_architecture && make sim TEST=gradient_mapping
+cd tb/uart && make sim TEST=uart_rx
 ```
 
 ### 3. Synthesize (local)
 
 ```bash
-python3 setup.py synth voxel_bin_raw          # → synth/voxel_bin/voxel_bin_raw_top.bit
-python3 setup.py synth voxel_bin_processed    # → synth/voxel_bin/voxel_bin_processed_top.bit
-python3 setup.py synth gradient_map_raw       # → synth/gradient_map/gradient_map_raw_top.bit
-python3 setup.py synth gradient_map_processed # → synth/gradient_map/gradient_map_processed_top.bit
+python3 setup.py synth voxel_bin      # -> synth/voxel_bin/voxel_bin_top.bit
+python3 setup.py synth gradient_map   # -> synth/gradient_map/gradient_map_top.bit
 
 # Or via the synth Makefile
-cd synth && make ARCH=voxel_bin    TARGET=raw
-cd synth && make ARCH=voxel_bin    TARGET=processed
 cd synth && make ARCH=gradient_map TARGET=raw
-cd synth && make ARCH=gradient_map TARGET=processed
+cd synth && make ARCH=voxel_bin    TARGET=raw
 ```
 
 ### 4. Flash (local)
@@ -146,10 +131,8 @@ cd synth && make ARCH=gradient_map TARGET=processed
 Connect the iCEBreaker FPGA via USB, then:
 
 ```bash
-python3 setup.py flash voxel_bin_raw
-python3 setup.py flash voxel_bin_processed
-python3 setup.py flash gradient_map_raw
-python3 setup.py flash gradient_map_processed
+python3 setup.py flash voxel_bin
+python3 setup.py flash gradient_map
 ```
 
 **Windows**: run PowerShell as Administrator if `iceprog` reports an access error.
@@ -177,16 +160,13 @@ pip install -r requirements.txt
 | Command | Description |
 |---------|-------------|
 | `python3 setup.py` | Setup venv, install packages, detect/download OSS CAD Suite |
-| `python3 setup.py test voxel_bin_raw` | Run voxel-bin UART tests |
-| `python3 setup.py test voxel_bin_processed` | Run voxel-bin event-bus tests |
-| `python3 setup.py test gradient_map_raw` | Run gradient-map UART tests |
-| `python3 setup.py test gradient_map_processed` | Run gradient-map event-bus tests |
-| `python3 setup.py synth voxel_bin_raw` | Synthesize → `voxel_bin_raw_top.bit` |
-| `python3 setup.py synth voxel_bin_processed` | Synthesize → `voxel_bin_processed_top.bit` |
-| `python3 setup.py synth gradient_map_raw` | Synthesize → `gradient_map_raw_top.bit` |
-| `python3 setup.py synth gradient_map_processed` | Synthesize → `gradient_map_processed_top.bit` |
-| `python3 setup.py flash voxel_bin_raw` | Flash voxel-bin UART bitstream |
-| `python3 setup.py flash gradient_map_raw` | Flash gradient-map UART bitstream |
+| `cd tb/voxel_bin_architecture && make test_unit` | Run voxel-bin unit testbenches |
+| `cd tb/gradient_map_architecture && make test_unit` | Run gradient-map unit testbenches |
+| `cd tb/uart && make all` | Run UART unit testbenches |
+| `python3 setup.py synth voxel_bin` | Synthesize → `voxel_bin_top.bit` |
+| `python3 setup.py synth gradient_map` | Synthesize → `gradient_map_top.bit` |
+| `python3 setup.py flash voxel_bin` | Flash voxel-bin bitstream |
+| `python3 setup.py flash gradient_map` | Flash gradient-map bitstream |
 | `python3 setup.py clean` | Remove all build artifacts |
 
 ---
@@ -237,34 +217,32 @@ Both architectures are streaming, single-pass DVS pipelines on a single clock do
 
 | | Gradient-Map | Voxel-Bin |
 |---|---|---|
-| Feature | Decaying time-surface (16×16) | 3D histogram — 5 time bins × 16×16 grid |
-| Classifier | Systolic MAC over 256-cell surface | Systolic MAC over 1280-element flattened bins |
+| Feature | Decaying time-surface (16x16) | Voxel histogram (4 bins x 16x16) |
+| Classifier | Systolic MAC over 256-cell surface | Systolic MAC over 1024-cell flattened bins |
 | UART output | ASCII (`UP\r\n`, etc.) | Binary 2-byte gesture packet |
-| Raw top (UART sensor) | `gradient_map_raw_top` | `voxel_bin_raw_top` |
-| Processed top (event bus) | `gradient_map_processed_top` | `voxel_bin_processed_top` |
+| Synthesis top | `gradient_map_top` | `voxel_bin_top` |
+| Core module | `gradient_map_core` | `voxel_bin_core` |
 
 ---
 
 ## Gradient-Map architecture
 
-**Pipeline**: EVT2 words → FIFO → EVT2 decoder → Time-surface encoder (exponential decay) → Spatio-temporal classifier (systolic MAC + argmax) → UART debug output
+**Dataflow**: UART RX byte stream -> word assembler in `gradient_map_top` -> `gradient_map_core` -> `input_fifo` -> `evt2_decoder` -> `gradient_mapping` (decaying surface) -> `gesture_classifier` + `systolic_array` -> `uart_debug` ASCII output + LEDs
 
-Default grid is **16×16** (256 cells) for iCE40 UP5K fit.
+Default grid is **16x16** (256 cells).
 
 ### Module map
 
 | Module | File |
 |--------|------|
-| Core pipeline + LED control | `rtl/gradient_map_architecture/gesture_top.sv` |
-| Raw synthesis top (UART sensor input) | `rtl/gradient_map_architecture/gradient_map_raw_top.sv` |
-| Processed synthesis top (event bus input) | `rtl/gradient_map_architecture/gradient_map_processed_top.sv` |
+| Top-level UART + LED wrapper | `rtl/gradient_map_architecture/gradient_map_top.sv` |
+| Core pipeline wrapper | `rtl/gradient_map_architecture/gradient_map_core.sv` |
 | EVT2 decoder + 320×320 → 16×16 downsample | `rtl/gradient_map_architecture/evt2_decoder.sv` |
 | Input FIFO (128 × 32-bit BRAM) | `rtl/gradient_map_architecture/input_fifo.sv` |
-| Time-surface BRAM (last-event timestamps) | `rtl/gradient_map_architecture/time_surface_memory.sv` |
-| Exponential decay front-end | `rtl/gradient_map_architecture/time_surface_encoder.sv` |
-| Frame timer + cell scan + systolic array + argmax | `rtl/gradient_map_architecture/spatio_temporal_classifier.sv` |
-| 4-way parallel MAC | `rtl/gradient_map_architecture/systolic_array.sv` |
-| Per-class weight ROMs | `rtl/gradient_map_architecture/weight_rom.sv` |
+| Decaying surface mapper | `rtl/gradient_map_architecture/gradient_mapping.sv` |
+| Frame-based classifier | `rtl/gradient_map_architecture/gesture_classifier.sv` |
+| Parallel MAC engine | `rtl/gradient_map_architecture/systolic_array.sv` |
+| Per-class weight RAM/ROM | `rtl/gradient_map_architecture/weight_ram.sv` |
 | ASCII UART output | `rtl/uart_debug.sv` |
 
 ### Configuration parameters
@@ -280,43 +258,64 @@ Default grid is **16×16** (256 cells) for iCE40 UP5K fit.
 ### How to test, synthesize, and flash
 
 ```bash
-python3 setup.py test gradient_map_raw
-python3 setup.py test gradient_map_processed
-python3 setup.py synth gradient_map_raw
-python3 setup.py synth gradient_map_processed
-python3 setup.py flash gradient_map_raw
+cd tb/gradient_map_architecture && make test_unit
+python3 setup.py synth gradient_map
+python3 setup.py flash gradient_map
 ```
 
 ---
 
 ## Voxel-Bin architecture
 
-**Pipeline**: DVS events → InputFIFO → SpatialCompressor (320×320 → 16×16) → TimeSurfaceBinning (5 bins × 16×16 counters) → SystolicMatrixMultiply + WeightROM → OutputRegister → UART
+**Dataflow**: UART RX byte stream (with command bytes `0xFF/0xFE/0xFD/0xFC`) -> assembler/control in `voxel_bin_top` -> `voxel_bin_core` -> `input_fifo` -> `evt2_decoder` -> `voxel_binning` -> `systolic_array` + `weight_ram` -> `gesture_classifier` -> binary UART response + LEDs
 
-Default is **5 temporal bins** for iCE40 UP5K fit.
+Default is **4 temporal bins** (`NUM_BINS=4`) for iCE40 UP5K fit.
 
 ### Module map
 
 | Module | File |
 |--------|------|
-| Raw synthesis top (UART sensor input) | `rtl/voxel_bin_architecture/voxel_bin_raw_top.sv` |
-| Processed synthesis top (event bus input) | `rtl/voxel_bin_architecture/voxel_bin_processed_top.sv` |
-| Full pipeline wrapper | `rtl/voxel_bin_architecture/dvs_gesture_accel.sv` |
-| Event FIFO (ready/valid) | `rtl/voxel_bin_architecture/InputFIFO.sv` |
-| 320×320 → 16×16 coordinate map | `rtl/voxel_bin_architecture/SpatialCompressor.sv` |
-| Ring buffer of 2D histograms | `rtl/voxel_bin_architecture/TimeSurfaceBinning.sv` |
-| Systolic MAC (1280-element × 4 classes) | `rtl/voxel_bin_architecture/SystolicMatrixMultiply.sv` |
-| Per-class weight ROMs | `rtl/voxel_bin_architecture/WeightROM.sv` |
-| Persistence filter + confidence mapping | `rtl/voxel_bin_architecture/OutputRegister.sv` |
+| Top-level UART + command wrapper | `rtl/voxel_bin_architecture/voxel_bin_top.sv` |
+| Core pipeline wrapper | `rtl/voxel_bin_architecture/voxel_bin_core.sv` |
+| Event FIFO (32-bit EVT2 words) | `rtl/voxel_bin_architecture/input_fifo.sv` |
+| EVT2 decoder + downsample | `rtl/voxel_bin_architecture/evt2_decoder.sv` |
+| Temporal voxel binning | `rtl/voxel_bin_architecture/voxel_binning.sv` |
+| Systolic MAC classifier front-end | `rtl/voxel_bin_architecture/systolic_array.sv` |
+| Per-class weight RAM/ROM | `rtl/voxel_bin_architecture/weight_ram.sv` |
+| Persistence + confidence logic | `rtl/voxel_bin_architecture/gesture_classifier.sv` |
 
 ### How to test, synthesize, and flash
 
 ```bash
-python3 setup.py test voxel_bin_raw
-python3 setup.py test voxel_bin_processed
-python3 setup.py synth voxel_bin_raw
-python3 setup.py synth voxel_bin_processed
-python3 setup.py flash voxel_bin_raw
+cd tb/voxel_bin_architecture && make test_unit
+python3 setup.py synth voxel_bin
+python3 setup.py flash voxel_bin
+```
+
+---
+
+## Testbench setup
+
+Each architecture testbench directory uses the same pattern:
+
+- `make test_unit`: run all module unit testbenches in that architecture.
+- `make sim TEST=<name>`: run one module testbench.
+- `make clean_all`: remove `sim_build`, `results.xml`, and `__pycache__`.
+
+Available `TEST=` targets:
+
+| Directory | TEST values |
+|-----------|-------------|
+| `tb/gradient_map_architecture` | `input_fifo`, `evt2_decoder`, `gradient_mapping`, `systolic_array`, `gesture_classifier`, `weight_ram` |
+| `tb/voxel_bin_architecture` | `input_fifo`, `evt2_decoder`, `voxel_binning`, `systolic_array`, `gesture_classifier`, `weight_ram` |
+| `tb/uart` | `uart_rx`, `uart_tx`, `uart_debug` |
+
+Examples:
+
+```bash
+cd tb/gradient_map_architecture && make sim TEST=evt2_decoder
+cd tb/voxel_bin_architecture && make sim TEST=voxel_binning
+cd tb/uart && make sim TEST=uart_debug
 ```
 
 ---
@@ -381,8 +380,8 @@ End-to-end validation using a live DVS sensor.
 ### Step 1: Build and flash
 
 ```bash
-python3 setup.py synth gradient_map_raw
-python3 setup.py flash gradient_map_raw
+python3 setup.py synth gradient_map
+python3 setup.py flash gradient_map
 ```
 
 ### Step 2: Capture a raw EVT stream
@@ -468,4 +467,4 @@ python3 tools/replay_evt_to_fpga.py --list-ports
 Both architectures are tuned to fit the Lattice iCE40 UP5K (≈5280 LUT4s, 30×4 Kbit BRAM):
 
 - **Gradient-map**: 16×16 grid (256 cells), 128-entry input FIFO, time-surface and weight ROMs sized for 256 cells; `flatten_buffer` removed from build (classifier streams directly from BRAM).
-- **Voxel-bin**: 5 temporal bins, 16×16 grid, 1280-cell feature vector and 4×1280 weight ROMs; bin RAM reduced to 5×256×8-bit.
+- **Voxel-bin**: 4 temporal bins, 16×16 grid, 1024-cell feature vector and 4x1024 weight ROMs.

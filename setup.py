@@ -38,16 +38,9 @@ VOXEL_BIN_CORE_FILES = [
     "voxel_bin_architecture/voxel_bin_core.sv",
 ]
 
-RTL_FILES_VOXEL_RAW = VOXEL_BIN_CORE_FILES + [
-    "voxel_bin_architecture/voxel_bin_raw_top.sv",
+RTL_FILES_VOXEL = VOXEL_BIN_CORE_FILES + [
+    "voxel_bin_architecture/voxel_bin_top.sv",
 ]
-
-RTL_FILES_VOXEL_PROCESSED = VOXEL_BIN_CORE_FILES + [
-    "voxel_bin_architecture/voxel_bin_processed_top.sv",
-]
-
-# Keep legacy alias so any external references don't break
-RTL_FILES = RTL_FILES_VOXEL_RAW
 
 GRADIENT_MAP_CORE_FILES = [
     "uart_tx.sv",
@@ -62,15 +55,9 @@ GRADIENT_MAP_CORE_FILES = [
     "gradient_map_architecture/gradient_map_core.sv",
 ]
 
-RTL_FILES_GRADIENT_RAW = GRADIENT_MAP_CORE_FILES + [
+RTL_FILES_GRADIENT = GRADIENT_MAP_CORE_FILES + [
     "gradient_map_architecture/gradient_map_top.sv",
 ]
-
-RTL_FILES_GRADIENT_PROCESSED = RTL_FILES_GRADIENT_RAW
-
-# Keep legacy aliases
-RTL_FILES_GESTURE = GRADIENT_MAP_CORE_FILES
-RTL_FILES_UART = RTL_FILES_GRADIENT_RAW
 
 OSS_CAD_URLS = {
     ("Windows", "AMD64"): "https://github.com/YosysHQ/oss-cad-suite-build/releases/download/2024-11-21/oss-cad-suite-windows-x64-20241121.exe",
@@ -375,35 +362,15 @@ def _find_libpython():
 
 
 ARCH_TEST_CONFIG = {
-    "voxel_bin_raw": (RTL_FILES_VOXEL_RAW, "voxel_bin_raw_top", TB_DIR / "voxel_bin_architecture", [], [
-        "-Pvoxel_bin_raw_top.CYCLES_PER_BIN=2000",
-        "-Pvoxel_bin_raw_top.BAUD_RATE=3000000",
-        "-Pvoxel_bin_raw_top.WINDOW_MS=40",
+    "voxel_bin": (RTL_FILES_VOXEL, "voxel_bin_top", TB_DIR / "voxel_bin_architecture", [], [
+        "-Pvoxel_bin_top.CYCLES_PER_BIN=2000",
+        "-Pvoxel_bin_top.BAUD_RATE=3000000",
+        "-Pvoxel_bin_top.WINDOW_MS=40",
     ]),
-    "voxel_bin_processed": (RTL_FILES_VOXEL_PROCESSED, "voxel_bin_processed_top", TB_DIR / "voxel_bin_architecture", [], [
-        "-Pvoxel_bin_processed_top.CYCLES_PER_BIN=2000",
-        "-Pvoxel_bin_processed_top.WINDOW_MS=40",
-    ]),
-    "gradient_map_raw": (RTL_FILES_GRADIENT_RAW, "gradient_map_raw_top", TB_DIR / "gradient_map_architecture", [], [
-        "-Pgradient_map_raw_top.FRAME_PERIOD_MS=1",
-        "-Pgradient_map_raw_top.MIN_MASS_THRESH=20",
-        "-Pgradient_map_raw_top.DECAY_SHIFT=12",
-    ]),
-    "gradient_map_processed": (RTL_FILES_GRADIENT_PROCESSED, "gradient_map_processed_top", TB_DIR / "gradient_map_architecture", [], [
-        "-Pgradient_map_processed_top.FRAME_PERIOD_MS=1",
-        "-Pgradient_map_processed_top.MIN_MASS_THRESH=20",
-        "-Pgradient_map_processed_top.DECAY_SHIFT=12",
-    ]),
-    # Legacy aliases
-    "voxel_bin": (RTL_FILES_VOXEL_RAW, "voxel_bin_raw_top", TB_DIR / "voxel_bin_architecture", [], [
-        "-Pvoxel_bin_raw_top.CYCLES_PER_BIN=2000",
-        "-Pvoxel_bin_raw_top.BAUD_RATE=3000000",
-        "-Pvoxel_bin_raw_top.WINDOW_MS=40",
-    ]),
-    "gradient_map": (RTL_FILES_GRADIENT_RAW, "gradient_map_raw_top", TB_DIR / "gradient_map_architecture", [], [
-        "-Pgradient_map_raw_top.FRAME_PERIOD_MS=1",
-        "-Pgradient_map_raw_top.MIN_MASS_THRESH=20",
-        "-Pgradient_map_raw_top.DECAY_SHIFT=12",
+    "gradient_map": (RTL_FILES_GRADIENT, "gradient_map_top", TB_DIR / "gradient_map_architecture", [], [
+        "-Pgradient_map_top.FRAME_PERIOD_MS=1",
+        "-Pgradient_map_top.MIN_MASS_THRESH=20",
+        "-Pgradient_map_top.DECAY_SHIFT=12",
     ]),
 }
 
@@ -412,26 +379,17 @@ def run_tests(test_module=None):
     print_header("Running cocotb Verification Tests")
 
     TEST_MODULE_MAP = {
-        "voxel_bin_raw":          ("voxel_bin_raw",       "test_voxel_bin_raw"),
-        "test_voxel_bin_raw":     ("voxel_bin_raw",       "test_voxel_bin_raw"),
-        "voxel_bin_processed":    ("voxel_bin_processed", "test_voxel_bin_processed"),
-        "test_voxel_bin_processed": ("voxel_bin_processed", "test_voxel_bin_processed"),
-        "gradient_map_raw":       ("gradient_map_raw",    "test_gradient_map_raw"),
-        "test_gradient_map_raw":  ("gradient_map_raw",    "test_gradient_map_raw"),
-        "gradient_map_processed": ("gradient_map_processed", "test_gradient_map_processed"),
-        "test_gradient_map_processed": ("gradient_map_processed", "test_gradient_map_processed"),
-        # Legacy aliases
-        "voxel_bin":              ("voxel_bin_raw",       "test_voxel_bin_raw"),
-        "test_voxel_bin":         ("voxel_bin_raw",       "test_voxel_bin_raw"),
-        "gradient_map":           ("gradient_map_raw",    "test_gradient_map_raw"),
-        "test_gradient_map":      ("gradient_map_raw",    "test_gradient_map_raw"),
+        "voxel_bin":          ("voxel_bin",       "test_voxel_bin"),
+        "test_voxel_bin":     ("voxel_bin",       "test_voxel_bin"),
+        "gradient_map":       ("gradient_map",    "test_gradient_map"),
+        "test_gradient_map":  ("gradient_map",    "test_gradient_map"),
     }
-    key = test_module or "voxel_bin_raw"
+    key = test_module or "voxel_bin"
     if key in TEST_MODULE_MAP:
         arch, test_module = TEST_MODULE_MAP[key]
     else:
-        arch = "voxel_bin_raw"
-        test_module = "test_voxel_bin_raw"
+        arch = "voxel_bin"
+        test_module = "test_voxel_bin"
 
     rtl_files, toplevel, tb_dir, defines, param_overrides = ARCH_TEST_CONFIG[arch]
     
@@ -617,52 +575,19 @@ def _synthesize(top_module, rtl_files, pcf_name, label="", arch_dir=None, allow_
 
 ARCH_SYNTH_CONFIG = {
     # (top_module, rtl_files, pcf_name, label, subdir, allow_unconstrained)
-    "voxel_bin_raw": (
-        "voxel_bin_raw_top",
-        RTL_FILES_VOXEL_RAW,
-        "icebreaker.pcf",
-        "Voxel-bin raw/UART (voxel_bin_raw_top)",
-        "voxel_bin",
-        False,
-    ),
-    "voxel_bin_processed": (
-        "voxel_bin_processed_top",
-        RTL_FILES_VOXEL_PROCESSED,
-        "icebreaker_processed_voxel_bin.pcf",
-        "Voxel-bin processed/bus (voxel_bin_processed_top)",
-        "voxel_bin",
-        True,
-    ),
-    "gradient_map_raw": (
-        "gradient_map_raw_top",
-        RTL_FILES_GRADIENT_RAW,
-        "icebreaker.pcf",
-        "Gradient-map raw/UART (gradient_map_raw_top)",
-        "gradient_map",
-        False,
-    ),
-    "gradient_map_processed": (
-        "gradient_map_processed_top",
-        RTL_FILES_GRADIENT_PROCESSED,
-        "icebreaker_processed_gradient_map.pcf",
-        "Gradient-map processed/bus (gradient_map_processed_top)",
-        "gradient_map",
-        False,
-    ),
-    # Legacy aliases
     "voxel_bin": (
-        "voxel_bin_raw_top",
-        RTL_FILES_VOXEL_RAW,
+        "voxel_bin_top",
+        RTL_FILES_VOXEL,
         "icebreaker.pcf",
-        "Voxel-bin raw/UART (voxel_bin_raw_top)",
+        "Voxel-bin UART (voxel_bin_top)",
         "voxel_bin",
         False,
     ),
     "gradient_map": (
-        "gradient_map_raw_top",
-        RTL_FILES_GRADIENT_RAW,
+        "gradient_map_top",
+        RTL_FILES_GRADIENT,
         "icebreaker.pcf",
-        "Gradient-map raw/UART (gradient_map_raw_top)",
+        "Gradient-map UART (gradient_map_top)",
         "gradient_map",
         False,
     ),
@@ -673,7 +598,7 @@ def run_synthesis(arch):
     if arch not in ARCH_SYNTH_CONFIG:
         print_error(
             f"Unknown architecture: {arch}. "
-            "Use voxel_bin_raw, voxel_bin_processed, gradient_map_raw, or gradient_map_processed."
+            "Use voxel_bin or gradient_map."
         )
         return 1
 
@@ -735,7 +660,7 @@ def flash_fpga(port=None, serial=None, vid=None, pid=None, bitfile_name=None, ar
         else:
             bitfile_name = f"{arch}.bit"
     if bitfile_name is None:
-        bitfile_name = "voxel_bin_raw_top.bit"
+        bitfile_name = "voxel_bin_top.bit"
 
     oss_root = get_oss_cad_bin()
     if oss_root is None:
@@ -751,7 +676,7 @@ def flash_fpga(port=None, serial=None, vid=None, pid=None, bitfile_name=None, ar
     bitfile = bitfile_dir / bitfile_name
     if not bitfile.exists():
         print_error(f"Bitstream not found: {bitfile}")
-        print("  Run 'python setup.py synth <arch>' first (e.g. synth voxel_bin_raw)")
+        print("  Run 'python setup.py synth <arch>' first (e.g. synth voxel_bin)")
         return 1
     
     env = get_oss_cad_env()

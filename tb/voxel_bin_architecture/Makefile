@@ -12,16 +12,14 @@ VOXEL_BIN_SOURCES = $(RTL_DIR)/voxel_bin_architecture/voxel_bin_core.sv \
                     $(RTL_DIR)/uart_rx.sv \
                     $(RTL_DIR)/uart_tx.sv
 
-# Default target: raw (UART sensor input)
-TARGET ?= raw
+# Default test target
 TEST ?=
 
-ifeq ($(TARGET),raw)
-  ifeq ($(TEST),)
-    VERILOG_SOURCES = $(VOXEL_BIN_SOURCES) \
-                      $(RTL_DIR)/voxel_bin_architecture/voxel_bin_top.sv
-    TOPLEVEL = voxel_bin_top
-    MODULE   = test_voxel_bin_raw
+ifeq ($(TEST),)
+  VERILOG_SOURCES = $(VOXEL_BIN_SOURCES) \
+                    $(RTL_DIR)/voxel_bin_architecture/voxel_bin_top.sv
+  TOPLEVEL = voxel_bin_top
+  MODULE   = test_voxel_bin
     COMPILE_ARGS += -Pvoxel_bin_top.CYCLES_PER_BIN=2000
     COMPILE_ARGS += -Pvoxel_bin_top.BAUD_RATE=3000000
     COMPILE_ARGS += -Pvoxel_bin_top.WINDOW_MS=40
@@ -46,16 +44,13 @@ ifeq ($(TARGET),raw)
     VERILOG_SOURCES = $(RTL_DIR)/voxel_bin_architecture/gesture_classifier.sv
     TOPLEVEL = gesture_classifier
     MODULE   = test_gesture_classifier
-  else ifeq ($(TEST),weight_ram)
-    VERILOG_SOURCES = $(RTL_DIR)/voxel_bin_architecture/weight_ram.sv
-    TOPLEVEL = weight_ram
-    MODULE   = test_weight_ram
-    COMPILE_ARGS += -Pweight_ram.CLASS_IDX=0
-  else
-    $(error Unknown TEST=$(TEST). Use: input_fifo, evt2_decoder, voxel_binning, systolic_array, gesture_classifier, weight_ram)
-  endif
+else ifeq ($(TEST),weight_ram)
+  VERILOG_SOURCES = $(RTL_DIR)/voxel_bin_architecture/weight_ram.sv
+  TOPLEVEL = weight_ram
+  MODULE   = test_weight_ram
+  COMPILE_ARGS += -Pweight_ram.CLASS_IDX=0
 else
-  $(error Unknown TARGET=$(TARGET). Only TARGET=raw is supported)
+  $(error Unknown TEST=$(TEST). Use: input_fifo, evt2_decoder, voxel_binning, systolic_array, gesture_classifier, weight_ram)
 endif
 
 SIM = icarus
@@ -114,26 +109,20 @@ else
   include $(shell cocotb-config --makefiles)/Makefile.sim
 endif
 
-.PHONY: test test_raw test_processed test_full test_unit clean_all
+.PHONY: test test_full test_unit clean_all
 
-test: test_raw
-
-test_raw:
-	$(MAKE) sim TARGET=raw
-
-test_processed:
-	$(MAKE) sim TARGET=processed
+test:
+	$(MAKE) sim
 
 test_unit:
 	@for t in input_fifo evt2_decoder voxel_binning systolic_array gesture_classifier weight_ram; do \
 		echo "======== Running TEST=$$t ========"; \
 		$(MAKE) clean > /dev/null 2>&1; \
-		$(MAKE) sim TARGET=raw TEST=$$t || exit 1; \
+		$(MAKE) sim TEST=$$t || exit 1; \
 	done
 
 test_full:
-	$(MAKE) clean && $(MAKE) sim TARGET=raw
-	$(MAKE) clean && $(MAKE) sim TARGET=processed
+	$(MAKE) clean && $(MAKE) sim
 
 clean_all:
 	rm -rf sim_build results.xml __pycache__
