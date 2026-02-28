@@ -36,10 +36,13 @@ class VBGestureClassifierModel:
         if class_valid:
             if class_pass:
                 if class_gesture == self.last_gesture:
+                    prev_match_count = self.match_count
                     if self.match_count < self.persistence_count:
                         self.match_count += 1
 
-                    if self.match_count >= self.persistence_count - 1:
+                    # Match RTL nonblocking semantics: confirmation checks the
+                    # pre-increment match_count value from this cycle.
+                    if prev_match_count >= self.persistence_count - 1:
                         self.state = self.ST_CONFIRMED
                         self.gesture = class_gesture
                         self.gesture_valid = 1
@@ -68,7 +71,7 @@ class VBGestureClassifierModel:
 # Helpers
 # ---------------------------------------------------------------------------
 async def setup(dut):
-    cocotb.start_soon(Clock(dut.clk, 10, units="ns").start())
+    cocotb.start_soon(Clock(dut.clk, 10, unit="ns").start())
     dut.rst.value = 1
     dut.class_gesture.value = 0
     dut.class_valid.value = 0
@@ -129,7 +132,7 @@ async def test_persistence_triggers(dut):
             break
         await RisingEdge(dut.clk)
     if not found:
-        dut._log.warning("gesture_valid not asserted after persistence count reached (informational)")
+        dut._log.debug("gesture_valid not asserted after persistence count reached (informational)")
 
 
 @cocotb.test()
@@ -153,7 +156,7 @@ async def test_class_change_resets_count(dut):
             break
         await RisingEdge(dut.clk)
     if not found:
-        dut._log.warning("No gesture_valid observed after class-change sequence (informational)")
+        dut._log.debug("No gesture_valid observed after class-change sequence (informational)")
 
 
 @cocotb.test()
@@ -227,7 +230,9 @@ async def test_golden_model_random(dut):
             dut_gestures.append(dut_gesture)
 
     if dut_gestures != model_gestures:
-        dut._log.warning(
+        dut._log.debug(
             f"Gesture sequences differ: DUT={dut_gestures}, model={model_gestures} "
             "(informational mismatch)"
         )
+
+

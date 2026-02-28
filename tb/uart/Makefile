@@ -5,8 +5,9 @@ RTL_DIR = ../../rtl
 
 COMPILE_ARGS += -g2012
 
-export COCOTB_LOG_LEVEL ?= WARNING
+export COCOTB_LOG_LEVEL ?= INFO
 export COCOTB_REDUCED_LOG_FMT ?= 1
+export GPI_LOG_LEVEL ?= CRITICAL
 
 TEST ?= uart_rx
 SIM_BUILD ?= sim_build_$(TEST)
@@ -14,19 +15,19 @@ SIM_BUILD ?= sim_build_$(TEST)
 ifeq ($(TEST),uart_rx)
   VERILOG_SOURCES = $(RTL_DIR)/uart_rx.sv
   TOPLEVEL = uart_rx
-  MODULE = test_uart_rx
+  COCOTB_TEST_MODULES = test_uart_rx
   COMPILE_ARGS += -Puart_rx.CLKS_PER_BIT=4
 
 else ifeq ($(TEST),uart_tx)
   VERILOG_SOURCES = $(RTL_DIR)/uart_tx.sv
   TOPLEVEL = uart_tx
-  MODULE = test_uart_tx
+  COCOTB_TEST_MODULES = test_uart_tx
   COMPILE_ARGS += -Puart_tx.CLKS_PER_BIT=4
 
 else ifeq ($(TEST),uart_debug)
   VERILOG_SOURCES = $(RTL_DIR)/uart_tx.sv $(RTL_DIR)/uart_debug.sv
   TOPLEVEL = uart_debug
-  MODULE = test_uart_debug
+  COCOTB_TEST_MODULES = test_uart_debug
   COMPILE_ARGS += -Puart_debug.CLK_FREQ_HZ=12000000 -Puart_debug.BAUD_RATE=3000000
 
 else
@@ -91,3 +92,5 @@ test_all:
 
 clean_all:
 	rm -rf sim_build* results.xml __pycache__
+
+

@@ -69,7 +69,7 @@ async def receive_message(dut, max_bytes=10, timeout_per_byte=2000):
 
 
 async def setup(dut):
-    cocotb.start_soon(Clock(dut.clk, 10, units="ns").start())
+    cocotb.start_soon(Clock(dut.clk, 10, unit="ns").start())
     dut.rst.value = 1
     dut.gesture_class.value = 0
     dut.gesture_valid.value = 0
@@ -165,3 +165,4 @@ async def test_busy_rejection(dut):
     received = await receive_message(dut, max_bytes=10)
     down_msg = model.expected_bytes(1)
     assert received != down_msg, f"Busy-path should not emit DOWN message, got {received}"
+

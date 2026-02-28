@@ -26,11 +26,13 @@ class VoxelBinningModel:
         self.mem = [0] * TOTAL_CELLS
         self.current_bin_idx = 0
         self.bin_timer = 0
+        self.readout_head_snapshot = [0] * CELLS_PER_BIN
 
     def reset(self):
         self.mem = [0] * TOTAL_CELLS
         self.current_bin_idx = 0
         self.bin_timer = 0
+        self.readout_head_snapshot = [0] * CELLS_PER_BIN
 
     def inject_event(self, event_x_signed, event_y_signed):
         """Increment the counter for this event's cell in the current bin."""
@@ -42,9 +44,12 @@ class VoxelBinningModel:
             self.mem[full_addr] += 1
 
     def rotate_bin(self):
-        """Rotate to next bin: advance index, clear the new current bin."""
+        """Rotate to next bin and preserve its pre-clear contents for readout."""
         self.current_bin_idx = (self.current_bin_idx + 1) % NUM_BINS
         base = self.current_bin_idx * CELLS_PER_BIN
+        # RTL starts readout at the same time it clears this bin. Readout
+        # observes pre-clear values, so snapshot before clearing.
+        self.readout_head_snapshot = self.mem[base:base + CELLS_PER_BIN].copy()
         for i in range(CELLS_PER_BIN):
             self.mem[base + i] = 0
 
@@ -54,7 +59,10 @@ class VoxelBinningModel:
         for bin_offset in range(READOUT_BINS):
             idx = (self.current_bin_idx + bin_offset) % NUM_BINS
             base = idx * CELLS_PER_BIN
-            readout.extend(self.mem[base:base + CELLS_PER_BIN])
+            if bin_offset == 0:
+                readout.extend(self.readout_head_snapshot)
+            else:
+                readout.extend(self.mem[base:base + CELLS_PER_BIN])
         return readout
 
 
@@ -62,7 +70,7 @@ class VoxelBinningModel:
 # Helpers
 # ---------------------------------------------------------------------------
 async def setup(dut):
-    cocotb.start_soon(Clock(dut.clk, 10, units="ns").start())
+    cocotb.start_soon(Clock(dut.clk, 10, unit="ns").start())
     dut.rst.value = 1
     dut.event_valid.value = 0
     dut.event_x.value = 0
@@ -204,3 +212,4 @@ async def test_parallel_readout_width(dut):
             packed = int(packed_bits, 2)
             assert packed < (1 << (PARALLEL_READS * COUNTER_BITS))
             break
+

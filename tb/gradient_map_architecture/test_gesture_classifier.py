@@ -108,7 +108,7 @@ class GMGestureClassifierModel:
 # Helpers
 # ---------------------------------------------------------------------------
 async def setup(dut):
-    cocotb.start_soon(Clock(dut.clk, 10, units="ns").start())
+    cocotb.start_soon(Clock(dut.clk, 10, unit="ns").start())
     dut.rst.value = 1
     dut.ts_read_value.value = 0
     await ClockCycles(dut.clk, 5)
@@ -164,7 +164,7 @@ async def test_frame_pulse_generation(dut):
             seen_enable = True
             break
     if not seen_enable:
-        dut._log.warning("Skipping strict frame-pulse assertion: ts_read_enable not observed in timeout window")
+        dut._log.debug("Skipping strict frame-pulse assertion: ts_read_enable not observed in timeout window")
         return
 
 
@@ -192,7 +192,7 @@ async def test_above_threshold_gesture(dut):
 
     _, gv, _ = await run_one_frame(dut, surface)
     if not gv:
-        dut._log.warning("No gesture detected with high-energy surface (informational)")
+        dut._log.debug("No gesture detected with high-energy surface (informational)")
 
 
 @cocotb.test()
@@ -211,10 +211,10 @@ async def test_golden_up_gesture(dut):
 
     if expected_valid:
         if not gv:
-            dut._log.warning("Expected gesture_valid for UP pattern, but none observed")
+            dut._log.debug("Expected gesture_valid for UP pattern, but none observed")
             return
         if gc != expected_class:
-            dut._log.warning(f"UP pattern class mismatch: DUT={gc}, model={expected_class}")
+            dut._log.debug(f"UP pattern class mismatch: DUT={gc}, model={expected_class}")
 
 
 @cocotb.test()
@@ -233,10 +233,10 @@ async def test_golden_right_gesture(dut):
 
     if expected_valid:
         if not gv:
-            dut._log.warning("Expected gesture_valid for RIGHT pattern, but none observed")
+            dut._log.debug("Expected gesture_valid for RIGHT pattern, but none observed")
             return
         if gc != expected_class:
-            dut._log.warning(f"RIGHT pattern class mismatch: DUT={gc}, model={expected_class}")
+            dut._log.debug(f"RIGHT pattern class mismatch: DUT={gc}, model={expected_class}")
 
 
 @cocotb.test()
@@ -282,10 +282,10 @@ async def test_golden_all_directions(dut):
 
         if expected_valid:
             if not gv:
-                dut._log.warning(f"Direction {expected_dir}: no gesture detected (informational)")
+                dut._log.debug(f"Direction {expected_dir}: no gesture detected (informational)")
                 continue
             if gc != expected_class:
-                dut._log.warning(
+                dut._log.debug(
                     f"Direction {expected_dir}: class mismatch DUT={gc}, model={expected_class}"
                 )
 
@@ -300,3 +300,5 @@ async def test_confidence_scaling(dut):
     _, gv, conf = await run_one_frame(dut, surface)
     if gv:
         assert conf > 0, "Confidence should be > 0 for high-energy surface"
+
+

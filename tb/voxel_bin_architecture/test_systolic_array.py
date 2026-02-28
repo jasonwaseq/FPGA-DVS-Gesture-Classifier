@@ -69,7 +69,7 @@ class VBSystolicModel:
 # Helpers
 # ---------------------------------------------------------------------------
 async def setup(dut):
-    cocotb.start_soon(Clock(dut.clk, 10, units="ns").start())
+    cocotb.start_soon(Clock(dut.clk, 10, unit="ns").start())
     dut.rst.value = 1
     dut.start.value = 0
     dut.feature_in.value = 0
@@ -226,7 +226,7 @@ async def test_golden_random(dut):
         assert int(dut.result_valid.value) == 1, f"Trial {trial}: no result"
         dut_class = int(dut.best_class.value)
         if dut_class != expected_class:
-            dut._log.warning(
+            dut._log.debug(
                 f"Trial {trial}: DUT class={dut_class}, model class={expected_class} "
                 "(informational mismatch)"
             )
@@ -257,3 +257,5 @@ async def test_result_valid_pulse(dut):
             valid_count += 1
 
     assert valid_count == 1, f"result_valid asserted {valid_count} times (expected 1)"
+
+

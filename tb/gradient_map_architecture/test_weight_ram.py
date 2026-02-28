@@ -70,7 +70,7 @@ def to_signed_8(val):
 # Helpers
 # ---------------------------------------------------------------------------
 async def setup(dut):
-    cocotb.start_soon(Clock(dut.clk, 10, units="ns").start())
+    cocotb.start_soon(Clock(dut.clk, 10, unit="ns").start())
     dut.rst.value = 1
     dut.we.value = 0
     dut.cell_addr.value = 0
@@ -112,7 +112,7 @@ async def test_initial_weights_class0(dut):
             mismatches += 1
             if mismatches <= 5:
                 cy, cx = addr // GRID_SIZE, addr % GRID_SIZE
-                dut._log.warning(f"Addr {addr} ({cx},{cy}): DUT={dut_val}, model={model_val}")
+                dut._log.debug(f"Addr {addr} ({cx},{cy}): DUT={dut_val}, model={model_val}")
 
     assert mismatches == 0, f"{mismatches} weight mismatches"
 
@@ -184,3 +184,5 @@ async def test_gradient_magnitude(dut):
         assert mag >= prev_mag, \
             f"Magnitude should increase toward edge: cy={cy}, mag={mag}, prev={prev_mag}"
         prev_mag = mag
+
+

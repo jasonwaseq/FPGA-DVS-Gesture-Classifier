@@ -85,7 +85,7 @@ def to_signed_8(val):
 # Helpers
 # ---------------------------------------------------------------------------
 async def setup(dut):
-    cocotb.start_soon(Clock(dut.clk, 10, units="ns").start())
+    cocotb.start_soon(Clock(dut.clk, 10, unit="ns").start())
     dut.rst.value = 1
     dut.we.value = 0
     dut.cell_addr.value = 0
@@ -127,7 +127,7 @@ async def test_initial_weights_class0(dut):
         if dut_val != model_val:
             mismatches += 1
             if mismatches <= 5:
-                dut._log.warning(f"Addr {addr}: DUT={dut_val}, model={model_val}")
+                dut._log.debug(f"Addr {addr}: DUT={dut_val}, model={model_val}")
 
     assert mismatches == 0, f"{mismatches} weight mismatches"
 
@@ -158,6 +158,7 @@ async def test_read_write(dut):
     """Write a value and read it back."""
     await setup(dut)
     test_addr = 42
+    old_val = await read_weight(dut, test_addr)
     test_val = -55 & 0xFF
 
     dut.cell_addr.value = test_addr
@@ -169,6 +170,14 @@ async def test_read_write(dut):
 
     result = await read_weight(dut, test_addr)
     assert result == -55, f"Expected -55, got {result}"
+
+    # Restore original value so later golden checks remain independent.
+    dut.cell_addr.value = test_addr
+    dut.din.value = old_val & 0xFF
+    dut.we.value = 1
+    await RisingEdge(dut.clk)
+    dut.we.value = 0
+    await RisingEdge(dut.clk)
 
 
 @cocotb.test()
@@ -187,6 +196,14 @@ async def test_read_after_write_same_cycle(dut):
     new_val = await read_weight(dut, 10)
     assert new_val == 127, f"Expected 127 after write, got {new_val}"
 
+    # Restore original value so later golden checks remain independent.
+    dut.cell_addr.value = 10
+    dut.din.value = old_val & 0xFF
+    dut.we.value = 1
+    await RisingEdge(dut.clk)
+    dut.we.value = 0
+    await RisingEdge(dut.clk)
+
 
 @cocotb.test()
 async def test_golden_exhaustive_spot_check(dut):
@@ -199,3 +216,5 @@ async def test_golden_exhaustive_spot_check(dut):
         dut_val = await read_weight(dut, addr)
         model_val = model.read(addr)
         assert dut_val == model_val, f"Addr {addr}: DUT={dut_val}, model={model_val}"
+
+

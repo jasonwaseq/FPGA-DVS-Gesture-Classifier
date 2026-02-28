@@ -99,7 +99,7 @@ async def receive_uart_byte(dut, timeout=500):
 
 
 async def setup(dut):
-    cocotb.start_soon(Clock(dut.clk, 10, units="ns").start())
+    cocotb.start_soon(Clock(dut.clk, 10, unit="ns").start())
     dut.rst.value = 1
     dut.data.value = 0
     dut.valid.value = 0
@@ -220,3 +220,4 @@ async def test_ignore_valid_while_busy(dut):
     dut.valid.value = 0
     result = await recv_task2
     assert result == 0x33, f"Expected 0x33 after busy cleared, got {result}"
+

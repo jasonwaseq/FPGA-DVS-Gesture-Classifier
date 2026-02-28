@@ -19,38 +19,38 @@ ifeq ($(TEST),)
   VERILOG_SOURCES = $(VOXEL_BIN_SOURCES) \
                     $(RTL_DIR)/voxel_bin_architecture/voxel_bin_top.sv
   TOPLEVEL = voxel_bin_top
-  MODULE   = test_voxel_bin
+  COCOTB_TEST_MODULES   = test_voxel_bin
     COMPILE_ARGS += -Pvoxel_bin_top.CYCLES_PER_BIN=2000
     COMPILE_ARGS += -Pvoxel_bin_top.BAUD_RATE=3000000
     COMPILE_ARGS += -Pvoxel_bin_top.WINDOW_MS=40
   else ifeq ($(TEST),input_fifo)
     VERILOG_SOURCES = $(RTL_DIR)/voxel_bin_architecture/input_fifo.sv
     TOPLEVEL = input_fifo
-    MODULE   = test_input_fifo
+    COCOTB_TEST_MODULES   = test_input_fifo
     COMPILE_ARGS += -Pinput_fifo.DEPTH=8
     COMPILE_ARGS += -Pinput_fifo.PTR_BITS=3
   else ifeq ($(TEST),evt2_decoder)
     VERILOG_SOURCES = $(RTL_DIR)/voxel_bin_architecture/evt2_decoder.sv
     TOPLEVEL = evt2_decoder
-    MODULE   = test_evt2_decoder
+    COCOTB_TEST_MODULES   = test_evt2_decoder
   else ifeq ($(TEST),voxel_binning)
     VERILOG_SOURCES = $(RTL_DIR)/voxel_bin_architecture/voxel_binning.sv
     TOPLEVEL = voxel_binning
-    MODULE   = test_voxel_binning
+    COCOTB_TEST_MODULES   = test_voxel_binning
     COMPILE_ARGS += -Pvoxel_binning.CYCLES_PER_BIN=100
   else ifeq ($(TEST),systolic_array)
     VERILOG_SOURCES = $(RTL_DIR)/voxel_bin_architecture/systolic_array.sv
     TOPLEVEL = systolic_array
-    MODULE   = test_systolic_array
+    COCOTB_TEST_MODULES   = test_systolic_array
     COMPILE_ARGS += -Psystolic_array.NUM_CELLS=16
   else ifeq ($(TEST),gesture_classifier)
     VERILOG_SOURCES = $(RTL_DIR)/voxel_bin_architecture/gesture_classifier.sv
     TOPLEVEL = gesture_classifier
-    MODULE   = test_gesture_classifier
+    COCOTB_TEST_MODULES   = test_gesture_classifier
 else ifeq ($(TEST),weight_ram)
   VERILOG_SOURCES = $(RTL_DIR)/voxel_bin_architecture/weight_ram.sv
   TOPLEVEL = weight_ram
-  MODULE   = test_weight_ram
+  COCOTB_TEST_MODULES   = test_weight_ram
   COMPILE_ARGS += -Pweight_ram.CLASS_IDX=0
 else
   $(error Unknown TEST=$(TEST). Use: input_fifo, evt2_decoder, voxel_binning, systolic_array, gesture_classifier, weight_ram)
@@ -62,8 +62,9 @@ COMPILE_ARGS += -g2012
 
 # Suppress waveform dumping and reduce log verbosity for faster runs
 export WAVES ?= 0
-export COCOTB_LOG_LEVEL ?= WARNING
+export COCOTB_LOG_LEVEL ?= INFO
 export COCOTB_REDUCED_LOG_FMT ?= 1
+export GPI_LOG_LEVEL ?= CRITICAL
 
 # On Windows, locate the venv and OSS CAD Suite relative to the project root,
 # falling back to any installation already on PATH.
@@ -129,3 +130,5 @@ test_full:
 
 clean_all:
 	rm -rf sim_build results.xml __pycache__
+
+

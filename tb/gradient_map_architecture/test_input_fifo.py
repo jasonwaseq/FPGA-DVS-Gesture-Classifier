@@ -53,7 +53,7 @@ class FifoModel:
 
 
 async def setup(dut):
-    cocotb.start_soon(Clock(dut.clk, 10, units="ns").start())
+    cocotb.start_soon(Clock(dut.clk, 10, unit="ns").start())
     dut.rst.value = 1
     dut.wr_en.value = 0
     dut.wr_data.value = 0
@@ -139,3 +139,4 @@ async def test_golden_random(dut):
     assert int(dut.empty.value) == (1 if model.empty else 0)
     assert int(dut.full.value) == (1 if model.full else 0)
     assert int(dut.count.value) == model.count
+

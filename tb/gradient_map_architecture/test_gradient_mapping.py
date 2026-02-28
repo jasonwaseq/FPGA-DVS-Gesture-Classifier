@@ -59,7 +59,7 @@ class GradientMappingModel:
 # Helpers
 # ---------------------------------------------------------------------------
 async def setup(dut):
-    cocotb.start_soon(Clock(dut.clk, 10, units="ns").start())
+    cocotb.start_soon(Clock(dut.clk, 10, unit="ns").start())
     dut.rst.value = 1
     dut.event_valid.value = 0
     dut.event_x.value = 0
@@ -236,3 +236,4 @@ async def test_golden_random(dut):
             mismatches += 1
 
     assert mismatches == 0, f"{mismatches} value mismatches in random test"
+

@@ -97,7 +97,7 @@ async def send_uart_byte(dut, byte_val):
 
 
 async def setup(dut):
-    cocotb.start_soon(Clock(dut.clk, 10, units="ns").start())
+    cocotb.start_soon(Clock(dut.clk, 10, unit="ns").start())
     dut.rst.value = 1
     dut.rx.value = 1
     await ClockCycles(dut.clk, 5)
@@ -229,3 +229,4 @@ async def test_back_to_back_bytes(dut):
                 received.append(int(dut.data.value))
                 break
     assert received == test_bytes, f"Expected {test_bytes}, got {received}"
+

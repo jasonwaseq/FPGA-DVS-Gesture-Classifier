@@ -64,7 +64,7 @@ class FifoModel:
 # Helpers
 # ---------------------------------------------------------------------------
 async def setup(dut):
-    cocotb.start_soon(Clock(dut.clk, 10, units="ns").start())
+    cocotb.start_soon(Clock(dut.clk, 10, unit="ns").start())
     dut.rst.value = 1
     dut.wr_en.value = 0
     dut.wr_data.value = 0
@@ -202,3 +202,4 @@ async def test_golden_model_random(dut):
         f"full: DUT={int(dut.full.value)}, model={model.full}"
     assert int(dut.count.value) == model.count, \
         f"count: DUT={int(dut.count.value)}, model={model.count}"
+

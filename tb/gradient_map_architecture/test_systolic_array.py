@@ -57,7 +57,7 @@ class GMSystolicModel:
 # Helpers
 # ---------------------------------------------------------------------------
 async def setup(dut):
-    cocotb.start_soon(Clock(dut.clk, 10, units="ns").start())
+    cocotb.start_soon(Clock(dut.clk, 10, unit="ns").start())
     dut.rst.value = 1
     dut.start.value = 0
     dut.feature_in.value = 0
@@ -190,3 +190,4 @@ async def test_scores_output(dut):
     await run_inference(dut, features, weights)
     scores_raw = int(dut.scores_flat.value)
     assert scores_raw != 0, "scores_flat should be non-zero"
+
