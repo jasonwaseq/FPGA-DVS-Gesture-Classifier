@@ -61,6 +61,9 @@ else
 endif
 
 SIM = icarus
+# Keep per-target build artifacts separate so switching TEST values does not
+# reuse an incompatible sim.vvp from a previous run.
+SIM_BUILD ?= sim_build_$(if $(TEST),$(TEST),default)
 
 COMPILE_ARGS += -g2012
 
@@ -133,6 +136,6 @@ test_full:
 	$(MAKE) clean && $(MAKE) sim
 
 clean_all:
-	rm -rf sim_build results.xml __pycache__
+	rm -rf sim_build* results.xml __pycache__
 
 
