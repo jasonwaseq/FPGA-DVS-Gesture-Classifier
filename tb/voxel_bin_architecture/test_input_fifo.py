@@ -2,7 +2,7 @@
 
 import cocotb
 from cocotb.clock import Clock
-from cocotb.triggers import RisingEdge, ClockCycles
+from cocotb.triggers import RisingEdge, ClockCycles, ReadOnly, NextTimeStep
 import random
 
 DEPTH = 8
@@ -47,13 +47,15 @@ class FifoModel:
         do_write = wr_en and not self.full
         do_read = rd_en and not self.empty
 
+        # read port samples old memory contents at the active edge
+        rd_addr = self.rd_ptr & ((1 << self.ptr_bits) - 1)
+        self.rd_data = self.mem[rd_addr]
+
         if do_write:
             wr_addr = self.wr_ptr & ((1 << self.ptr_bits) - 1)
             self.mem[wr_addr] = wr_data
             self.wr_ptr = (self.wr_ptr + 1) & ((1 << (self.ptr_bits + 1)) - 1)
 
-        rd_addr = self.rd_ptr & ((1 << self.ptr_bits) - 1)
-        self.rd_data = self.mem[rd_addr]
         if do_read:
             self.rd_ptr = (self.rd_ptr + 1) & ((1 << (self.ptr_bits + 1)) - 1)
 
@@ -178,28 +180,88 @@ async def test_simultaneous_read_write(dut):
 
 
 @cocotb.test()
-async def test_golden_model_random(dut):
-    """Random write/read sequences compared against golden model."""
+async def test_underflow_does_not_advance(dut):
+    """Reads on an empty FIFO must not change pointers or count."""
     await setup(dut)
     model = FifoModel(DEPTH, PTR_BITS)
 
-    for _ in range(200):
-        wr_en = random.randint(0, 1)
-        rd_en = random.randint(0, 1)
-        wr_data = random.randint(0, (1 << DATA_WIDTH) - 1)
+    for _ in range(6):
+        dut.wr_en.value = 0
+        dut.rd_en.value = 1
+        dut.wr_data.value = 0
+        _, m_empty, m_full, m_count = model.step(0, 0, 1)
+        await RisingEdge(dut.clk)
+        await ReadOnly()
+        assert int(dut.empty.value) == (1 if m_empty else 0)
+        assert int(dut.full.value) == (1 if m_full else 0)
+        assert int(dut.count.value) == m_count
+        await NextTimeStep()
+
+
+@cocotb.test()
+async def test_wraparound_ordering(dut):
+    """Pointer wrap-around must preserve FIFO ordering."""
+    await setup(dut)
+
+    # Fill FIFO, pop half, then push half again to force pointer wrap.
+    for i in range(DEPTH):
+        dut.wr_en.value = 1
+        dut.wr_data.value = i + 1
+        dut.rd_en.value = 0
+        await RisingEdge(dut.clk)
+
+    popped = []
+    for _ in range(DEPTH // 2):
+        dut.wr_en.value = 0
+        dut.rd_en.value = 1
+        await RisingEdge(dut.clk)
+        dut.rd_en.value = 0
+        await RisingEdge(dut.clk)
+        popped.append(int(dut.rd_data.value))
+
+    for i in range(DEPTH // 2):
+        dut.wr_en.value = 1
+        dut.wr_data.value = 100 + i
+        dut.rd_en.value = 0
+        await RisingEdge(dut.clk)
+
+    drained = []
+    while int(dut.empty.value) == 0:
+        dut.wr_en.value = 0
+        dut.rd_en.value = 1
+        await RisingEdge(dut.clk)
+        dut.rd_en.value = 0
+        await RisingEdge(dut.clk)
+        drained.append(int(dut.rd_data.value))
+
+    assert popped == [1, 2, 3, 4], f"Unexpected popped values: {popped}"
+    assert drained == [5, 6, 7, 8, 100, 101, 102, 103], \
+        f"Unexpected drained ordering: {drained}"
+
+
+@cocotb.test()
+async def test_golden_model_random(dut):
+    """Cycle-by-cycle randomized scoreboarding against the golden model."""
+    await setup(dut)
+    model = FifoModel(DEPTH, PTR_BITS)
+    rng = random.Random(0xC0C0F1F0)
+
+    for cycle in range(1000):
+        wr_en = rng.randint(0, 1)
+        rd_en = rng.randint(0, 1)
+        wr_data = rng.randint(0, (1 << DATA_WIDTH) - 1)
 
         dut.wr_en.value = wr_en
         dut.wr_data.value = wr_data
         dut.rd_en.value = rd_en
+        _, m_empty, m_full, m_count = model.step(wr_en, wr_data, rd_en)
         await RisingEdge(dut.clk)
-
-        m_rd, m_empty, m_full, m_count = model.step(wr_en, wr_data, rd_en)
-
-    await RisingEdge(dut.clk)
-    assert int(dut.empty.value) == (1 if model.empty else 0), \
-        f"empty: DUT={int(dut.empty.value)}, model={model.empty}"
-    assert int(dut.full.value) == (1 if model.full else 0), \
-        f"full: DUT={int(dut.full.value)}, model={model.full}"
-    assert int(dut.count.value) == model.count, \
-        f"count: DUT={int(dut.count.value)}, model={model.count}"
+        await ReadOnly()
+        assert int(dut.empty.value) == (1 if m_empty else 0), \
+            f"Cycle {cycle}: empty DUT={int(dut.empty.value)}, model={int(m_empty)}"
+        assert int(dut.full.value) == (1 if m_full else 0), \
+            f"Cycle {cycle}: full DUT={int(dut.full.value)}, model={int(m_full)}"
+        assert int(dut.count.value) == m_count, \
+            f"Cycle {cycle}: count DUT={int(dut.count.value)}, model={m_count}"
+        await NextTimeStep()
 

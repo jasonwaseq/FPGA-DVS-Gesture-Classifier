@@ -8,7 +8,6 @@ frame_pulse -> scan gradient_mapping -> systolic MAC -> energy threshold -> outp
 import cocotb
 from cocotb.clock import Clock
 from cocotb.triggers import RisingEdge, ClockCycles
-import random
 
 CLK_FREQ_HZ = 12_000_000
 FRAME_PERIOD_MS = 1
@@ -117,30 +116,34 @@ async def setup(dut):
 
 
 async def run_one_frame(dut, surface_values):
-    """Wait for one frame scan to complete, driving ts_read_value from the
-    provided surface array whenever ts_read_enable is asserted.
-    Returns (gesture_class, gesture_valid, gesture_confidence)."""
+    """Drive one complete frame and collect classifier outputs.
 
+    Returns (gesture_class, gesture_valid, gesture_confidence, enable_cycles).
+    """
     gesture_class = None
     gesture_valid = False
     gesture_confidence = 0
+    enable_cycles = 0
+    max_cycles = FRAME_WAIT_CYCLES + NUM_CELLS + PIPE_DEPTH + 1000
 
-    for _ in range(FRAME_WAIT_CYCLES + NUM_CELLS + PIPE_DEPTH + 500):
+    for _ in range(max_cycles):
         await RisingEdge(dut.clk)
-
-        if int(dut.ts_read_enable.value) == 1:
+        en = int(dut.ts_read_enable.value)
+        if en:
+            enable_cycles += 1
             addr = int(dut.ts_read_addr.value)
-            if addr < NUM_CELLS:
-                dut.ts_read_value.value = surface_values[addr]
-            else:
-                dut.ts_read_value.value = 0
+            dut.ts_read_value.value = surface_values[addr] if addr < NUM_CELLS else 0
+        else:
+            dut.ts_read_value.value = 0
 
         if int(dut.gesture_valid.value) == 1:
             gesture_class = int(dut.gesture_class.value)
             gesture_valid = True
             gesture_confidence = int(dut.gesture_confidence.value)
 
-    return gesture_class, gesture_valid, gesture_confidence
+    assert enable_cycles > 0, "Timed out waiting for frame scan activity"
+
+    return gesture_class, gesture_valid, gesture_confidence, enable_cycles
 
 
 # ---------------------------------------------------------------------------
@@ -158,14 +161,27 @@ async def test_frame_pulse_generation(dut):
     """The module should generate periodic frame pulses (ts_read_enable goes high)."""
     await setup(dut)
     seen_enable = False
-    for _ in range(FRAME_WAIT_CYCLES + 100):
+    high_run = 0
+    max_high_run = 0
+    seen_vals = set()
+    seen_states = set()
+    for _ in range(FRAME_WAIT_CYCLES + 200):
         await RisingEdge(dut.clk)
-        if int(dut.ts_read_enable.value) == 1:
+        en = int(dut.ts_read_enable.value)
+        seen_vals.add(str(dut.ts_read_enable.value))
+        seen_states.add(int(dut.debug_state.value))
+        if en == 1:
             seen_enable = True
-            break
-    if not seen_enable:
-        dut._log.debug("Skipping strict frame-pulse assertion: ts_read_enable not observed in timeout window")
-        return
+            high_run += 1
+            if high_run > max_high_run:
+                max_high_run = high_run
+        else:
+            high_run = 0
+
+    assert seen_enable, \
+        f"No frame scan start observed; ts_read_enable seen={sorted(seen_vals)}, debug_state seen={sorted(seen_states)}"
+    assert max_high_run >= NUM_CELLS - 4, \
+        f"Scan active window too short: longest high run={max_high_run}"
 
 
 @cocotb.test()
@@ -176,7 +192,8 @@ async def test_below_threshold_no_gesture(dut):
     total_energy = sum(surface)
     assert total_energy < MIN_MASS_THRESH
 
-    _, gv, _ = await run_one_frame(dut, surface)
+    _, gv, _, enable_cycles = await run_one_frame(dut, surface)
+    assert enable_cycles >= NUM_CELLS - 2, f"Unexpected short scan window: {enable_cycles} cycles"
     assert not gv, "gesture_valid asserted with sub-threshold energy"
 
 
@@ -190,9 +207,13 @@ async def test_above_threshold_gesture(dut):
             if cy < 4:
                 surface[cy * GRID_SIZE + cx] = 200
 
-    _, gv, _ = await run_one_frame(dut, surface)
-    if not gv:
-        dut._log.debug("No gesture detected with high-energy surface (informational)")
+    model = GMGestureClassifierModel()
+    _, expected_valid, _, _ = model.classify(surface)
+    _, gv, conf, enable_cycles = await run_one_frame(dut, surface)
+    assert enable_cycles >= NUM_CELLS - 2, f"Unexpected short scan window: {enable_cycles} cycles"
+    assert expected_valid, "Golden model expected this surface to exceed threshold"
+    assert gv, "No gesture detected for high-energy surface"
+    assert conf > 0, f"Expected positive confidence, got {conf}"
 
 
 @cocotb.test()
@@ -207,14 +228,10 @@ async def test_golden_up_gesture(dut):
             surface[cy * GRID_SIZE + cx] = 200
 
     expected_class, expected_valid, _, _ = model.classify(surface)
-    gc, gv, _ = await run_one_frame(dut, surface)
-
-    if expected_valid:
-        if not gv:
-            dut._log.debug("Expected gesture_valid for UP pattern, but none observed")
-            return
-        if gc != expected_class:
-            dut._log.debug(f"UP pattern class mismatch: DUT={gc}, model={expected_class}")
+    gc, gv, _, _ = await run_one_frame(dut, surface)
+    assert expected_valid, "Golden model expected UP surface to be valid"
+    assert gv, "Expected gesture_valid for UP pattern, but none observed"
+    assert gc == expected_class, f"UP class mismatch: DUT={gc}, model={expected_class}"
 
 
 @cocotb.test()
@@ -229,14 +246,10 @@ async def test_golden_right_gesture(dut):
             surface[cy * GRID_SIZE + cx] = 200
 
     expected_class, expected_valid, _, _ = model.classify(surface)
-    gc, gv, _ = await run_one_frame(dut, surface)
-
-    if expected_valid:
-        if not gv:
-            dut._log.debug("Expected gesture_valid for RIGHT pattern, but none observed")
-            return
-        if gc != expected_class:
-            dut._log.debug(f"RIGHT pattern class mismatch: DUT={gc}, model={expected_class}")
+    gc, gv, _, _ = await run_one_frame(dut, surface)
+    assert expected_valid, "Golden model expected RIGHT surface to be valid"
+    assert gv, "Expected gesture_valid for RIGHT pattern, but none observed"
+    assert gc == expected_class, f"RIGHT class mismatch: DUT={gc}, model={expected_class}"
 
 
 @cocotb.test()
@@ -278,27 +291,28 @@ async def test_golden_all_directions(dut):
 
     for expected_dir in range(4):
         expected_class, expected_valid, _, _ = model.classify(surfaces[expected_dir])
-        gc, gv, _ = await run_one_frame(dut, surfaces[expected_dir])
-
-        if expected_valid:
-            if not gv:
-                dut._log.debug(f"Direction {expected_dir}: no gesture detected (informational)")
-                continue
-            if gc != expected_class:
-                dut._log.debug(
-                    f"Direction {expected_dir}: class mismatch DUT={gc}, model={expected_class}"
-                )
+        gc, gv, _, _ = await run_one_frame(dut, surfaces[expected_dir])
+        assert expected_valid, f"Golden model marked direction {expected_dir} invalid unexpectedly"
+        assert gv, f"Direction {expected_dir}: no gesture detected"
+        assert gc == expected_class, \
+            f"Direction {expected_dir}: class mismatch DUT={gc}, model={expected_class}"
 
 
 @cocotb.test()
 async def test_confidence_scaling(dut):
     """Confidence should scale with total energy."""
     await setup(dut)
-    surface = [0] * NUM_CELLS
-    for i in range(NUM_CELLS):
-        surface[i] = 200
-    _, gv, conf = await run_one_frame(dut, surface)
-    if gv:
-        assert conf > 0, "Confidence should be > 0 for high-energy surface"
+    low_surface = [40] * NUM_CELLS
+    high_surface = [200] * NUM_CELLS
+
+    _, gv_low, conf_low, _ = await run_one_frame(dut, low_surface)
+    _, gv_high, conf_high, _ = await run_one_frame(dut, high_surface)
+
+    assert gv_low, "Low-energy-above-threshold frame should still produce gesture_valid"
+    assert gv_high, "High-energy frame should produce gesture_valid"
+    assert conf_low > 0, f"Expected positive low confidence, got {conf_low}"
+    assert conf_high > 0, f"Expected positive high confidence, got {conf_high}"
+    assert conf_high >= conf_low, \
+        f"Confidence not monotonic: low={conf_low}, high={conf_high}"
 
 

@@ -119,6 +119,28 @@ async def collect_readout(dut, timeout=CYCLES_PER_BIN * READOUT_BINS + 500):
     return values[:READOUT_BINS * CELLS_PER_BIN]
 
 
+def assert_readout_equal(dut_vals, model_vals, tag):
+    assert len(dut_vals) == len(model_vals), \
+        f"{tag}: readout length DUT={len(dut_vals)}, model={len(model_vals)}"
+    mismatches = []
+    for i, (dv, mv) in enumerate(zip(dut_vals, model_vals)):
+        if dv != mv:
+            mismatches.append((i, dv, mv))
+            if len(mismatches) >= 8:
+                break
+    assert not mismatches, f"{tag}: first mismatches {mismatches}"
+
+
+async def expect_next_readout_matches(dut, model, tag):
+    found = await wait_for_readout_start(dut)
+    assert found, f"{tag}: no readout_start seen"
+    model.rotate_bin()
+    expected = model.get_readout()
+    readout = await collect_readout(dut)
+    assert_readout_equal(readout, expected, tag)
+    return readout, expected
+
+
 # ---------------------------------------------------------------------------
 # Tests
 # ---------------------------------------------------------------------------
@@ -133,13 +155,16 @@ async def test_reset(dut):
 async def test_single_event_increment(dut):
     """Inject one event and verify it increments the correct cell."""
     await setup(dut)
+    model = VoxelBinningModel()
     await inject_event(dut, 0, 0)
-    found = await wait_for_readout_start(dut)
-    assert found, "No readout_start after bin timer expired"
-    readout = await collect_readout(dut)
-    assert len(readout) > 0, "No readout data collected"
-    nonzero = sum(1 for v in readout if v > 0)
-    assert nonzero >= 1, "Expected at least one non-zero cell after event injection"
+    model.inject_event(0, 0)
+    readout, expected = await expect_next_readout_matches(dut, model, "single-event")
+
+    target_cell = (8 << 4) | 8
+    target_idx = 3 * CELLS_PER_BIN + target_cell
+    assert readout[target_idx] == 1, \
+        f"Expected mapped center cell to be 1, got {readout[target_idx]}"
+    assert sum(readout) == sum(expected) == 1
 
 
 @cocotb.test()
@@ -156,17 +181,28 @@ async def test_bin_rotation(dut):
 
 @cocotb.test()
 async def test_counter_saturation(dut):
-    """Counter should saturate at MAX_COUNTER and not wrap."""
+    """Heavy repeated events must never overflow the counter width."""
     await setup(dut)
+
+    dut.event_x.value = 0 & 0x1F
+    dut.event_y.value = 0 & 0x1F
+    dut.event_polarity.value = 1
+    dut.event_valid.value = 1
     for _ in range(MAX_COUNTER + 5):
-        await inject_event(dut, 0, 0)
+        await RisingEdge(dut.clk)
+    dut.event_valid.value = 0
+    await RisingEdge(dut.clk)
+
     found = await wait_for_readout_start(dut)
-    assert found
+    assert found, "No readout_start seen after heavy event burst"
     readout = await collect_readout(dut)
-    if len(readout) > 0:
-        cell_idx = (8 << 4) | 8  # mapped_x=8, mapped_y=8
-        val = readout[cell_idx] if cell_idx < len(readout) else 0
-        assert val <= MAX_COUNTER, f"Counter exceeded maximum: {val}"
+    assert len(readout) == READOUT_BINS * CELLS_PER_BIN
+
+    target_cell = (8 << 4) | 8
+    target_idx = 3 * CELLS_PER_BIN + target_cell
+    val = readout[target_idx]
+    assert 0 < val <= MAX_COUNTER, f"Counter out of range at hot cell: {val}"
+    assert max(readout) <= MAX_COUNTER, "Observed counter overflow beyond COUNTER_BITS"
 
 
 @cocotb.test()
@@ -184,18 +220,7 @@ async def test_golden_model_basic(dut):
         await inject_event(dut, x, y)
         model.inject_event(x, y)
 
-    found = await wait_for_readout_start(dut)
-    assert found, "No readout_start"
-
-    model.rotate_bin()
-    expected = model.get_readout()
-
-    readout = await collect_readout(dut)
-    if len(readout) >= len(expected):
-        total_dut = sum(readout[:len(expected)])
-        total_model = sum(expected)
-        assert total_dut == total_model, \
-            f"Total event count mismatch: DUT={total_dut}, model={total_model}"
+    await expect_next_readout_matches(dut, model, "golden-basic")
 
 
 @cocotb.test()
@@ -212,4 +237,42 @@ async def test_parallel_readout_width(dut):
             packed = int(packed_bits, 2)
             assert packed < (1 << (PARALLEL_READS * COUNTER_BITS))
             break
+
+
+@cocotb.test()
+async def test_coordinate_wrap_and_polarity_ignored(dut):
+    """Out-of-range 5-bit signed coordinates should wrap; polarity must not affect counts."""
+    await setup(dut)
+    model = VoxelBinningModel()
+
+    test_events = [
+        (8, -8, 0),   # wraps to (-8,-8) in 5-bit signed interpretation
+        (-9, 7, 1),   # wraps x to +7
+        (15, 15, 0),  # wraps both to -1
+        (-16, -16, 1),
+    ]
+    for x, y, pol in test_events:
+        await inject_event(dut, x, y, pol)
+        model.inject_event(x, y)
+
+    await expect_next_readout_matches(dut, model, "coord-wrap")
+
+
+@cocotb.test()
+async def test_golden_model_multibin_random(dut):
+    """Randomized multi-bin traffic with strict readout equivalence to golden model."""
+    await setup(dut)
+    model = VoxelBinningModel()
+    rng = random.Random(0xB1A5)
+
+    for bin_id in range(8):
+        events_this_bin = rng.randint(0, 30)
+        for _ in range(events_this_bin):
+            x = rng.randint(-16, 15)
+            y = rng.randint(-16, 15)
+            pol = rng.randint(0, 1)
+            await inject_event(dut, x, y, pol)
+            model.inject_event(x, y)
+
+        await expect_next_readout_matches(dut, model, f"multibin-{bin_id}")
 

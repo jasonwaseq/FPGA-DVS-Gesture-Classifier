@@ -105,7 +105,9 @@ module gesture_classifier #(
     end
 
     assign ts_read_addr   = scan_addr;
-    assign ts_read_enable = scan_active && (scan_addr < ADDR_BITS'(NUM_CELLS));
+    // NUM_CELLS can equal 2^ADDR_BITS (e.g., 256 with 8-bit addresses),
+    // so comparing against ADDR_BITS'(NUM_CELLS) would wrap to 0.
+    assign ts_read_enable = scan_active && (scan_addr <= ADDR_BITS'(NUM_CELLS - 1));
 
     logic [ADDR_BITS-1:0]               w_addr;
     logic [NUM_CLASSES*WEIGHT_BITS-1:0] w_data_flat;

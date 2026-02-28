@@ -2,7 +2,7 @@
 
 import cocotb
 from cocotb.clock import Clock
-from cocotb.triggers import RisingEdge, ClockCycles
+from cocotb.triggers import RisingEdge, ClockCycles, ReadOnly, NextTimeStep
 import random
 
 NUM_CLASSES = 4
@@ -102,6 +102,68 @@ def pack_weights(weight_matrix, addrs):
     return result
 
 
+def unpack_addrs(flat):
+    """Unpack PARALLEL_INPUTS addresses from w_addr_flat."""
+    addrs = []
+    mask = (1 << ADDR_BITS) - 1
+    for p in range(PARALLEL_INPUTS):
+        addrs.append((flat >> (p * ADDR_BITS)) & mask)
+    return addrs
+
+
+def unpack_scores(raw):
+    """Unpack signed ACC_BITS class scores from scores_flat."""
+    vals = []
+    for k in range(NUM_CLASSES):
+        v = (raw >> (k * ACC_BITS)) & ((1 << ACC_BITS) - 1)
+        if v >= (1 << (ACC_BITS - 1)):
+            v -= (1 << ACC_BITS)
+        vals.append(v)
+    return vals
+
+
+async def run_inference(dut, features, weights):
+    """Drive one inference and return (best_class, scores, valid_pulse_count)."""
+    dut.start.value = 1
+    await RisingEdge(dut.clk)
+    dut.start.value = 0
+
+    for cycle in range(CYCLES_NEEDED):
+        feat_base = cycle * PARALLEL_INPUTS
+        feat_vals = [features[feat_base + p] if (feat_base + p) < NUM_CELLS else 0
+                     for p in range(PARALLEL_INPUTS)]
+        weight_cycle = cycle - 1 if cycle > 0 else 0
+        weight_base = weight_cycle * PARALLEL_INPUTS
+        weight_addrs = [weight_base + p for p in range(PARALLEL_INPUTS)]
+        w_packed = pack_weights(weights, [min(a, NUM_CELLS - 1) for a in weight_addrs])
+
+        dut.feature_in.value = pack_features(feat_vals)
+        dut.feature_valid.value = 1
+        dut.w_data_flat.value = w_packed
+        await RisingEdge(dut.clk)
+
+    dut.feature_valid.value = 0
+    last_base = (CYCLES_NEEDED - 1) * PARALLEL_INPUTS
+    last_addrs = [last_base + p for p in range(PARALLEL_INPUTS)]
+    dut.w_data_flat.value = pack_weights(weights, [min(a, NUM_CELLS - 1) for a in last_addrs])
+
+    result_class = None
+    result_scores = None
+    valid_pulses = 0
+
+    for _ in range(20):
+        await RisingEdge(dut.clk)
+        await ReadOnly()
+        if int(dut.result_valid.value) == 1:
+            valid_pulses += 1
+            if result_class is None:
+                result_class = int(dut.best_class.value)
+                result_scores = unpack_scores(int(dut.scores_flat.value))
+        await NextTimeStep()
+
+    return result_class, result_scores, valid_pulses
+
+
 # ---------------------------------------------------------------------------
 # Tests
 # ---------------------------------------------------------------------------
@@ -121,28 +183,10 @@ async def test_all_zeros(dut):
     features = [0] * NUM_CELLS
     weights = [[0] * NUM_CLASSES for _ in range(NUM_CELLS)]
 
-    dut.start.value = 1
-    await RisingEdge(dut.clk)
-    dut.start.value = 0
-
-    for cycle in range(CYCLES_NEEDED):
-        addrs = [cycle * PARALLEL_INPUTS + p for p in range(PARALLEL_INPUTS)]
-        feat_vals = [features[a] if a < NUM_CELLS else 0 for a in addrs]
-        w_packed = pack_weights(weights, [min(a, NUM_CELLS - 1) for a in addrs])
-
-        dut.feature_in.value = pack_features(feat_vals)
-        dut.feature_valid.value = 1
-        dut.w_data_flat.value = w_packed
-        await RisingEdge(dut.clk)
-
-    dut.feature_valid.value = 0
-
-    for _ in range(10):
-        await RisingEdge(dut.clk)
-        if int(dut.result_valid.value) == 1:
-            break
-
-    assert int(dut.result_valid.value) == 1
+    dut_class, dut_scores, valid_pulses = await run_inference(dut, features, weights)
+    assert dut_class == 0, f"Expected class 0 tie-break, got {dut_class}"
+    assert dut_scores == [0, 0, 0, 0], f"Expected zero scores, got {dut_scores}"
+    assert valid_pulses == 1, f"Expected single result_valid pulse, got {valid_pulses}"
 
 
 @cocotb.test()
@@ -162,76 +206,37 @@ async def test_known_values(dut):
     w_unsigned = [[(w & 0xFF) for w in row] for row in weights]
     expected_class, expected_scores = model.compute(features, w_unsigned)
 
-    dut.start.value = 1
-    await RisingEdge(dut.clk)
-    dut.start.value = 0
-
-    for cycle in range(CYCLES_NEEDED):
-        addrs = [cycle * PARALLEL_INPUTS + p for p in range(PARALLEL_INPUTS)]
-        feat_vals = [features[a] if a < NUM_CELLS else 0 for a in addrs]
-        w_packed = pack_weights(w_unsigned, [min(a, NUM_CELLS - 1) for a in addrs])
-
-        dut.feature_in.value = pack_features(feat_vals)
-        dut.feature_valid.value = 1
-        dut.w_data_flat.value = w_packed
-        await RisingEdge(dut.clk)
-
-    dut.feature_valid.value = 0
-
-    for _ in range(10):
-        await RisingEdge(dut.clk)
-        if int(dut.result_valid.value) == 1:
-            break
-
-    assert int(dut.result_valid.value) == 1
-    dut_class = int(dut.best_class.value)
+    dut_class, dut_scores, valid_pulses = await run_inference(dut, features, w_unsigned)
+    assert valid_pulses == 1, f"Expected single result_valid pulse, got {valid_pulses}"
     assert dut_class == expected_class, \
         f"best_class: DUT={dut_class}, model={expected_class}"
+    assert dut_scores == expected_scores, \
+        f"scores: DUT={dut_scores}, model={expected_scores}"
 
 
 @cocotb.test()
 async def test_golden_random(dut):
-    """Randomized features and weights, compare DUT argmax vs golden model."""
+    """Randomized inputs with strict class+score match against golden model."""
     await setup(dut)
     model = VBSystolicModel()
+    rng = random.Random(0x5A57A11C)
 
-    for trial in range(5):
-        features = [random.randint(0, (1 << VALUE_BITS) - 1) for _ in range(NUM_CELLS)]
-        weights = [[random.randint(0, 255) for _ in range(NUM_CLASSES)]
+    for trial in range(40):
+        features = [rng.randint(0, (1 << VALUE_BITS) - 1) for _ in range(NUM_CELLS)]
+        weights = [[rng.randint(0, 255) for _ in range(NUM_CLASSES)]
                     for _ in range(NUM_CELLS)]
 
         expected_class, expected_scores = model.compute(features, weights)
+        dut_class, dut_scores, valid_pulses = await run_inference(dut, features, weights)
 
-        dut.start.value = 1
-        await RisingEdge(dut.clk)
-        dut.start.value = 0
+        assert dut_class is not None, f"Trial {trial}: no result_valid pulse observed"
+        assert valid_pulses == 1, f"Trial {trial}: result_valid pulses={valid_pulses}"
+        assert dut_class == expected_class, \
+            f"Trial {trial}: class DUT={dut_class}, model={expected_class}"
+        assert dut_scores == expected_scores, \
+            f"Trial {trial}: scores DUT={dut_scores}, model={expected_scores}"
 
-        for cycle in range(CYCLES_NEEDED):
-            addrs = [cycle * PARALLEL_INPUTS + p for p in range(PARALLEL_INPUTS)]
-            feat_vals = [features[a] if a < NUM_CELLS else 0 for a in addrs]
-            w_packed = pack_weights(weights, [min(a, NUM_CELLS - 1) for a in addrs])
-
-            dut.feature_in.value = pack_features(feat_vals)
-            dut.feature_valid.value = 1
-            dut.w_data_flat.value = w_packed
-            await RisingEdge(dut.clk)
-
-        dut.feature_valid.value = 0
-
-        for _ in range(10):
-            await RisingEdge(dut.clk)
-            if int(dut.result_valid.value) == 1:
-                break
-
-        assert int(dut.result_valid.value) == 1, f"Trial {trial}: no result"
-        dut_class = int(dut.best_class.value)
-        if dut_class != expected_class:
-            dut._log.debug(
-                f"Trial {trial}: DUT class={dut_class}, model class={expected_class} "
-                "(informational mismatch)"
-            )
-
-        await ClockCycles(dut.clk, 4)
+        await ClockCycles(dut.clk, 2)
 
 
 @cocotb.test()
@@ -257,5 +262,18 @@ async def test_result_valid_pulse(dut):
             valid_count += 1
 
     assert valid_count == 1, f"result_valid asserted {valid_count} times (expected 1)"
+
+
+@cocotb.test()
+async def test_tie_break_prefers_lowest_class(dut):
+    """When all scores are tied, best_class must resolve to class 0."""
+    await setup(dut)
+    features = [1] * NUM_CELLS
+    weights = [[0] * NUM_CLASSES for _ in range(NUM_CELLS)]
+
+    dut_class, dut_scores, valid_pulses = await run_inference(dut, features, weights)
+    assert valid_pulses == 1, f"Expected single result_valid pulse, got {valid_pulses}"
+    assert dut_scores == [0, 0, 0, 0], f"Expected tied zero scores, got {dut_scores}"
+    assert dut_class == 0, f"Expected class 0 on tie-break, got {dut_class}"
 
 

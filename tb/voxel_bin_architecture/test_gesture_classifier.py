@@ -2,7 +2,7 @@
 
 import cocotb
 from cocotb.clock import Clock
-from cocotb.triggers import RisingEdge, ClockCycles
+from cocotb.triggers import RisingEdge, ClockCycles, ReadOnly, NextTimeStep
 import random
 
 ACC_SUM_BITS = 18
@@ -94,6 +94,27 @@ async def classify(dut, gesture, pass_flag, dx=100, dy=0):
     dut.class_pass.value = 0
 
 
+async def step_and_check(dut, model, gesture, class_valid, pass_flag, dx, dy, tag):
+    """Drive one cycle and compare DUT outputs against golden model."""
+    dut.class_gesture.value = gesture
+    dut.class_valid.value = class_valid
+    dut.class_pass.value = pass_flag
+    dut.abs_delta_x.value = dx
+    dut.abs_delta_y.value = dy
+    mg, mv, mc = model.step(gesture, class_valid, pass_flag, dx, dy)
+    await RisingEdge(dut.clk)
+    await ReadOnly()
+    assert int(dut.gesture.value) == mg, \
+        f"{tag}: gesture DUT={int(dut.gesture.value)}, model={mg}"
+    assert int(dut.gesture_valid.value) == mv, \
+        f"{tag}: gesture_valid DUT={int(dut.gesture_valid.value)}, model={mv}"
+    assert int(dut.gesture_confidence.value) == mc, \
+        f"{tag}: confidence DUT={int(dut.gesture_confidence.value)}, model={mc}"
+    assert int(dut.debug_state.value) == model.state, \
+        f"{tag}: debug_state DUT={int(dut.debug_state.value)}, model={model.state}"
+    await NextTimeStep()
+
+
 # ---------------------------------------------------------------------------
 # Tests
 # ---------------------------------------------------------------------------
@@ -110,65 +131,53 @@ async def test_reset(dut):
 async def test_single_pass_not_enough(dut):
     """A single passing classification should NOT trigger gesture_valid."""
     await setup(dut)
-    await classify(dut, 0, 1)
-    await RisingEdge(dut.clk)
+    model = VBGestureClassifierModel(PERSISTENCE_COUNT)
+    await step_and_check(dut, model, 0, 1, 1, 64, 8, "single-pass")
+    await step_and_check(dut, model, 0, 0, 0, 0, 0, "single-pass-idle")
     if PERSISTENCE_COUNT > 1:
-        assert int(dut.gesture_valid.value) == 0
+        assert int(dut.gesture_valid.value) == 0, "gesture_valid asserted too early"
 
 
 @cocotb.test()
 async def test_persistence_triggers(dut):
     """PERSISTENCE_COUNT consecutive matching passes should trigger gesture_valid."""
     await setup(dut)
-    for i in range(PERSISTENCE_COUNT):
-        await classify(dut, 1, 1, dx=200)
-        await RisingEdge(dut.clk)
+    model = VBGestureClassifierModel(PERSISTENCE_COUNT)
+    seen_valid = False
 
-    found = False
-    for _ in range(5):
-        if int(dut.gesture_valid.value) == 1:
-            found = True
-            assert int(dut.gesture.value) == 1
-            break
-        await RisingEdge(dut.clk)
-    if not found:
-        dut._log.debug("gesture_valid not asserted after persistence count reached (informational)")
+    for i in range(PERSISTENCE_COUNT):
+        await step_and_check(dut, model, 0, 1, 1, 200, 0, f"persist-{i}")
+        seen_valid = seen_valid or (int(dut.gesture_valid.value) == 1)
+
+    assert seen_valid, "gesture_valid never asserted after persistence sequence"
+    assert int(dut.gesture.value) == 0
 
 
 @cocotb.test()
 async def test_class_change_resets_count(dut):
     """Changing the gesture class should reset the match counter."""
     await setup(dut)
-    await classify(dut, 0, 1)
-    await RisingEdge(dut.clk)
-    await classify(dut, 1, 1)
-    await RisingEdge(dut.clk)
+    model = VBGestureClassifierModel(PERSISTENCE_COUNT)
+
+    await step_and_check(dut, model, 0, 1, 1, 90, 10, "class-change-a")
+    await step_and_check(dut, model, 1, 1, 1, 90, 10, "class-change-b")
     assert int(dut.gesture_valid.value) == 0
 
-    for _ in range(PERSISTENCE_COUNT):
-        await classify(dut, 1, 1, dx=200)
-        await RisingEdge(dut.clk)
-
-    found = False
-    for _ in range(5):
-        if int(dut.gesture_valid.value) == 1:
-            found = True
-            break
-        await RisingEdge(dut.clk)
-    if not found:
-        dut._log.debug("No gesture_valid observed after class-change sequence (informational)")
+    seen_valid = False
+    for i in range(PERSISTENCE_COUNT):
+        await step_and_check(dut, model, 1, 1, 1, 200, 0, f"class-change-c{i}")
+        seen_valid = seen_valid or (int(dut.gesture_valid.value) == 1)
+    assert seen_valid, "gesture_valid missing after class change reset and re-accumulate"
 
 
 @cocotb.test()
 async def test_no_pass_resets(dut):
     """class_pass=0 should reset match count to 0."""
     await setup(dut)
-    await classify(dut, 0, 1)
-    await RisingEdge(dut.clk)
-    await classify(dut, 0, 0)  # fail
-    await RisingEdge(dut.clk)
-    await classify(dut, 0, 1)
-    await RisingEdge(dut.clk)
+    model = VBGestureClassifierModel(PERSISTENCE_COUNT)
+    await step_and_check(dut, model, 0, 1, 1, 120, 0, "pass-1")
+    await step_and_check(dut, model, 0, 1, 0, 120, 0, "pass-reset")
+    await step_and_check(dut, model, 0, 1, 1, 120, 0, "pass-2")
     assert int(dut.gesture_valid.value) == 0
 
 
@@ -176,63 +185,63 @@ async def test_no_pass_resets(dut):
 async def test_confidence_calculation(dut):
     """Confidence should be (dominant_magnitude >> 4), capped at 15."""
     await setup(dut)
-    for _ in range(PERSISTENCE_COUNT):
-        await classify(dut, 2, 1, dx=0, dy=300)
-        await RisingEdge(dut.clk)
+    model = VBGestureClassifierModel(PERSISTENCE_COUNT)
+    seen_first = False
 
-    for _ in range(5):
+    for _ in range(PERSISTENCE_COUNT + 1):
+        await step_and_check(dut, model, 2, 1, 1, 0, 300, "conf-sat")
         if int(dut.gesture_valid.value) == 1:
-            conf = int(dut.gesture_confidence.value)
-            assert conf == 15, f"Expected confidence 15 for dy=300, got {conf}"
-            break
-        await RisingEdge(dut.clk)
+            seen_first = True
+            assert int(dut.gesture_confidence.value) == 15
+    assert seen_first, "Did not observe saturated confidence gesture"
 
-    await ClockCycles(dut.clk, 5)
-
-    for _ in range(PERSISTENCE_COUNT):
-        await classify(dut, 3, 1, dx=80, dy=0)
-        await RisingEdge(dut.clk)
-
-    for _ in range(5):
+    for _ in range(PERSISTENCE_COUNT + 1):
+        await step_and_check(dut, model, 3, 1, 1, 80, 0, "conf-linear")
         if int(dut.gesture_valid.value) == 1:
-            conf = int(dut.gesture_confidence.value)
             expected = (80 >> 4) & 0xF
-            assert conf == expected, f"Expected confidence {expected} for dx=80, got {conf}"
-            break
-        await RisingEdge(dut.clk)
+            assert int(dut.gesture_confidence.value) == expected, \
+                f"Expected confidence {expected}, got {int(dut.gesture_confidence.value)}"
+
+
+@cocotb.test()
+async def test_confidence_tie_uses_y_path(dut):
+    """When abs_delta_x == abs_delta_y, confidence must use the Y branch."""
+    await setup(dut)
+    model = VBGestureClassifierModel(PERSISTENCE_COUNT)
+    tie_mag = 47
+
+    seen_valid = False
+    for _ in range(PERSISTENCE_COUNT + 1):
+        await step_and_check(dut, model, 1, 1, 1, tie_mag, tie_mag, "conf-tie")
+        if int(dut.gesture_valid.value):
+            seen_valid = True
+            expected = (tie_mag >> 4) & 0xF
+            assert int(dut.gesture_confidence.value) == expected
+    assert seen_valid, "No gesture_valid seen in tie-confidence test"
 
 
 @cocotb.test()
 async def test_golden_model_random(dut):
-    """Random classification sequence, compare DUT vs golden model."""
+    """Long randomized cycle-by-cycle scoreboard against golden model."""
     await setup(dut)
     model = VBGestureClassifierModel(PERSISTENCE_COUNT)
+    rng = random.Random(0x91E57A)
 
-    dut_gestures = []
-    model_gestures = []
-
-    for _ in range(100):
-        gesture = random.randint(0, 3)
-        pass_flag = random.choice([0, 1, 1, 1])
-        dx = random.randint(0, 500)
-        dy = random.randint(0, 500)
-
-        await classify(dut, gesture, pass_flag, dx, dy)
-        mg, mv, mc = model.step(gesture, 1, pass_flag, dx, dy)
-        await RisingEdge(dut.clk)
-
-        dut_valid = int(dut.gesture_valid.value)
-        dut_gesture = int(dut.gesture.value)
-
-        if mv:
-            model_gestures.append(mg)
-        if dut_valid:
-            dut_gestures.append(dut_gesture)
-
-    if dut_gestures != model_gestures:
-        dut._log.debug(
-            f"Gesture sequences differ: DUT={dut_gestures}, model={model_gestures} "
-            "(informational mismatch)"
+    for cycle in range(1200):
+        class_valid = rng.choice([0, 1, 1, 1])
+        gesture = rng.randint(0, 3)
+        pass_flag = rng.choice([0, 1, 1]) if class_valid else 0
+        dx = rng.randint(0, 1023)
+        dy = rng.randint(0, 1023)
+        await step_and_check(
+            dut,
+            model,
+            gesture,
+            class_valid,
+            pass_flag,
+            dx,
+            dy,
+            f"random-cycle-{cycle}",
         )
 
 

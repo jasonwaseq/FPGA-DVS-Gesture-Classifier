@@ -2,7 +2,7 @@
 
 import cocotb
 from cocotb.clock import Clock
-from cocotb.triggers import RisingEdge, ClockCycles
+from cocotb.triggers import RisingEdge, ClockCycles, ReadOnly, NextTimeStep
 import random
 
 GRID_BITS = 4
@@ -188,39 +188,68 @@ async def test_unknown_type_ignored(dut):
 
 
 @cocotb.test()
-async def test_golden_model_random(dut):
-    """Random EVT2 words compared against golden model."""
+async def test_time_high_rollover_low10bits(dut):
+    """Timestamp must use only the lower 10 bits of TIME_HIGH payload."""
     await setup(dut)
     model = Evt2DecoderModel()
 
-    mismatches = 0
-    for _ in range(500):
-        pkt_type = random.choice([0x0, 0x1, 0x8, 0x3, 0xF])
-        if pkt_type in (0x0, 0x1):
-            word = build_evt2_cd(pkt_type, random.randint(0, 320),
-                                 random.randint(0, 320), random.randint(0, 63))
-        elif pkt_type == 0x8:
-            word = build_evt2_time_high(random.randint(0, 0x0FFFFFFF))
-        else:
-            word = (pkt_type << 28) | random.randint(0, 0x0FFFFFFF)
+    # Payload exceeds 10 bits; timestamp should keep only low 10 in high field.
+    th_word = build_evt2_time_high(0x3ABCD)
+    dut.data_in.value = th_word
+    dut.data_valid.value = 1
+    _, _, _, _, mv = model.step(th_word, 1)
+    await RisingEdge(dut.clk)
+    await ReadOnly()
+    assert int(dut.event_valid.value) == mv
+    await NextTimeStep()
 
-        dv = random.choice([0, 1, 1, 1])
+    cd_word = build_evt2_cd(0x0, 64, 96, 0x2A)
+    dut.data_in.value = cd_word
+    dut.data_valid.value = 1
+    mx, my, mp, mts, mv = model.step(cd_word, 1)
+    await RisingEdge(dut.clk)
+    await ReadOnly()
+    assert int(dut.event_valid.value) == mv
+    assert int(dut.timestamp.value) == mts, \
+        f"Timestamp rollover mismatch: DUT={int(dut.timestamp.value)}, model={mts}"
+    await NextTimeStep()
+
+
+@cocotb.test()
+async def test_golden_model_random(dut):
+    """Cycle-by-cycle randomized scoreboarding against golden model."""
+    await setup(dut)
+    model = Evt2DecoderModel()
+    rng = random.Random(0xE172D2)
+
+    for cycle in range(1200):
+        pkt_type = rng.choice([0x0, 0x1, 0x8, 0x2, 0x3, 0xF])
+        if pkt_type in (0x0, 0x1):
+            word = build_evt2_cd(pkt_type, rng.randint(0, 0x7FF),
+                                 rng.randint(0, 0x7FF), rng.randint(0, 63))
+        elif pkt_type == 0x8:
+            word = build_evt2_time_high(rng.randint(0, 0x0FFFFFFF))
+        else:
+            word = (pkt_type << 28) | rng.randint(0, 0x0FFFFFFF)
+
+        dv = rng.choice([0, 1, 1, 1])
         dut.data_in.value = word
         dut.data_valid.value = dv
-        await RisingEdge(dut.clk)
         mx, my, mp, mts, mv = model.step(word, dv)
-
         await RisingEdge(dut.clk)
-        dut.data_valid.value = 0
-        model.step(0, 0)
+        await ReadOnly()
 
-        if mv:
-            if int(dut.x_out.value) != mx:
-                mismatches += 1
-            if int(dut.y_out.value) != my:
-                mismatches += 1
-            if int(dut.polarity.value) != mp:
-                mismatches += 1
-
-    assert mismatches == 0, f"Golden model had {mismatches} field mismatches"
+        assert int(dut.event_valid.value) == mv, \
+            f"Cycle {cycle}: event_valid DUT={int(dut.event_valid.value)}, model={mv}"
+        assert int(dut.x_out.value) == mx, \
+            f"Cycle {cycle}: x_out DUT={int(dut.x_out.value)}, model={mx}"
+        assert int(dut.y_out.value) == my, \
+            f"Cycle {cycle}: y_out DUT={int(dut.y_out.value)}, model={my}"
+        assert int(dut.polarity.value) == mp, \
+            f"Cycle {cycle}: polarity DUT={int(dut.polarity.value)}, model={mp}"
+        assert int(dut.timestamp.value) == mts, \
+            f"Cycle {cycle}: timestamp DUT={int(dut.timestamp.value)}, model={mts}"
+        assert int(dut.data_ready.value) == dv, \
+            f"Cycle {cycle}: data_ready DUT={int(dut.data_ready.value)}, expected={dv}"
+        await NextTimeStep()
 
