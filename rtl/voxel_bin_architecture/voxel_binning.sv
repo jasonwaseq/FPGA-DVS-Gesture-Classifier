@@ -20,6 +20,7 @@ module voxel_binning #(
     input  logic signed [4:0] event_x,
     input  logic signed [4:0] event_y,
     input  logic        event_polarity,
+    output logic        event_ready,
     output logic        readout_start,
     output logic [PARALLEL_READS*COUNTER_BITS-1:0] readout_data,
     output logic        readout_valid
@@ -58,6 +59,7 @@ module voxel_binning #(
     } state_t;
 
     state_t state;
+    assign event_ready = (state != S_CLEAR);
 
     logic [BIN_IDX_BITS-1:0]                   readout_bin_ptr;
     logic [GRID_ADDR_BITS-PARALLEL_BITS:0]     readout_cell_ctr;

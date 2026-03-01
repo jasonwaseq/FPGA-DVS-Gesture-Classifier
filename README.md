@@ -47,6 +47,8 @@ cd tb/gradient_map_architecture && make test_unit
 cd tb/uart && make all
 ```
 
+Waveforms are enabled by default for all cocotb runs. Each simulation writes an `.fst` trace under its `sim_build_*` directory, and you can open it with `make view_wave TEST=<name>`.
+
 ### Synthesize (devcontainer)
 
 ```bash
@@ -127,6 +129,10 @@ make -C tb/gradient_map_architecture sim TEST=gradient_mapping
 make -C tb/uart sim TEST=uart_rx
 ```
 
+Waveforms are enabled by default for all cocotb runs. For each simulation:
+- The trace file is `sim_build_<test>/<toplevel>.fst`.
+- Open it with `make view_wave TEST=<name>` from the same testbench directory.
+
 ### 3. Synthesize (local)
 
 ```bash
@@ -187,6 +193,9 @@ pip install -r requirements.txt
 | `cd tb/voxel_bin_architecture && make test_unit` | Run voxel-bin unit testbenches |
 | `cd tb/gradient_map_architecture && make test_unit` | Run gradient-map unit testbenches |
 | `cd tb/uart && make all` | Run UART unit testbenches |
+| `cd tb/voxel_bin_architecture && make view_wave TEST=core` | Open voxel-bin waveform in GTKWave |
+| `cd tb/gradient_map_architecture && make view_wave TEST=core` | Open gradient-map waveform in GTKWave |
+| `cd tb/uart && make view_wave TEST=uart_rx` | Open UART waveform in GTKWave |
 | `python3 setup.py synth voxel_bin` | Synthesize → `voxel_bin_top.bit` |
 | `python3 setup.py synth gradient_map` | Synthesize → `gradient_map_top.bit` |
 | `python3 setup.py flash voxel_bin` | Flash voxel-bin bitstream |
@@ -324,6 +333,7 @@ Each architecture testbench directory uses the same pattern:
 
 - `make test_unit`: run all module unit testbenches in that architecture.
 - `make sim TEST=<name>`: run one module testbench.
+- `make view_wave TEST=<name>`: open `sim_build_<name>/<toplevel>.fst` in GTKWave.
 - `make clean_all`: remove `sim_build`, `results.xml`, and `__pycache__`.
 
 Available `TEST=` targets:

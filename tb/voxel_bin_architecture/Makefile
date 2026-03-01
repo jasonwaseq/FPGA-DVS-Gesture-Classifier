@@ -46,13 +46,24 @@ else ifeq ($(TEST),gesture_classifier)
   VERILOG_SOURCES = $(RTL_DIR)/voxel_bin_architecture/gesture_classifier.sv
   TOPLEVEL = gesture_classifier
   COCOTB_TEST_MODULES = test_gesture_classifier
+else ifeq ($(TEST),top)
+  VERILOG_SOURCES = $(VOXEL_BIN_SOURCES) \
+                    $(RTL_DIR)/voxel_bin_architecture/voxel_bin_top.sv
+  TOPLEVEL = voxel_bin_top
+  COCOTB_TEST_MODULES = test_voxel_bin_top
+  COMPILE_ARGS += -Pvoxel_bin_top.CLK_FREQ=1000000
+  COMPILE_ARGS += -Pvoxel_bin_top.BAUD_RATE=250000
+  COMPILE_ARGS += -Pvoxel_bin_top.WINDOW_MS=40
+  COMPILE_ARGS += -Pvoxel_bin_top.CYCLES_PER_BIN=2000
+  COMPILE_ARGS += -Pvoxel_bin_top.PERSISTENCE_COUNT=2
+  COMPILE_ARGS += -Pvoxel_bin_top.CORE_PARALLEL_READS=4
 else ifeq ($(TEST),weight_ram)
   VERILOG_SOURCES = $(RTL_DIR)/voxel_bin_architecture/weight_ram.sv
   TOPLEVEL = weight_ram
   COCOTB_TEST_MODULES = test_weight_ram
   COMPILE_ARGS += -Pweight_ram.CLASS_IDX=0
 else
-  $(error Unknown TEST=$(TEST). Use: core, input_fifo, evt2_decoder, voxel_binning, systolic_array, gesture_classifier, weight_ram)
+  $(error Unknown TEST=$(TEST). Use: core, input_fifo, evt2_decoder, voxel_binning, systolic_array, gesture_classifier, top, weight_ram)
 endif
 
 SIM = icarus
@@ -62,11 +73,13 @@ SIM_BUILD ?= sim_build_$(if $(TEST),$(TEST),default)
 
 COMPILE_ARGS += -g2012
 
-# Suppress waveform dumping and reduce log verbosity for faster runs
-export WAVES ?= 0
+# Enable waveform dumping by default so each simulation emits a trace.
+export WAVES ?= 1
 export COCOTB_LOG_LEVEL ?= INFO
 export COCOTB_REDUCED_LOG_FMT ?= 1
 export GPI_LOG_LEVEL ?= CRITICAL
+WAVE_FILE ?= $(SIM_BUILD)/$(TOPLEVEL).fst
+GTKWAVE ?= gtkwave
 
 WINDOWS_HOST := $(filter Windows_NT Msys MSYS,$(OS))
 
@@ -137,10 +150,10 @@ ifeq ($(wildcard $(COCOTB_MAKEFILES)/simulators/Makefile.$(SIM_LOWERCASE)),)
 endif
 include $(COCOTB_MAKEFILES)/simulators/Makefile.$(SIM_LOWERCASE)
 
-UNIT_TESTS = core input_fifo evt2_decoder voxel_binning systolic_array gesture_classifier weight_ram
+UNIT_TESTS = core input_fifo evt2_decoder voxel_binning systolic_array gesture_classifier top weight_ram
 UNIT_TEST_TARGETS = $(addprefix test_,$(UNIT_TESTS))
 
-.PHONY: test test_full test_unit clean_all $(UNIT_TEST_TARGETS)
+.PHONY: test test_full test_unit view_wave clean_all $(UNIT_TEST_TARGETS)
 
 test:
 	$(MAKE) sim
@@ -154,6 +167,16 @@ $(UNIT_TEST_TARGETS):
 
 test_full:
 	$(MAKE) clean && $(MAKE) sim
+
+view_wave:
+	@if [ -f "$(WAVE_FILE)" ]; then \
+		echo "Opening waveform: $(WAVE_FILE)"; \
+		$(GTKWAVE) "$(WAVE_FILE)"; \
+	else \
+		echo "Waveform not found: $(WAVE_FILE)"; \
+		echo "Run: make sim TEST=$(TEST)"; \
+		exit 1; \
+	fi
 
 clean_all:
 ifneq ($(WINDOWS_HOST),)

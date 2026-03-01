@@ -8,6 +8,9 @@ COMPILE_ARGS += -g2012
 export COCOTB_LOG_LEVEL ?= INFO
 export COCOTB_REDUCED_LOG_FMT ?= 1
 export GPI_LOG_LEVEL ?= CRITICAL
+export WAVES ?= 1
+WAVE_FILE ?= $(SIM_BUILD)/$(TOPLEVEL).fst
+GTKWAVE ?= gtkwave
 
 TEST ?= uart_rx
 SIM_BUILD ?= sim_build_$(TEST)
@@ -79,7 +82,7 @@ else
   include $(shell cocotb-config --makefiles)/Makefile.sim
 endif
 
-.PHONY: all test_all clean_all
+.PHONY: all test_all view_wave clean_all
 
 all: test_all
 
@@ -89,6 +92,16 @@ test_all:
 		$(MAKE) clean TEST=$$t SIM_BUILD=sim_build_$$t > /dev/null 2>&1; \
 		$(MAKE) sim TEST=$$t SIM_BUILD=sim_build_$$t || exit 1; \
 	done
+
+view_wave:
+	@if [ -f "$(WAVE_FILE)" ]; then \
+		echo "Opening waveform: $(WAVE_FILE)"; \
+		$(GTKWAVE) "$(WAVE_FILE)"; \
+	else \
+		echo "Waveform not found: $(WAVE_FILE)"; \
+		echo "Run: make sim TEST=$(TEST)"; \
+		exit 1; \
+	fi
 
 clean_all:
 	rm -rf sim_build* results.xml __pycache__

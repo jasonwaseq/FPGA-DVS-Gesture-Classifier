@@ -57,6 +57,7 @@ module voxel_bin_core #(
     logic        readout_start;
     logic [PARALLEL_READS*COUNTER_BITS-1:0] readout_data;
     logic        readout_valid;
+    logic        binner_event_ready;
 
     logic [PARALLEL_READS*$clog2(NUM_CELLS)-1:0]       w_addr_flat;
     logic [PARALLEL_READS*NUM_CLASSES*WEIGHT_BITS-1:0] w_data_flat;
@@ -74,7 +75,9 @@ module voxel_bin_core #(
     logic [17:0]                pseudo_mag_y;
 
     assign evt_word_ready      = !fifo_full;
-    assign fifo_rd_en          = !fifo_empty;
+    // Do not consume FIFO words while voxel_binning is clearing a bin.
+    // This prevents silent event loss during clear cycles.
+    assign fifo_rd_en          = !fifo_empty && binner_event_ready;
     assign debug_fifo_empty    = fifo_empty;
     assign debug_fifo_full     = fifo_full;
     assign debug_temporal_phase = 1'b0;
@@ -143,6 +146,7 @@ module voxel_bin_core #(
         .event_x       (binner_x),
         .event_y       (binner_y),
         .event_polarity(decoded_polarity),
+        .event_ready   (binner_event_ready),
         .readout_start (readout_start),
         .readout_data  (readout_data),
         .readout_valid (readout_valid)

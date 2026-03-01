@@ -20,7 +20,7 @@ module voxel_bin_top #(
     parameter MIN_EVENT_THRESH  = 20,
     parameter MOTION_THRESH     = 8,
     parameter PERSISTENCE_COUNT = 1,
-    parameter CYCLES_PER_BIN    = 600,
+    parameter CYCLES_PER_BIN    = 0,
     // Keep top-level synthesis BRAM usage within iCE40UP5K limits.
     parameter CORE_PARALLEL_READS = 2
 )(
@@ -37,6 +37,9 @@ module voxel_bin_top #(
 );
 
     localparam CLKS_PER_BIT = CLK_FREQ / BAUD_RATE;
+    localparam integer BYTE_CYCLES = CLKS_PER_BIT * 10;
+    localparam integer CMD_GAP_BYTES = 2;
+    localparam integer CMD_GAP_CYCLES = BYTE_CYCLES * CMD_GAP_BYTES;
 
     reg [4:0] por_cnt = 5'd0;
     wire rst_por = ~&por_cnt;
@@ -187,9 +190,13 @@ module voxel_bin_top #(
     logic [1:0] pending_gesture;
     logic [3:0] pending_confidence;
     logic [2:0] pending_state;
+    localparam integer IDLE_CNT_BITS = $clog2(CMD_GAP_CYCLES + 1);
+    logic [IDLE_CNT_BITS-1:0] rx_idle_cycles;
+    logic command_allowed;
 
     assign core_evt_word  = uart_evt_word;
     assign core_evt_valid = uart_evt_pending;
+    assign command_allowed = (rx_idle_cycles >= IDLE_CNT_BITS'(CMD_GAP_CYCLES));
 
     always @(posedge clk) begin
         if (rst) begin
@@ -204,9 +211,15 @@ module voxel_bin_top #(
             pending_confidence <= 4'd0;
             pending_state      <= 3'd0;
             soft_rst           <= 1'b0;
+            rx_idle_cycles     <= IDLE_CNT_BITS'(CMD_GAP_CYCLES);
         end else begin
             tx_valid <= 1'b0;
             soft_rst <= 1'b0;
+
+            if (rx_valid)
+                rx_idle_cycles <= '0;
+            else if (!command_allowed)
+                rx_idle_cycles <= rx_idle_cycles + 1'b1;
 
             if (uart_evt_pending && core_evt_ready)
                 uart_evt_pending <= 1'b0;
@@ -216,13 +229,33 @@ module voxel_bin_top #(
                     // First byte of EVT2 word, or command byte.
                     PKT_B0: begin
                         case (rx_data)
-                            8'hFF: if (tx_state == TX_IDLE) tx_state <= TX_ECHO;
+                            8'hFF: if (command_allowed && tx_state == TX_IDLE) tx_state <= TX_ECHO;
+                                   else begin
+                                       word_shift[31:24] <= rx_data;
+                                       pkt_state          <= PKT_B1;
+                                   end
                             8'hFE: if (tx_state == TX_IDLE) begin
-                                pending_state <= debug_state;
-                                tx_state      <= TX_STATUS;
-                            end
-                            8'hFD: if (tx_state == TX_IDLE) tx_state <= TX_CONFIG_1;
-                            8'hFC: soft_rst <= 1'b1;
+                                       if (command_allowed) begin
+                                           pending_state <= debug_state;
+                                           tx_state      <= TX_STATUS;
+                                       end else begin
+                                           word_shift[31:24] <= rx_data;
+                                           pkt_state          <= PKT_B1;
+                                       end
+                                   end else begin
+                                       word_shift[31:24] <= rx_data;
+                                       pkt_state          <= PKT_B1;
+                                   end
+                            8'hFD: if (command_allowed && tx_state == TX_IDLE) tx_state <= TX_CONFIG_1;
+                                   else begin
+                                       word_shift[31:24] <= rx_data;
+                                       pkt_state          <= PKT_B1;
+                                   end
+                            8'hFC: if (command_allowed) soft_rst <= 1'b1;
+                                   else begin
+                                       word_shift[31:24] <= rx_data;
+                                       pkt_state          <= PKT_B1;
+                                   end
                             default: begin
                                 word_shift[31:24] <= rx_data;
                                 pkt_state          <= PKT_B1;
