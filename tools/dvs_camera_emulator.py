@@ -98,6 +98,53 @@ def uniform_subsample_events(events: List['DVSEvent'], limit: int) -> List['DVSE
     return [events[int(i)] for i in idx]
 
 
+def spatial_subsample_events(
+    events: List['DVSEvent'],
+    limit: int,
+    sensor_resolution: int = DVS_RESOLUTION,
+    grid_size: int = 16
+) -> List['DVSEvent']:
+    """Round-robin sample across spatial-cell buckets.
+
+    This preserves directional structure when heavy event bursts are throttled
+    to UART link capacity.
+    """
+    if limit <= 0:
+        return []
+    if len(events) <= limit:
+        return events
+
+    cell_size = max(1, sensor_resolution // grid_size)
+    buckets = {}
+    for ev in events:
+        cx = min(grid_size - 1, max(0, ev.x // cell_size))
+        cy = min(grid_size - 1, max(0, ev.y // cell_size))
+        key = (cy << 4) | cx
+        if key not in buckets:
+            buckets[key] = []
+        buckets[key].append(ev)
+
+    active = sorted(buckets.keys())
+    read_idx = {k: 0 for k in active}
+    selected: List['DVSEvent'] = []
+
+    while active and len(selected) < limit:
+        next_active = []
+        for key in active:
+            idx = read_idx[key]
+            bucket = buckets[key]
+            if idx < len(bucket):
+                selected.append(bucket[idx])
+                read_idx[key] = idx + 1
+                if read_idx[key] < len(bucket):
+                    next_active.append(key)
+                if len(selected) >= limit:
+                    break
+        active = next_active
+
+    return selected
+
+
 class GestureSimulator:
     """Generates synthetic frames with moving objects for testing without a camera."""
     
@@ -202,6 +249,9 @@ class DVSCameraEmulator:
         leak_rate: float = DEFAULT_LEAK_RATE,
         shot_noise_rate: float = DEFAULT_SHOT_NOISE_RATE,
         hot_pixel_rate: float = DEFAULT_HOT_PIXEL_RATE,
+        aspect_mode: str = 'stretch',
+        roi_scale: float = 1.0,
+        flip_x: bool = False,
         use_log_threshold: bool = True  # Use realistic log-domain threshold
     ):
         self.camera_id = camera_id
@@ -216,6 +266,9 @@ class DVSCameraEmulator:
         self.leak_rate = leak_rate
         self.shot_noise_rate = shot_noise_rate
         self.hot_pixel_rate = hot_pixel_rate
+        self.aspect_mode = aspect_mode
+        self.roi_scale = float(max(0.2, min(1.0, roi_scale)))
+        self.flip_x = flip_x
         self.cap: Optional[cv2.VideoCapture] = None
         self.reference_log_intensity: Optional[np.ndarray] = None
         self.last_event_time: Optional[np.ndarray] = None
@@ -278,11 +331,35 @@ class DVSCameraEmulator:
             gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
         else:
             gray = frame
-        resized = cv2.resize(
-            gray, 
-            (self.output_resolution, self.output_resolution),
-            interpolation=cv2.INTER_AREA
-        )
+
+        if self.flip_x:
+            gray = cv2.flip(gray, 1)
+
+        if self.roi_scale < 0.999:
+            h, w = gray.shape
+            crop_h = max(1, int(h * self.roi_scale))
+            crop_w = max(1, int(w * self.roi_scale))
+            y0 = max(0, (h - crop_h) // 2)
+            x0 = max(0, (w - crop_w) // 2)
+            gray = gray[y0:y0 + crop_h, x0:x0 + crop_w]
+
+        if self.aspect_mode == 'crop':
+            h, w = gray.shape
+            side = min(h, w)
+            y0 = (h - side) // 2
+            x0 = (w - side) // 2
+            square = gray[y0:y0 + side, x0:x0 + side]
+            resized = cv2.resize(
+                square,
+                (self.output_resolution, self.output_resolution),
+                interpolation=cv2.INTER_AREA
+            )
+        else:
+            resized = cv2.resize(
+                gray,
+                (self.output_resolution, self.output_resolution),
+                interpolation=cv2.INTER_AREA
+            )
         if self.noise_filter_size > 1:
             resized = cv2.GaussianBlur(
                 resized, 
@@ -769,10 +846,18 @@ def main():
                         help='Gaussian blur kernel size for noise filtering (default: 3, 0=disabled)')
     parser.add_argument('--max-events', type=int, default=1000,
                         help='Maximum events/frame for UART send path (default: 1000, auto-clamped to link budget)')
+    parser.add_argument('--subsample-mode', type=str, default='spatial', choices=['spatial', 'uniform'],
+                        help='UART downsampling strategy when events exceed per-frame budget (default: spatial)')
     parser.add_argument('--loop', action='store_true',
                         help='Loop video file playback')
     parser.add_argument('--legacy-mode', action='store_true',
                         help='Use legacy frame-difference mode instead of realistic per-pixel reference')
+    parser.add_argument('--aspect-mode', type=str, default='crop', choices=['crop', 'stretch'],
+                        help='Input resize mode before DVS conversion (default: crop to preserve motion geometry)')
+    parser.add_argument('--roi-scale', type=float, default=1.0,
+                        help='Center ROI scale in (0.2..1.0], lower removes peripheral background (default: 1.0)')
+    parser.add_argument('--flip-x', action='store_true',
+                        help='Horizontally flip input before DVS conversion')
     parser.add_argument('--no-noise', action='store_true',
                         help='Disable background noise model')
     parser.add_argument('--leak-rate', type=float, default=DEFAULT_LEAK_RATE,
@@ -803,8 +888,14 @@ def main():
         enable_noise_model=not args.no_noise,
         leak_rate=args.leak_rate,
         shot_noise_rate=args.shot_noise,
+        aspect_mode=args.aspect_mode,
+        roi_scale=args.roi_scale,
+        flip_x=args.flip_x,
         use_log_threshold=not args.legacy_mode
     )
+
+    print(f"Input geometry: aspect={args.aspect_mode}, roi_scale={max(0.2, min(1.0, args.roi_scale)):.2f}, flip_x={'ON' if args.flip_x else 'OFF'}")
+    print(f"UART subsampling: {args.subsample_mode}")
     
     if use_simulator:
         print(f"Mode: SIMULATION ({args.resolution}x{args.resolution})")
@@ -898,7 +989,15 @@ def main():
                 elif frame is None:
                     continue
                 if uart_handler:
-                    tx_events = uniform_subsample_events(events, uart_budget)
+                    if args.subsample_mode == 'uniform':
+                        tx_events = uniform_subsample_events(events, uart_budget)
+                    else:
+                        tx_events = spatial_subsample_events(
+                            events,
+                            uart_budget,
+                            sensor_resolution=args.resolution,
+                            grid_size=16
+                        )
                     uart_events_generated += len(events)
                     uart_events_after_subsample += len(tx_events)
                     uart_events_enqueued += uart_handler.send_events(tx_events)

@@ -160,7 +160,7 @@ python dvs_camera_emulator.py --save recording.bin --format dvs1 --preview
 **Send to FPGA via UART:**
 ```bash
 # Auto-detect architecture (recommended)
-python dvs_camera_emulator.py --port /dev/ttyUSB0 --baud 115200 --arch auto --preview
+python dvs_camera_emulator.py --port /dev/ttyUSB0 --baud 115200 --arch auto --preview --aspect-mode crop --subsample-mode spatial
 
 # Force voxel_bin architecture (echo-based)
 python dvs_camera_emulator.py --port /dev/ttyUSB0 --baud 115200 --arch voxel_bin --preview
@@ -169,13 +169,19 @@ python dvs_camera_emulator.py --port /dev/ttyUSB0 --baud 115200 --arch voxel_bin
 python dvs_camera_emulator.py --port /dev/ttyUSB0 --baud 115200 --arch gradient_map --preview
 
 # Windows example
-python dvs_camera_emulator.py --port COM3 --baud 115200 --arch auto --preview
+python dvs_camera_emulator.py --port COM3 --baud 115200 --arch auto --preview --aspect-mode crop --subsample-mode spatial
 ```
 
 **Limit events per frame (prevent UART overflow):**
 ```bash
 # At 115200 baud / 30 FPS, ~86 events/frame is a practical ceiling.
 python dvs_camera_emulator.py --port /dev/ttyUSB0 --max-events 86 --preview
+```
+
+**Improve webcam robustness (left/right and background clutter):**
+```bash
+# Preserve geometry (crop), suppress peripheral motion (ROI), spatially fair downsampling
+python dvs_camera_emulator.py --port /dev/ttyUSB0 --baud 115200 --max-events 86 --aspect-mode crop --roi-scale 0.75 --subsample-mode spatial --preview
 ```
 
 ### Advanced Options
@@ -222,8 +228,12 @@ python dvs_camera_emulator.py --help
 | `--format` | evt2 | Output format: `evt2` (Prophesee EVT 2.0) or `dvs1` (legacy) |
 | `--noise-filter` | 3 | Gaussian blur kernel size |
 | `--max-events` | 1000 | Max events/frame for UART send path (auto-clamped to link budget) |
+| `--subsample-mode` | spatial | UART downsampling mode: `spatial` or `uniform` |
 | `--loop` | False | Loop video file playback |
 | `--no-noise` | False | Disable background noise model |
+| `--aspect-mode` | crop | Input geometry mode: `crop` (aspect-preserving) or `stretch` |
+| `--roi-scale` | 1.0 | Center ROI scale (0.2..1.0), lower reduces background |
+| `--flip-x` | False | Horizontally flip input before event generation |
 | `--leak-rate` | 0.001 | Reference leak rate per second |
 | `--shot-noise` | 0.0001 | Shot noise probability per pixel per frame |
 

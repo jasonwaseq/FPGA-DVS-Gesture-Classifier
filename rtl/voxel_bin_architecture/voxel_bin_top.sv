@@ -19,7 +19,7 @@ module voxel_bin_top #(
     parameter SENSOR_RES        = 320,
     parameter MIN_EVENT_THRESH  = 20,
     parameter MOTION_THRESH     = 8,
-    parameter PERSISTENCE_COUNT = 1,
+    parameter PERSISTENCE_COUNT = 2,
     parameter CYCLES_PER_BIN    = 0,
     // Keep top-level synthesis BRAM usage within iCE40UP5K limits.
     parameter CORE_PARALLEL_READS = 2
