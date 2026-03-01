@@ -216,7 +216,7 @@ After flashing:
    ```
 3. **DVS camera emulator** — uses a webcam to generate synthetic DVS events:
    ```bash
-   python3 tools/dvs_camera_emulator.py --preview --max-events 5000 --port /dev/ttyUSB0 --no-noise --contrast 0.25
+   python3 tools/dvs_camera_emulator.py --preview --max-events 86 --port /dev/ttyUSB0 --no-noise --contrast 0.25
    ```
 
 ---
@@ -468,7 +468,12 @@ At 115200 baud the UART delivers ~2300 events/sec (5 bytes each). The GenX320 ma
 
 ```bash
 python3 tools/dvs_camera_emulator.py --simulate --preview
-python3 tools/dvs_camera_emulator.py --port /dev/ttyUSB0 --preview --max-events 5000 --no-noise --contrast 0.25
+python3 tools/dvs_camera_emulator.py --port /dev/ttyUSB0 --preview --max-events 86 --no-noise --contrast 0.25
+```
+
+```powershell
+python tools/dvs_camera_emulator.py --simulate --preview
+python tools/dvs_camera_emulator.py --port COM3 --preview --max-events 86 --no-noise --contrast 0.25
 ```
 
 ### FPGA hardware validator (synthetic gestures over UART)

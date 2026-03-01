@@ -9,6 +9,7 @@ from collections import deque
 from typing import Optional, Tuple, List
 import threading
 import queue
+import math
 
 import numpy as np
 
@@ -35,6 +36,66 @@ DEFAULT_FPS = 30
 DEFAULT_LEAK_RATE = 0.001
 DEFAULT_SHOT_NOISE_RATE = 0.0001
 DEFAULT_HOT_PIXEL_RATE = 0.00005
+
+
+def get_available_serial_ports() -> List[str]:
+    if not HAS_SERIAL:
+        return []
+    try:
+        from serial.tools import list_ports
+        ports = []
+        for port in list_ports.comports():
+            description = (port.description or "").strip()
+            if description and description.lower() != "n/a":
+                ports.append(f"{port.device} ({description})")
+            else:
+                ports.append(port.device)
+        return ports
+    except Exception:
+        return []
+
+
+def opencv_gui_available() -> bool:
+    try:
+        test_window = "__dvs_gui_test__"
+        cv2.namedWindow(test_window, cv2.WINDOW_NORMAL)
+        cv2.destroyWindow(test_window)
+        return True
+    except cv2.error:
+        return False
+
+
+def safe_destroy_all_windows():
+    try:
+        cv2.destroyAllWindows()
+    except cv2.error:
+        pass
+
+
+def estimate_uart_event_budget_per_frame(baud_rate: int, fps: int) -> int:
+    """Estimate sustainable event budget/frame for EVT2 over 8N1 UART.
+
+    UART carries roughly baud/10 payload bytes per second. EVT2 sends 4-byte words;
+    each event uses one CD word plus occasional TIME_HIGH words. A 0.90 margin is
+    used to keep queue occupancy stable under bursty camera traffic.
+    """
+    if baud_rate <= 0 or fps <= 0:
+        return 1
+    bytes_per_second = baud_rate / 10.0
+    words_per_second = bytes_per_second / 4.0
+    frame_budget = words_per_second / float(fps)
+    return max(1, int(math.floor(frame_budget * 0.90)))
+
+
+def uniform_subsample_events(events: List['DVSEvent'], limit: int) -> List['DVSEvent']:
+    """Keep a spatially/time-distributed subset without top-left scan bias."""
+    if limit <= 0:
+        return []
+    event_count = len(events)
+    if event_count <= limit:
+        return events
+    idx = np.linspace(0, event_count - 1, num=limit, dtype=np.int64)
+    return [events[int(i)] for i in idx]
 
 
 class GestureSimulator:
@@ -360,7 +421,7 @@ def create_combined_preview(
         y_offset += 20
     if recent_gestures:
         y_offset += 10
-        cv2.putText(combined, "Detected Gestures:", (10, y_offset), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 0), 1, cv2.LINE_AA)
+        cv2.putText(combined, "FPGA Gestures (UART RX):", (10, y_offset), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 0), 1, cv2.LINE_AA)
         y_offset += 20
         for i, gesture in enumerate(recent_gestures[-3:]):
             cv2.putText(combined, f"  {gesture}", (10, y_offset), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 255), 2, cv2.LINE_AA)
@@ -369,20 +430,50 @@ def create_combined_preview(
 
 
 class UARTOutputHandler:
-    """Sends DVS events to FPGA over UART and receives ASCII gesture classifications."""
-    
-    def __init__(self, port: str, baud_rate: int = 115200):
+    def __init__(self, port: str, baud_rate: int = 115200, architecture: str = 'auto'):
         self.port = port
         self.baud_rate = baud_rate
+        self.architecture = architecture
+        self.detected_architecture = architecture
         self.serial: Optional[serial.Serial] = None
         self.event_queue: queue.Queue = queue.Queue(maxsize=10000)
         self.running = False
         self.tx_thread: Optional[threading.Thread] = None
         self.rx_thread: Optional[threading.Thread] = None
         self.events_sent = 0
+        self.evt2_words_sent = 0
+        self.queue_events_dropped = 0
+        self.queue_high_watermark = 0
         self.gestures_received = []
         self.rx_buffer = bytearray()
+        self._ascii_line_buffer = bytearray()
+        self._last_time_high = -1
         self.lock = threading.Lock()
+
+    def _encode_evt2_words(self, event: DVSEvent) -> List[int]:
+        words: List[int] = []
+        ts = int(event.timestamp_us) & ((1 << 34) - 1)
+        time_high = (ts >> 6) & 0x0FFFFFFF
+        ts_lsb = ts & 0x3F
+
+        if time_high != self._last_time_high:
+            words.append((0x8 << 28) | time_high)
+            self._last_time_high = time_high
+
+        evt_type = 0x1 if event.polarity else 0x0
+        x = event.x & 0x7FF
+        y = event.y & 0x7FF
+        words.append((evt_type << 28) | (ts_lsb << 22) | (x << 11) | y)
+        return words
+
+    @staticmethod
+    def _word_to_uart_bytes(word: int) -> bytes:
+        return bytes([
+            (word >> 24) & 0xFF,
+            (word >> 16) & 0xFF,
+            (word >> 8) & 0xFF,
+            word & 0xFF,
+        ])
     
     def open(self) -> bool:
         if not HAS_SERIAL:
@@ -401,6 +492,16 @@ class UARTOutputHandler:
             return True
         except serial.SerialException as e:
             print(f"ERROR: Could not open {self.port}: {e}")
+            error_text = str(e).lower()
+            if "access is denied" in error_text or "permission" in error_text:
+                print("TIP: Port is busy. Close any serial monitor/terminal using this COM port and retry.")
+            ports = get_available_serial_ports()
+            if ports:
+                print(f"Available serial ports: {', '.join(ports)}")
+            else:
+                print("No serial ports detected. Check cable/driver/device power.")
+            if sys.platform == 'win32':
+                print("TIP: On Windows, use Device Manager to confirm the COM number (e.g., COM3).")
             return False
     
     def close(self):
@@ -429,7 +530,10 @@ class UARTOutputHandler:
             try:
                 event = self.event_queue.get(timeout=0.1)
                 if self.serial and self.serial.is_open:
-                    self.serial.write(event.to_bytes())
+                    evt2_words = self._encode_evt2_words(event)
+                    for word in evt2_words:
+                        self.serial.write(self._word_to_uart_bytes(word))
+                        self.evt2_words_sent += 1
                     self.events_sent += 1
             except queue.Empty:
                 continue
@@ -443,17 +547,44 @@ class UARTOutputHandler:
                 if self.serial and self.serial.is_open and self.serial.in_waiting > 0:
                     data = self.serial.read(self.serial.in_waiting)
                     self.rx_buffer.extend(data)
-                    while b'\r\n' in self.rx_buffer:
-                        line_end = self.rx_buffer.find(b'\r\n')
-                        line = self.rx_buffer[:line_end].strip()
-                        self.rx_buffer = self.rx_buffer[line_end + 2:]
-                        try:
-                            gesture_str = line.decode('ascii', errors='ignore').strip()
-                            if gesture_str in gesture_names:
+                    while len(self.rx_buffer) > 0:
+                        byte0 = self.rx_buffer[0]
+
+                        # Binary voxel_bin gesture packet: [0xA0|gesture, confidence]
+                        if (byte0 & 0xF0) == 0xA0:
+                            if len(self.rx_buffer) < 2:
+                                break
+                            pkt = self.rx_buffer[0]
+                            conf_byte = self.rx_buffer[1]
+                            del self.rx_buffer[:2]
+
+                            gesture_idx = pkt & 0x03
+                            gesture_str = gesture_names[gesture_idx]
+                            confidence = (conf_byte >> 4) & 0x0F
+                            with self.lock:
+                                self.gestures_received.append((gesture_str, time.time()))
+                            print(f"\n*** GESTURE DETECTED: {gesture_str} (conf={confidence}) ***")
+                            continue
+
+                        # ASCII gesture output (gradient_map uart_debug)
+                        b = self.rx_buffer[0]
+                        del self.rx_buffer[0]
+
+                        if b in (0x0D, 0x0A):
+                            if len(self._ascii_line_buffer) == 0:
+                                continue
+                            line = self._ascii_line_buffer.decode('ascii', errors='ignore').strip()
+                            self._ascii_line_buffer.clear()
+                            if line in gesture_names:
                                 with self.lock:
-                                    self.gestures_received.append((gesture_str, time.time()))
-                                print(f"\n*** GESTURE DETECTED: {gesture_str} ***")
-                        except:
+                                    self.gestures_received.append((line, time.time()))
+                                print(f"\n*** GESTURE DETECTED: {line} ***")
+                        elif 32 <= b <= 126:
+                            self._ascii_line_buffer.append(b)
+                            if len(self._ascii_line_buffer) > 64:
+                                self._ascii_line_buffer.clear()
+                        else:
+                            # Ignore non-printable bytes that are neither gesture packet nor ASCII text.
                             pass
                 else:
                     time.sleep(0.01)
@@ -462,18 +593,37 @@ class UARTOutputHandler:
                 time.sleep(0.1)
     
     def send_event(self, event: DVSEvent):
-        try:
-            self.event_queue.put_nowait(event)
-        except queue.Full:
-            pass
+        while True:
+            try:
+                self.event_queue.put_nowait(event)
+                try:
+                    self.queue_high_watermark = max(self.queue_high_watermark, self.event_queue.qsize())
+                except Exception:
+                    pass
+                return True
+            except queue.Full:
+                # Drop oldest to prioritize freshest events for lower end-to-end latency.
+                try:
+                    self.event_queue.get_nowait()
+                    self.queue_events_dropped += 1
+                except queue.Empty:
+                    self.queue_events_dropped += 1
+                    return False
     
-    def send_events(self, events: List[DVSEvent]):
+    def send_events(self, events: List[DVSEvent]) -> int:
+        enqueued = 0
         for event in events:
-            self.send_event(event)
+            if self.send_event(event):
+                enqueued += 1
+        return enqueued
     
     def test_connection(self) -> bool:
         if not self.serial or not self.serial.is_open:
             return False
+        if self.architecture == 'gradient_map':
+            self.detected_architecture = 'gradient_map'
+            print("FPGA architecture: gradient_map (echo probe skipped)")
+            return True
         try:
             self.serial.reset_input_buffer()
             self.serial.write(bytes([0xFF]))
@@ -481,9 +631,15 @@ class UARTOutputHandler:
             if self.serial.in_waiting > 0:
                 response = self.serial.read(1)
                 if response[0] == 0x55:
+                    self.detected_architecture = 'voxel_bin'
+                    print("FPGA architecture: voxel_bin")
                     print("FPGA connection verified (echo test passed)")
                     return True
-            print("INFO: Echo test not supported (gesture_uart_top architecture)")
+            if self.architecture == 'voxel_bin':
+                print("WARNING: voxel_bin selected, but echo test did not return 0x55")
+                return False
+            self.detected_architecture = 'gradient_map'
+            print("FPGA architecture: gradient_map (no echo response, expected)")
             return True
         except Exception as e:
             print(f"Connection test failed: {e}")
@@ -589,6 +745,8 @@ def main():
                         help='Simulate gestures without camera (for testing)')
     parser.add_argument('--port', type=str, default=None,
                         help='Serial port for UART output (e.g., /dev/ttyUSB0, COM3)')
+    parser.add_argument('--arch', type=str, default='auto', choices=['auto', 'voxel_bin', 'gradient_map'],
+                        help='FPGA UART architecture (default: auto)')
     parser.add_argument('--baud', type=int, default=115200,
                         help='UART baud rate (default: 115200)')
     parser.add_argument('--threshold', type=float, default=DEFAULT_THRESHOLD,
@@ -610,7 +768,7 @@ def main():
     parser.add_argument('--noise-filter', type=int, default=3,
                         help='Gaussian blur kernel size for noise filtering (default: 3, 0=disabled)')
     parser.add_argument('--max-events', type=int, default=1000,
-                        help='Maximum events per frame to send (default: 1000)')
+                        help='Maximum events/frame for UART send path (default: 1000, auto-clamped to link budget)')
     parser.add_argument('--loop', action='store_true',
                         help='Loop video file playback')
     parser.add_argument('--legacy-mode', action='store_true',
@@ -623,6 +781,13 @@ def main():
                         help=f'Shot noise probability per pixel per frame (default: {DEFAULT_SHOT_NOISE_RATE})')
     
     args = parser.parse_args()
+    preview_enabled = args.preview
+    if preview_enabled and not opencv_gui_available():
+        print("WARNING: OpenCV GUI backend is not available. Running without preview window.")
+        print("         Install GUI-enabled OpenCV: pip install --upgrade opencv-python")
+        print("         If needed, remove headless build: pip uninstall -y opencv-python-headless")
+        preview_enabled = False
+
     use_simulator = args.simulate
     use_video = args.video is not None
     video_cap = None
@@ -666,12 +831,29 @@ def main():
     file_handler = None
     
     if args.port:
-        uart_handler = UARTOutputHandler(args.port, args.baud)
+        uart_handler = UARTOutputHandler(args.port, args.baud, architecture=args.arch)
         if uart_handler.open():
-            uart_handler.test_connection()
-            uart_handler.start_tx_thread()
+            if not uart_handler.test_connection() and args.arch == 'voxel_bin':
+                print("ERROR: voxel_bin echo test failed; check bitstream/baud/port.")
+                uart_handler.close()
+                uart_handler = None
+            elif uart_handler is not None:
+                if args.arch == 'auto':
+                    print(f"UART mode: {uart_handler.detected_architecture}")
+                uart_handler.start_tx_thread()
         else:
             uart_handler = None
+
+    uart_budget = args.max_events
+    if uart_handler:
+        estimated_budget = estimate_uart_event_budget_per_frame(args.baud, args.fps)
+        if args.max_events > estimated_budget:
+            uart_budget = estimated_budget
+            print(f"WARNING: --max-events {args.max_events} exceeds UART capacity at {args.baud} baud / {args.fps} FPS.")
+            print(f"         Using UART send budget: {uart_budget} events/frame (estimated sustainable).")
+            print("         Increase baud rate or lower FPS for higher live event throughput.")
+        else:
+            uart_budget = args.max_events
     
     if args.save:
         if args.format == 'evt2':
@@ -682,6 +864,9 @@ def main():
     
     paused = False
     frame_time = 1.0 / args.fps
+    uart_events_generated = 0
+    uart_events_after_subsample = 0
+    uart_events_enqueued = 0
     
     try:
         while True:
@@ -712,19 +897,25 @@ def main():
                     events = emulator.process_frame(frame)
                 elif frame is None:
                     continue
-                if len(events) > args.max_events:
-                    events = events[:args.max_events]
                 if uart_handler:
-                    uart_handler.send_events(events)
+                    tx_events = uniform_subsample_events(events, uart_budget)
+                    uart_events_generated += len(events)
+                    uart_events_after_subsample += len(tx_events)
+                    uart_events_enqueued += uart_handler.send_events(tx_events)
                 if file_handler:
                     file_handler.write_events(events)
-                if args.preview:
+                if preview_enabled:
                     stats = emulator.get_stats()
                     recent_gestures = uart_handler.get_recent_gestures(max_count=3) if uart_handler else None
                     preview = create_combined_preview(frame, events, args.resolution, stats, recent_gestures)
                     preview_scaled = cv2.resize(preview, None, fx=2, fy=2, interpolation=cv2.INTER_NEAREST)
-                    cv2.imshow('DVS Emulator (Original | Events)', preview_scaled)
-            if args.preview:
+                    try:
+                        cv2.imshow('DVS Emulator (Original | Events)', preview_scaled)
+                    except cv2.error:
+                        print("WARNING: Preview window failed (OpenCV GUI unavailable). Continuing without preview.")
+                        preview_enabled = False
+                        safe_destroy_all_windows()
+            if preview_enabled:
                 key = cv2.waitKey(1) & 0xFF
                 
                 if key == ord('q'):
@@ -782,6 +973,12 @@ def main():
         print(f"Total Events: {stats['total_events']} | ON: {stats['on_events']} | OFF: {stats['off_events']} | Noise: {stats['noise_events']} | Frames: {stats['frame_count']}")
         if uart_handler:
             print(f"Events Sent: {uart_handler.events_sent}")
+            print(f"EVT2 Words Sent: {uart_handler.evt2_words_sent}")
+            print(f"UART Events Generated: {uart_events_generated}")
+            print(f"UART Events After Subsample: {uart_events_after_subsample}")
+            print(f"UART Events Enqueued: {uart_events_enqueued}")
+            print(f"UART Queue Drops (oldest evicted): {uart_handler.queue_events_dropped}")
+            print(f"UART Queue High Watermark: {uart_handler.queue_high_watermark}")
             with uart_handler.lock:
                 if uart_handler.gestures_received:
                     gesture_counts = {}
@@ -796,7 +993,8 @@ def main():
             video_cap.release()
         if not use_simulator and not use_video:
             emulator.close_camera()
-        cv2.destroyAllWindows()
+        if preview_enabled:
+            safe_destroy_all_windows()
 
 
 if __name__ == '__main__':

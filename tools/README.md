@@ -2,6 +2,8 @@
 
 This directory contains tools for emulating a Dynamic Vision Sensor (DVS) using a standard webcam, enabling testing of the DVS Gesture Accelerator without actual DVS hardware.
 
+python tools/dvs_camera_emulator.py --port COM3 --baud 115200 --arch auto --preview --no-noise --contrast 0.20 --max-events 86
+
 ## Overview
 
 Dynamic Vision Sensors (DVS) are neuromorphic cameras that detect changes in pixel intensity asynchronously, outputting events only when brightness changes beyond a threshold. This is fundamentally different from traditional frame-based cameras.
@@ -157,12 +159,23 @@ python dvs_camera_emulator.py --save recording.bin --format dvs1 --preview
 
 **Send to FPGA via UART:**
 ```bash
-python dvs_camera_emulator.py --port /dev/ttyUSB0 --baud 115200 --preview
+# Auto-detect architecture (recommended)
+python dvs_camera_emulator.py --port /dev/ttyUSB0 --baud 115200 --arch auto --preview
+
+# Force voxel_bin architecture (echo-based)
+python dvs_camera_emulator.py --port /dev/ttyUSB0 --baud 115200 --arch voxel_bin --preview
+
+# Force gradient_map architecture (ASCII gesture output)
+python dvs_camera_emulator.py --port /dev/ttyUSB0 --baud 115200 --arch gradient_map --preview
+
+# Windows example
+python dvs_camera_emulator.py --port COM3 --baud 115200 --arch auto --preview
 ```
 
 **Limit events per frame (prevent UART overflow):**
 ```bash
-python dvs_camera_emulator.py --port /dev/ttyUSB0 --max-events 500 --preview
+# At 115200 baud / 30 FPS, ~86 events/frame is a practical ceiling.
+python dvs_camera_emulator.py --port /dev/ttyUSB0 --max-events 86 --preview
 ```
 
 ### Advanced Options
@@ -196,6 +209,7 @@ python dvs_camera_emulator.py --help
 | `--video` | None | Video file input instead of camera |
 | `--simulate` | False | Simulate gestures without camera |
 | `--port` | None | Serial port for UART output |
+| `--arch` | auto | FPGA architecture: `auto`, `voxel_bin`, or `gradient_map` |
 | `--baud` | 115200 | UART baud rate |
 | `--contrast` | 0.15 | Contrast threshold (log-domain, ~15% change) |
 | `--threshold` | 15 | Legacy threshold (scaled difference) |
@@ -207,7 +221,7 @@ python dvs_camera_emulator.py --help
 | `--save` | None | Save events to binary file |
 | `--format` | evt2 | Output format: `evt2` (Prophesee EVT 2.0) or `dvs1` (legacy) |
 | `--noise-filter` | 3 | Gaussian blur kernel size |
-| `--max-events` | 1000 | Max events per frame to send |
+| `--max-events` | 1000 | Max events/frame for UART send path (auto-clamped to link budget) |
 | `--loop` | False | Loop video file playback |
 | `--no-noise` | False | Disable background noise model |
 | `--leak-rate` | 0.001 | Reference leak rate per second |
@@ -250,17 +264,29 @@ python dvs_event_player.py recording.bin --port /dev/ttyUSB0 --loop
 
 ## UART Protocol
 
-Events are sent as 5 bytes matching the `uart_gesture_top.sv` protocol:
+When `--port` is used, the emulator streams **EVT 2.0 words** over UART to the FPGA (MSB-first per 32-bit word), matching the input expected by `evt2_decoder.sv` in both architectures.
 
-| Byte | Content | Description |
-|------|---------|-------------|
-| 0 | `X_HI` | X coordinate bit 8 (MSB) |
-| 1 | `X_LO` | X coordinate bits 7:0 |
-| 2 | `Y_HI` | Y coordinate bit 8 (MSB) |
-| 3 | `Y_LO` | Y coordinate bits 7:0 |
-| 4 | `POL` | Polarity (1=ON, 0=OFF) |
+CD event packet format:
 
-Coordinates range from 0-319 to match the 320x320 sensor resolution.
+| Bits | Field | Description |
+|------|-------|-------------|
+| `[31:28]` | `type` | `0x0`=CD_OFF, `0x1`=CD_ON |
+| `[27:22]` | `ts_lsb` | 6-bit timestamp LSB (microseconds) |
+| `[21:11]` | `x` | 11-bit X coordinate |
+| `[10:0]` | `y` | 11-bit Y coordinate |
+
+TIME_HIGH packet format:
+
+| Bits | Field | Description |
+|------|-------|-------------|
+| `[31:28]` | `type` | `0x8` = TIME_HIGH |
+| `[27:0]` | `time_high` | Upper 28 bits of timestamp |
+
+The emulator emits TIME_HIGH whenever upper timestamp bits change, so the FPGA receives a faithful EVT2 stream.
+
+Gesture labels shown by the emulator UI/console are based on **actual UART output from the FPGA**:
+- `voxel_bin`: binary gesture packets (`0xA0|gesture`, confidence)
+- `gradient_map`: ASCII labels (`UP`, `DOWN`, `LEFT`, `RIGHT`)
 
 ## Understanding DVS Events
 
@@ -357,9 +383,16 @@ All values are little-endian. Used by `dvs_event_player.py`.
 
 **UART connection issues:**
 - Verify correct port name
+- On Windows, check Device Manager for the active COM port (e.g., `COM3`)
 - Check baud rate matches FPGA (115200)
 - Ensure FPGA is programmed and running
 - Test with echo command: send `0xFF`, should receive `0x55`
+
+**Preview window crashes / `cvShowImage` not implemented:**
+- You are using a headless OpenCV build (`opencv-python-headless`)
+- Install GUI-enabled OpenCV: `pip install --upgrade opencv-python`
+- If needed, remove headless build: `pip uninstall -y opencv-python-headless`
+- You can still run without preview by omitting `--preview`
 
 **Events look different from real DVS:**
 - Use realistic mode (not `--legacy-mode`)

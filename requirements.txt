@@ -9,8 +9,8 @@ pytest
 # Numerical processing (weight generation, event processing)
 numpy
 
-# Host-side camera emulator and event tools
-opencv-python-headless
+# Host-side camera emulator and event tools (preview window support)
+opencv-python
 
 # UART communication with the FPGA
 pyserial
