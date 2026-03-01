@@ -23,6 +23,12 @@ ifeq ($(TEST),)
     COMPILE_ARGS += -Pvoxel_bin_top.CYCLES_PER_BIN=2000
     COMPILE_ARGS += -Pvoxel_bin_top.BAUD_RATE=3000000
     COMPILE_ARGS += -Pvoxel_bin_top.WINDOW_MS=40
+  else ifeq ($(TEST),core)
+    VERILOG_SOURCES = $(VOXEL_BIN_SOURCES)
+    TOPLEVEL = voxel_bin_core
+    COCOTB_TEST_MODULES   = test_voxel_bin_core
+    COMPILE_ARGS += -Pvoxel_bin_core.CYCLES_PER_BIN=64
+    COMPILE_ARGS += -Pvoxel_bin_core.WINDOW_MS=40
   else ifeq ($(TEST),input_fifo)
     VERILOG_SOURCES = $(RTL_DIR)/voxel_bin_architecture/input_fifo.sv
     TOPLEVEL = input_fifo
@@ -53,7 +59,7 @@ else ifeq ($(TEST),weight_ram)
   COCOTB_TEST_MODULES   = test_weight_ram
   COMPILE_ARGS += -Pweight_ram.CLASS_IDX=0
 else
-  $(error Unknown TEST=$(TEST). Use: input_fifo, evt2_decoder, voxel_binning, systolic_array, gesture_classifier, weight_ram)
+  $(error Unknown TEST=$(TEST). Use: core, input_fifo, evt2_decoder, voxel_binning, systolic_array, gesture_classifier, weight_ram)
 endif
 
 SIM = icarus
@@ -122,7 +128,7 @@ test:
 	$(MAKE) sim
 
 test_unit:
-	@for t in input_fifo evt2_decoder voxel_binning systolic_array gesture_classifier weight_ram; do \
+	@for t in core input_fifo evt2_decoder voxel_binning systolic_array gesture_classifier weight_ram; do \
 		echo "======== Running TEST=$$t ========"; \
 		$(MAKE) clean > /dev/null 2>&1; \
 		$(MAKE) sim TEST=$$t || exit 1; \

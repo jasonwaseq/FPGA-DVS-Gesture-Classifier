@@ -136,6 +136,12 @@ async def test_read_write(dut):
     """Write a custom value and read it back."""
     await setup(dut)
     addr = 42
+    model = GMWeightRamModel(class_idx=0)
+    original = model.read(addr)
+    observed_before = await read_weight(dut, addr)
+    assert observed_before == original, \
+        f"Pre-write mismatch at addr {addr}: DUT={observed_before}, model={original}"
+
     write_val = -100 & 0xFF
 
     dut.cell_addr.value = addr
@@ -147,6 +153,16 @@ async def test_read_write(dut):
 
     result = await read_weight(dut, addr)
     assert result == -100, f"Expected -100, got {result}"
+
+    # Restore the original initialized value so later golden checks stay independent.
+    dut.cell_addr.value = addr
+    dut.din.value = original & 0xFF
+    dut.we.value = 1
+    await RisingEdge(dut.clk)
+    dut.we.value = 0
+    await RisingEdge(dut.clk)
+    restored = await read_weight(dut, addr)
+    assert restored == original, f"Restore failed at addr {addr}: got {restored}, expected {original}"
 
 
 @cocotb.test()

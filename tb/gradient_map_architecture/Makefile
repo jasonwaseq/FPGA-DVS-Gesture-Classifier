@@ -24,6 +24,20 @@ ifeq ($(TEST),)
     COMPILE_ARGS += -Pgradient_map_top.FRAME_PERIOD_MS=1
     COMPILE_ARGS += -Pgradient_map_top.MIN_MASS_THRESH=20
     COMPILE_ARGS += -Pgradient_map_top.DECAY_SHIFT=12
+  else ifeq ($(TEST),core)
+    VERILOG_SOURCES = $(RTL_DIR)/gradient_map_architecture/input_fifo.sv \
+                      $(RTL_DIR)/gradient_map_architecture/evt2_decoder.sv \
+                      $(RTL_DIR)/gradient_map_architecture/gradient_mapping.sv \
+                      $(RTL_DIR)/gradient_map_architecture/gradient_map_core.sv \
+                      $(RTL_DIR)/gradient_map_architecture/weight_ram.sv \
+                      $(RTL_DIR)/gradient_map_architecture/systolic_array.sv \
+                      $(RTL_DIR)/gradient_map_architecture/gesture_classifier.sv
+    TOPLEVEL = gradient_map_core
+    COCOTB_TEST_MODULES   = test_gradient_map_core
+    COMPILE_ARGS += -Pgradient_map_core.CLK_FREQ_HZ=1000000
+    COMPILE_ARGS += -Pgradient_map_core.FRAME_PERIOD_MS=1
+    COMPILE_ARGS += -Pgradient_map_core.MIN_MASS_THRESH=20
+    COMPILE_ARGS += -Pgradient_map_core.DECAY_SHIFT=15
   else ifeq ($(TEST),input_fifo)
     VERILOG_SOURCES = $(RTL_DIR)/gradient_map_architecture/input_fifo.sv
     TOPLEVEL = input_fifo
@@ -57,7 +71,7 @@ else ifeq ($(TEST),weight_ram)
   COCOTB_TEST_MODULES   = test_weight_ram
   COMPILE_ARGS += -Pweight_ram.CLASS_IDX=0
 else
-  $(error Unknown TEST=$(TEST). Use: input_fifo, evt2_decoder, gradient_mapping, systolic_array, gesture_classifier, weight_ram)
+  $(error Unknown TEST=$(TEST). Use: core, input_fifo, evt2_decoder, gradient_mapping, systolic_array, gesture_classifier, weight_ram)
 endif
 
 SIM = icarus
@@ -126,7 +140,7 @@ test:
 	$(MAKE) sim
 
 test_unit:
-	@for t in input_fifo evt2_decoder gradient_mapping systolic_array gesture_classifier weight_ram; do \
+	@for t in core input_fifo evt2_decoder gradient_mapping systolic_array gesture_classifier weight_ram; do \
 		echo "======== Running TEST=$$t ========"; \
 		$(MAKE) clean > /dev/null 2>&1; \
 		$(MAKE) sim TEST=$$t || exit 1; \
