@@ -104,7 +104,7 @@ If OSS CAD Suite is already installed system-wide (e.g. via Homebrew on macOS or
 The current verification flow is cocotb unit testbenches per module.
 
 ```bash
-# Unit suites (Linux/macOS or Windows with Git bash on PATH)
+# Unit suites (POSIX shells, including WSL)
 cd tb/voxel_bin_architecture && make test_unit
 cd tb/gradient_map_architecture && make test_unit
 cd tb/uart && make all
@@ -113,6 +113,18 @@ cd tb/uart && make all
 cd tb/voxel_bin_architecture && make sim TEST=evt2_decoder
 cd tb/gradient_map_architecture && make sim TEST=gradient_mapping
 cd tb/uart && make sim TEST=uart_rx
+```
+
+```powershell
+# PowerShell from repo root
+make -C tb/voxel_bin_architecture test_unit
+make -C tb/gradient_map_architecture test_unit
+make -C tb/uart all
+
+# One module testbench
+make -C tb/voxel_bin_architecture sim TEST=evt2_decoder
+make -C tb/gradient_map_architecture sim TEST=gradient_mapping
+make -C tb/uart sim TEST=uart_rx
 ```
 
 ### 3. Synthesize (local)
@@ -124,6 +136,18 @@ python3 setup.py synth gradient_map   # -> synth/gradient_map/gradient_map_top.b
 # Or via the synth Makefile
 cd synth && make ARCH=gradient_map TARGET=raw
 cd synth && make ARCH=voxel_bin    TARGET=raw
+cd synth && make all_arch                    # both architectures
+```
+
+```powershell
+# PowerShell from repo root
+python setup.py synth voxel_bin
+python setup.py synth gradient_map
+
+# Or via Makefile
+make -C synth ARCH=gradient_map TARGET=raw
+make -C synth ARCH=voxel_bin TARGET=raw
+make -C synth all_arch
 ```
 
 ### 4. Flash (local)

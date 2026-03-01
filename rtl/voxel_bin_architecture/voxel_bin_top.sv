@@ -20,7 +20,9 @@ module voxel_bin_top #(
     parameter MIN_EVENT_THRESH  = 20,
     parameter MOTION_THRESH     = 8,
     parameter PERSISTENCE_COUNT = 1,
-    parameter CYCLES_PER_BIN    = 600
+    parameter CYCLES_PER_BIN    = 600,
+    // Keep top-level synthesis BRAM usage within iCE40UP5K limits.
+    parameter CORE_PARALLEL_READS = 2
 )(
     input  logic clk,
     input  logic uart_rx,
@@ -83,7 +85,8 @@ module voxel_bin_top #(
         .MIN_EVENT_THRESH  (MIN_EVENT_THRESH),
         .MOTION_THRESH     (MOTION_THRESH),
         .PERSISTENCE_COUNT (PERSISTENCE_COUNT),
-        .CYCLES_PER_BIN    (CYCLES_PER_BIN)
+        .CYCLES_PER_BIN    (CYCLES_PER_BIN),
+        .PARALLEL_READS    (CORE_PARALLEL_READS)
     ) u_core (
         .clk                 (clk),
         .rst                 (rst),

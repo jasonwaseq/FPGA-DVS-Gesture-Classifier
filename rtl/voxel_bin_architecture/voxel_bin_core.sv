@@ -13,7 +13,8 @@ module voxel_bin_core #(
     parameter MIN_EVENT_THRESH   = 20,
     parameter MOTION_THRESH      = 8,
     parameter PERSISTENCE_COUNT  = 2,
-    parameter CYCLES_PER_BIN     = 0
+    parameter CYCLES_PER_BIN     = 0,
+    parameter PARALLEL_READS     = 4
 )(
     input  logic        clk,
     input  logic        rst,
@@ -31,7 +32,6 @@ module voxel_bin_core #(
 );
 
     localparam integer FIFO_PTR_BITS   = $clog2(FIFO_DEPTH);
-    localparam integer PARALLEL_READS  = 4;
     localparam integer COUNTER_BITS    = 6;
     localparam integer NUM_CLASSES     = 4;
     localparam integer NUM_BINS        = 4;
