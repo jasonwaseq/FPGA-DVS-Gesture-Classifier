@@ -195,8 +195,8 @@ class FPGAGestureInterface:
         self._ascii_line_buffer.clear()
 
     def realign_parser(self):
-        """Send 4 zero bytes to complete any partial 5-byte event packet."""
-        self._send_bytes(bytes(4))
+        """Send 3 zero bytes to complete any partial 4-byte EVT2 word."""
+        self._send_bytes(bytes(3))
         time.sleep(0.01)
         self.clear_rx_buffer()
 
@@ -260,12 +260,9 @@ class FPGAGestureInterface:
         time.sleep(0.01)
 
     def send_dvs_event(self, event: DVSEvent):
-        packet = bytes([
-            (event.x >> 8) & 0x01, event.x & 0xFF,
-            (event.y >> 8) & 0x01, event.y & 0xFF,
-            event.polarity & 0x01
-        ])
-        self._send_bytes(packet)
+        evt_type = 0x1 if event.polarity else 0x0
+        word = (evt_type << 28) | ((event.x & 0x7FF) << 11) | (event.y & 0x7FF)
+        self._send_bytes(word.to_bytes(4, "big"))
 
     def send_event_stream(self, events: List[DVSEvent], delay_us: float = 0):
         for event in events:

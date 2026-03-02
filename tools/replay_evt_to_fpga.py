@@ -39,8 +39,15 @@ def decode_evt2_word(word, x_shift, x_mask, y_shift, y_mask, swap_xy):
     return event_type, None, None, None
 
 
-def encode_5byte_packet(x, y, pol):
-    return bytes([(x >> 8) & 0x01, x & 0xFF, (y >> 8) & 0x01, y & 0xFF, pol & 0x01])
+def encode_evt2_word_be(x, y, pol, ts_lsb=0):
+    """Pack x, y, polarity into a 4-byte big-endian EVT2.0 CD word.
+
+    voxel_bin_top expects raw EVT2.0 words, MSB first (big-endian).
+    type=0x1 (CD_ON) if pol else 0x0 (CD_OFF); ts_lsb fills bits [27:22].
+    """
+    evt_type = 0x1 if pol else 0x0
+    word = (evt_type << 28) | ((ts_lsb & 0x3F) << 22) | ((x & 0x7FF) << 11) | (y & 0x7FF)
+    return word.to_bytes(4, "big")
 
 
 def detect_alignment_offset(data, sample_words=20000):
@@ -82,24 +89,43 @@ class FPGAResponseReader:
             self.thread.join(timeout=2.0)
 
     def _worker(self):
-        buf = b""
+        pending_gesture_byte = None
+        ascii_buf = bytearray()
         while self.running:
             try:
                 data = self.port.read(self.port.in_waiting or 1)
                 if not data:
                     continue
-                buf += data
-                while b"\n" in buf:
-                    line, buf = buf.split(b"\n", 1)
-                    line = line.strip(b"\r").decode("ascii", errors="replace").strip()
-                    if not line:
-                        continue
-                    with self.lock:
-                        self.raw_lines.append(line)
-                        gesture = line.upper()
-                        if gesture in ("UP", "DOWN", "LEFT", "RIGHT"):
+                for b in data:
+                    # Binary voxel_bin protocol: [0xA0|gesture, confidence]
+                    if pending_gesture_byte is not None:
+                        g = pending_gesture_byte & 0x03
+                        gesture = ["UP", "DOWN", "LEFT", "RIGHT"][g]
+                        with self.lock:
+                            self.raw_lines.append(f"{gesture}(conf={(b >> 4) & 0xF})")
                             self.gestures.append(gesture)
                             self.gesture_count[gesture] += 1
+                        pending_gesture_byte = None
+                        continue
+
+                    if (b & 0xF0) == 0xA0:
+                        pending_gesture_byte = b
+                        continue
+
+                    # ASCII protocol (gradient_map): newline-terminated gesture names
+                    if b in (0x0A, 0x0D):
+                        if ascii_buf:
+                            line = ascii_buf.decode("ascii", errors="replace").strip()
+                            ascii_buf.clear()
+                            with self.lock:
+                                self.raw_lines.append(line)
+                                if line.upper() in ("UP", "DOWN", "LEFT", "RIGHT"):
+                                    self.gestures.append(line.upper())
+                                    self.gesture_count[line.upper()] += 1
+                    elif 32 <= b <= 126:
+                        ascii_buf.append(b)
+                        if len(ascii_buf) > 32:
+                            ascii_buf.clear()
             except serial.SerialException:
                 break
             except Exception:
@@ -161,22 +187,28 @@ def replay_file(args):
     try:
         for i in range(total_words):
             w = int.from_bytes(data[4 * i: 4 * i + 4], "little")
-            evt_type, x, y, pol = decode_evt2_word(
-                w, args.x_shift, args.x_mask, args.y_shift, args.y_mask, args.swap_xy
-            )
+            evt_type = (w >> 28) & 0xF
 
-            if x is None:
-                continue  # Not a CD event
-
-            if x >= 320 or y >= 320:
-                skipped += 1
+            if evt_type not in VALID_EVT2_TYPES:
                 continue
 
-            pkt = encode_5byte_packet(x, y, pol)
+            if evt_type in (EVT_CD_OFF, EVT_CD_ON):
+                _, x, y, pol = decode_evt2_word(
+                    w, args.x_shift, args.x_mask, args.y_shift, args.y_mask, args.swap_xy
+                )
+                if x >= 320 or y >= 320:
+                    skipped += 1
+                    continue
+                pkt = encode_evt2_word_be(x, y, pol)
+            else:
+                # Pass non-CD valid types (e.g. TIME_HIGH) through unchanged, LE→BE.
+                # The FPGA decoder needs TIME_HIGH events for timestamp reconstruction.
+                pkt = w.to_bytes(4, "big")
+
             fpga.write(pkt)
             sent += 1
 
-            if inter_delay > 0:
+            if inter_delay > 0 and evt_type in (EVT_CD_OFF, EVT_CD_ON):
                 time.sleep(inter_delay)
 
             # Periodic status output
@@ -268,20 +300,23 @@ def live_relay(args):
             for i in range(0, n, 4):
                 w = int.from_bytes(buf[i:i + 4], "little")
                 words += 1
+                evt_type = (w >> 28) & 0xF
 
-                evt_type, x, y, pol = decode_evt2_word(
-                    w, args.x_shift, args.x_mask,
-                    args.y_shift, args.y_mask, args.swap_xy
-                )
-
-                if x is None:
+                if evt_type not in VALID_EVT2_TYPES:
                     continue
 
-                if x >= 320 or y >= 320:
-                    skipped += 1
-                    continue
+                if evt_type in (EVT_CD_OFF, EVT_CD_ON):
+                    _, x, y, pol = decode_evt2_word(
+                        w, args.x_shift, args.x_mask,
+                        args.y_shift, args.y_mask, args.swap_xy
+                    )
+                    if x >= 320 or y >= 320:
+                        skipped += 1
+                        continue
+                    pkt = encode_evt2_word_be(x, y, pol)
+                else:
+                    pkt = w.to_bytes(4, "big")
 
-                pkt = encode_5byte_packet(x, y, pol)
                 fpga.write(pkt)
                 sent += 1
 

@@ -31,8 +31,16 @@ module evt2_decoder #(
 
     logic [27:0] time_high_reg;
 
-    wire [4:0] x_grid_raw5 = x_raw[8:4];
-    wire [4:0] y_grid_raw5 = y_raw[8:4];
+    // Map 320-px sensor coordinates to a GRID_SIZE=16 grid.
+    // Correct cell width = 320/16 = 20 px.  The old >> 4 (÷16) crammed pixels
+    // 240-319 into grid cell 15 (5× normal event density, corrupting scores).
+    // Fix: approximate ÷20 as (coord * 13) >> 8 ≈ coord / 19.69.
+    // cell_n starts at n*256/13 = n*19.69; error ≤ 1 cell at the upper edge.
+    // Using 13-bit product to prevent overflow: max(319 * 13) = 4147 < 2^13.
+    wire [12:0] x_prod = 13'd13 * {4'd0, x_raw[8:0]};
+    wire [12:0] y_prod = 13'd13 * {4'd0, y_raw[8:0]};
+    wire [4:0]  x_grid_raw5 = x_prod[12:8];
+    wire [4:0]  y_grid_raw5 = y_prod[12:8];
     wire [GRID_BITS-1:0] x_grid = (x_grid_raw5 > 5'd15) ? 4'd15 : x_grid_raw5[GRID_BITS-1:0];
     wire [GRID_BITS-1:0] y_grid = (y_grid_raw5 > 5'd15) ? 4'd15 : y_grid_raw5[GRID_BITS-1:0];
 
