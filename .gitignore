@@ -58,3 +58,6 @@ desktop.ini
 # ── Generated activation scripts (created by setup.py) ───────────────────────
 activate.ps1
 activate.sh
+
+*.txt
+*.bin

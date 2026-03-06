@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Live relay: GenX320 EVT2 stream -> iCE40 UART, with gesture RX decoding."""
+"""EVT2 stream to iCE40 FPGA: live relay from GenX320 camera or .bin file replay."""
 
 import argparse
 import sys
@@ -156,6 +156,10 @@ def main():
     )
     parser.add_argument("--duration", type=float, default=0.0, help="Stop after N seconds (0=run forever)")
     parser.add_argument("--save-raw", type=str, default="", help="Optional raw DVS capture file")
+    parser.add_argument("--file", type=str, default="",
+                        help="Replay a raw EVT2 .bin file instead of a live DVS camera")
+    parser.add_argument("--loop", action="store_true", default=False,
+                        help="Loop file replay continuously (only with --file)")
     parser.add_argument(
         "--max-write-bytes",
         type=int,
@@ -176,17 +180,34 @@ def main():
     )
     args = parser.parse_args()
 
-    print(f"[OPEN] DVS={args.dvs} @ {args.dvs_baud}, FPGA={args.fpga} @ {args.fpga_baud}"
-          f"  swap_xy={'YES' if args.swap_xy else 'no'}")
-    try:
-        dvs = serial.Serial(args.dvs, args.dvs_baud, timeout=0.1)
-    except serial.SerialException as e:
-        print(f"[ERROR] Cannot open DVS port {args.dvs}: {e}")
-        return 1
+    file_bytes = None
+    file_pos = 0
+    dvs = None
+
+    if args.file:
+        print(f"[OPEN] FILE={args.file}, FPGA={args.fpga} @ {args.fpga_baud}"
+              f"  swap_xy={'YES' if args.swap_xy else 'no'}"
+              f"  loop={'YES' if args.loop else 'no'}")
+        try:
+            file_bytes = open(args.file, "rb").read()
+        except OSError as e:
+            print(f"[ERROR] Cannot open file {args.file}: {e}")
+            return 1
+        print(f"[FILE] Loaded {len(file_bytes)} bytes ({len(file_bytes) // 4} words)")
+    else:
+        print(f"[OPEN] DVS={args.dvs} @ {args.dvs_baud}, FPGA={args.fpga} @ {args.fpga_baud}"
+              f"  swap_xy={'YES' if args.swap_xy else 'no'}")
+        try:
+            dvs = serial.Serial(args.dvs, args.dvs_baud, timeout=0.1)
+        except serial.SerialException as e:
+            print(f"[ERROR] Cannot open DVS port {args.dvs}: {e}")
+            return 1
+
     try:
         fpga = serial.Serial(args.fpga, args.fpga_baud, timeout=0.05, write_timeout=0.2)
     except serial.SerialException as e:
-        dvs.close()
+        if dvs:
+            dvs.close()
         print(f"[ERROR] Cannot open FPGA port {args.fpga}: {e}")
         return 1
 
@@ -203,9 +224,13 @@ def main():
     if save_f:
         print(f"[SAVE] Raw stream capture -> {args.save_raw}")
 
-    probe = dvs.read(args.probe_bytes)
-    if save_f and probe:
-        save_f.write(probe)
+    if file_bytes is not None:
+        probe = file_bytes[:args.probe_bytes]
+        file_pos = len(probe)
+    else:
+        probe = dvs.read(args.probe_bytes)
+        if save_f and probe:
+            save_f.write(probe)
 
     if len(probe) >= 16:
         off, ratio, counts = detect_alignment_offset(probe)
@@ -231,18 +256,33 @@ def main():
 
     start = time.time()
     last_report = start
-    print("[RUN] Live relay started. Ctrl+C to stop.")
+    mode_label = "File replay" if file_bytes is not None else "Live relay"
+    print(f"[RUN] {mode_label} started. Ctrl+C to stop.")
     try:
         while True:
-            try:
-                data = dvs.read(dvs.in_waiting or args.chunk)
-            except serial.SerialException as e:
-                print(f"[ERROR] DVS read failed: {e}")
-                break
-            if data:
-                if save_f:
-                    save_f.write(data)
+            if file_bytes is not None:
+                chunk_end = min(file_pos + args.chunk, len(file_bytes))
+                data = file_bytes[file_pos:chunk_end]
+                file_pos = chunk_end
+                if not data:
+                    if args.loop:
+                        file_pos = 0
+                        print("[FILE] Looping playback.")
+                        continue
+                    else:
+                        print("[FILE] End of file.")
+                        break
                 buf.extend(data)
+            else:
+                try:
+                    data = dvs.read(dvs.in_waiting or args.chunk)
+                except serial.SerialException as e:
+                    print(f"[ERROR] DVS read failed: {e}")
+                    break
+                if data:
+                    if save_f:
+                        save_f.write(data)
+                    buf.extend(data)
 
             full_len = (len(buf) // 4) * 4
             if full_len:
@@ -321,7 +361,8 @@ def main():
         if save_f:
             save_f.close()
         fpga.close()
-        dvs.close()
+        if dvs:
+            dvs.close()
 
     elapsed = time.time() - start
     print("\n[SUMMARY]")

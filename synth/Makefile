@@ -13,9 +13,9 @@ TARGET ?= raw
 
 # ── gradient_map sources ────────────────────────────────────────────────────
 # Raw pipeline: UART RX -> 5-byte assembler -> gradient_map_core -> UART TX
-GRADIENT_MAP_CORE = $(RTL_DIR)/uart_tx.sv \
-                    $(RTL_DIR)/uart_rx.sv \
-                    $(RTL_DIR)/uart_debug.sv \
+GRADIENT_MAP_CORE = $(RTL_DIR)/uart/uart_tx.sv \
+                    $(RTL_DIR)/uart/uart_rx.sv \
+                    $(RTL_DIR)/uart/uart_debug.sv \
                     $(RTL_DIR)/gradient_map_architecture/input_fifo.sv \
                     $(RTL_DIR)/gradient_map_architecture/evt2_decoder.sv \
                     $(RTL_DIR)/gradient_map_architecture/gradient_mapping.sv \
@@ -25,9 +25,9 @@ GRADIENT_MAP_CORE = $(RTL_DIR)/uart_tx.sv \
                     $(RTL_DIR)/gradient_map_architecture/gesture_classifier.sv
 
 # Processed pipeline: preprocessed events -> gradient_map_core -> UART TX
-GRADIENT_MAP_PROCESSED_CORE = $(RTL_DIR)/uart_tx.sv \
-                               $(RTL_DIR)/uart_rx.sv \
-                               $(RTL_DIR)/uart_debug.sv \
+GRADIENT_MAP_PROCESSED_CORE = $(RTL_DIR)/uart/uart_tx.sv \
+                               $(RTL_DIR)/uart/uart_rx.sv \
+                               $(RTL_DIR)/uart/uart_debug.sv \
                                $(RTL_DIR)/gradient_map_architecture/input_fifo.sv \
                                $(RTL_DIR)/gradient_map_architecture/evt2_decoder.sv \
                                $(RTL_DIR)/gradient_map_architecture/gradient_mapping.sv \
@@ -37,14 +37,14 @@ GRADIENT_MAP_PROCESSED_CORE = $(RTL_DIR)/uart_tx.sv \
                                $(RTL_DIR)/gradient_map_architecture/gesture_classifier.sv
 
 # ── voxel_bin sources ───────────────────────────────────────────────────────
-VOXEL_BIN_CORE = $(RTL_DIR)/uart_tx.sv \
-                 $(RTL_DIR)/uart_rx.sv \
-                 $(RTL_DIR)/voxel_bin_architecture/input_fifo.sv \
-                 $(RTL_DIR)/voxel_bin_architecture/evt2_decoder.sv \
+VOXEL_BIN_CORE = $(RTL_DIR)/uart/uart_tx.sv \
+                 $(RTL_DIR)/uart/uart_rx.sv \
+                 $(RTL_DIR)/input_fifo.sv \
+                 $(RTL_DIR)/evt2_decoder.sv \
                  $(RTL_DIR)/voxel_bin_architecture/voxel_binning.sv \
-                 $(RTL_DIR)/voxel_bin_architecture/systolic_array.sv \
-                 $(RTL_DIR)/voxel_bin_architecture/gesture_classifier.sv \
-                 $(RTL_DIR)/voxel_bin_architecture/weight_ram.sv \
+                 $(RTL_DIR)/systolic_array.sv \
+                 $(RTL_DIR)/gesture_classifier.sv \
+                 $(RTL_DIR)/ram_1r1w_sync.sv \
                  $(RTL_DIR)/voxel_bin_architecture/voxel_bin_core.sv
 
 # ── select top module ────────────────────────────────────────────────────────

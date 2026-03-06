@@ -27,14 +27,14 @@ PYTHON_PACKAGES = [
 ]
 
 VOXEL_BIN_CORE_FILES = [
-    "uart_rx.sv",
-    "uart_tx.sv",
-    "voxel_bin_architecture/input_fifo.sv",
-    "voxel_bin_architecture/evt2_decoder.sv",
+    "uart/uart_rx.sv",
+    "uart/uart_tx.sv",
+    "input_fifo.sv",
+    "evt2_decoder.sv",
     "voxel_bin_architecture/voxel_binning.sv",
-    "voxel_bin_architecture/systolic_array.sv",
-    "voxel_bin_architecture/gesture_classifier.sv",
-    "voxel_bin_architecture/weight_ram.sv",
+    "systolic_array.sv",
+    "gesture_classifier.sv",
+    "ram_1r1w_sync.sv",
     "voxel_bin_architecture/voxel_bin_core.sv",
 ]
 
