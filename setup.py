@@ -20,44 +20,46 @@ SYNTH_DIR = PROJECT_ROOT / "synth"
 
 PYTHON_PACKAGES = [
     "cocotb",
-    "pytest", 
+    "pytest",
     "numpy",
     "opencv-python",
     "pyserial",
 ]
 
-VOXEL_BIN_CORE_FILES = [
-    "uart/uart_rx.sv",
-    "uart/uart_tx.sv",
+RTL_FILES = [
+    "ram_1r1w_sync.sv",
     "input_fifo.sv",
     "evt2_decoder.sv",
-    "voxel_bin_architecture/voxel_binning.sv",
+    "voxel_binning.sv",
     "systolic_array.sv",
     "gesture_classifier.sv",
-    "ram_1r1w_sync.sv",
-    "voxel_bin_architecture/voxel_bin_core.sv",
-]
-
-RTL_FILES_VOXEL = VOXEL_BIN_CORE_FILES + [
-    "voxel_bin_architecture/voxel_bin_top.sv",
-]
-
-GRADIENT_MAP_CORE_FILES = [
-    "uart_tx.sv",
     "uart_rx.sv",
+    "uart_tx.sv",
     "uart_debug.sv",
-    "gradient_map_architecture/input_fifo.sv",
-    "gradient_map_architecture/evt2_decoder.sv",
-    "gradient_map_architecture/gradient_mapping.sv",
-    "gradient_map_architecture/systolic_array.sv",
-    "gradient_map_architecture/weight_ram.sv",
-    "gradient_map_architecture/gesture_classifier.sv",
-    "gradient_map_architecture/gradient_map_core.sv",
+    "voxel_bin_core.sv",
+    "voxel_bin_top.sv",
 ]
 
-RTL_FILES_GRADIENT = GRADIENT_MAP_CORE_FILES + [
-    "gradient_map_architecture/gradient_map_top.sv",
-]
+TEST_TARGETS = {
+    "evt2_decoder": {"toplevel": "evt2_decoder", "test_module": "test_evt2_decoder"},
+    "gesture_classifier": {"toplevel": "gesture_classifier", "test_module": "test_gesture_classifier"},
+    "input_fifo": {"toplevel": "input_fifo", "test_module": "test_input_fifo"},
+    "ram_1r1w_sync": {"toplevel": "ram_1r1w_sync", "test_module": "test_ram_1r1w_sync"},
+    "systolic_array": {"toplevel": "systolic_array", "test_module": "test_systolic_array"},
+    "uart_rx": {"toplevel": "uart_rx", "test_module": "test_uart_rx"},
+    "uart_tx": {"toplevel": "uart_tx", "test_module": "test_uart_tx"},
+    "uart_debug": {"toplevel": "uart_debug", "test_module": "test_uart_debug"},
+    "voxel_binning": {"toplevel": "voxel_binning", "test_module": "test_voxel_binning"},
+    "voxel_bin_core": {"toplevel": "voxel_bin_core", "test_module": "test_voxel_bin_core"},
+    "voxel_bin_top": {"toplevel": "voxel_bin_top", "test_module": "test_voxel_bin_top"},
+}
+
+TEST_TARGET_ALIASES = {
+    "all": "all",
+    "unit": "all",
+    "top": "voxel_bin_top",
+    "core": "voxel_bin_core",
+}
 
 OSS_CAD_URLS = {
     ("Windows", "AMD64"): "https://github.com/YosysHQ/oss-cad-suite-build/releases/download/2024-11-21/oss-cad-suite-windows-x64-20241121.exe",
@@ -120,7 +122,14 @@ def get_oss_cad_bin():
             return p
 
     # 3. Fall back to whatever is already on PATH
-    if shutil.which("iverilog"):
+    which_iverilog = shutil.which("iverilog")
+    if which_iverilog:
+        tool_path = Path(which_iverilog).resolve()
+        oss_candidate = tool_path.parent.parent
+        ivl_exe = "ivl.exe" if sys.platform == "win32" else "ivl"
+        if (oss_candidate / "lib" / "ivl" / ivl_exe).exists():
+            return oss_candidate
+
         # Return a sentinel that signals "use PATH directly"
         return Path("__PATH__")
 
@@ -361,139 +370,154 @@ def _find_libpython():
     return None
 
 
-ARCH_TEST_CONFIG = {
-    "voxel_bin": (RTL_FILES_VOXEL, "voxel_bin_top", TB_DIR / "voxel_bin_architecture", [], [
-        "-Pvoxel_bin_top.CYCLES_PER_BIN=2000",
-        "-Pvoxel_bin_top.BAUD_RATE=3000000",
-        "-Pvoxel_bin_top.WINDOW_MS=40",
-    ]),
-    "gradient_map": (RTL_FILES_GRADIENT, "gradient_map_top", TB_DIR / "gradient_map_architecture", [], [
-        "-Pgradient_map_top.FRAME_PERIOD_MS=1",
-        "-Pgradient_map_top.MIN_MASS_THRESH=20",
-        "-Pgradient_map_top.DECAY_SHIFT=12",
-    ]),
-}
+def _resolve_test_target(name):
+    key = (name or "all").strip().lower()
+    if key in TEST_TARGET_ALIASES:
+        key = TEST_TARGET_ALIASES[key]
+    if key.startswith("test_"):
+        key = key[5:]
+    return key
 
 
-def run_tests(test_module=None):
-    print_header("Running cocotb Verification Tests")
+def _get_sim_tools(env, oss_root):
+    if str(oss_root) == "__PATH__":
+        return "iverilog", "vvp", []
 
-    TEST_MODULE_MAP = {
-        "voxel_bin":          ("voxel_bin",       "test_voxel_bin"),
-        "test_voxel_bin":     ("voxel_bin",       "test_voxel_bin"),
-        "gradient_map":       ("gradient_map",    "test_gradient_map"),
-        "test_gradient_map":  ("gradient_map",    "test_gradient_map"),
-    }
-    key = test_module or "voxel_bin"
-    if key in TEST_MODULE_MAP:
-        arch, test_module = TEST_MODULE_MAP[key]
-    else:
-        arch = "voxel_bin"
-        test_module = "test_voxel_bin"
+    iverilog_name = "iverilog.exe" if sys.platform == "win32" else "iverilog"
+    vvp_name = "vvp.exe" if sys.platform == "win32" else "vvp"
+    iverilog_cmd = str(oss_root / "bin" / iverilog_name)
+    vvp_cmd = str(oss_root / "bin" / vvp_name)
 
-    rtl_files, toplevel, tb_dir, defines, param_overrides = ARCH_TEST_CONFIG[arch]
-    
-    system_iverilog = Path("/usr/bin/iverilog")
-    system_vvp = Path("/usr/bin/vvp")
-    use_system_iverilog = system_iverilog.exists() and system_vvp.exists()
-    if use_system_iverilog:
-        env = os.environ.copy()
-        iverilog_cmd = str(system_iverilog)
-        vvp_cmd = str(system_vvp)
-    else:
-        oss_root = get_oss_cad_bin()
-        if oss_root is None:
-            print_error("OSS CAD Suite not found. Run 'python setup.py' first.")
-            return 1
-        env = get_oss_cad_env()
-        if env is None:
-            print_error("Failed to set up OSS CAD Suite environment")
-            return 1
-        iverilog_cmd = "iverilog"
-        vvp_cmd = "vvp"
-    
-    python = get_python_cmd()
-    if not python.exists():
-        print_error("Python venv not found. Run 'python setup.py' first.")
-        return 1
-    env["PYGPI_PYTHON_BIN"] = str(python)
-    
-    # Get cocotb libs path
+    iverilog_args = []
+    ivl_dir = oss_root / "lib" / "ivl"
+    if ivl_dir.exists():
+        iverilog_args = ["-B", str(ivl_dir)]
+
+    return iverilog_cmd, vvp_cmd, iverilog_args
+
+
+def _get_cocotb_libs(python_cmd, env):
     result = run_cmd(
-        [str(python), "-c", "import cocotb, os; print(os.path.dirname(cocotb.__file__))"],
+        [str(python_cmd), "-c", "import cocotb, os; print(os.path.dirname(cocotb.__file__))"],
         env=env
     )
     if result is None:
-        print_error("cocotb not installed. Run 'python setup.py' first.")
-        return 1
+        return None
+
     cocotb_path = Path(result.stdout.strip())
     cocotb_libs = cocotb_path / "libs"
     vpi_module = cocotb_libs / "cocotbvpi_icarus.vpi"
-    vpi_fallback = cocotb_libs / "libcocotbvpi_icarus.vpl"
+    vpi_fallback = cocotb_libs / "cocotbvpi_icarus.vpl"
     if not vpi_module.exists() and vpi_fallback.exists():
         try:
             vpi_module.symlink_to(vpi_fallback.name)
         except OSError:
             shutil.copyfile(vpi_fallback, vpi_module)
-    
+    return cocotb_libs
+
+
+def _run_single_test(target_name):
+    cfg = TEST_TARGETS[target_name]
+    toplevel = cfg["toplevel"]
+    test_module = cfg["test_module"]
+
+    oss_root = get_oss_cad_bin()
+    if oss_root is None:
+        print_error("OSS CAD Suite not found. Run 'python setup.py setup' first.")
+        return 1
+
+    env = get_oss_cad_env()
+    if env is None:
+        print_error("Failed to set up OSS CAD Suite environment")
+        return 1
+
+    python = get_python_cmd()
+    if not python.exists():
+        print_error("Python venv not found. Run 'python setup.py setup' first.")
+        return 1
+
+    cocotb_libs = _get_cocotb_libs(python, env)
+    if cocotb_libs is None:
+        print_error("cocotb not installed in .venv. Run 'python setup.py setup' first.")
+        return 1
+
+    iverilog_cmd, vvp_cmd, iverilog_args = _get_sim_tools(env, oss_root)
+
+    env["PYGPI_PYTHON_BIN"] = str(python)
     env["COCOTB_TEST_MODULES"] = test_module
     env["TOPLEVEL"] = toplevel
     env["TOPLEVEL_LANG"] = "verilog"
-    env["PYTHONPATH"] = str(tb_dir)
+    env["PYTHONPATH"] = str(TB_DIR)
     env.setdefault("WAVES", "0")
     env.setdefault("COCOTB_LOG_LEVEL", "WARNING")
     env.setdefault("COCOTB_REDUCED_LOG_FMT", "1")
-    
-    # cocotb's GPI layer dlopen()s the Python shared library at runtime.
-    # We must tell it exactly where to find it, otherwise it fails with
-    # "cannot open shared object file" even when Python itself runs fine.
+
     if sys.platform == "win32":
         python_version = f"{sys.version_info.major}{sys.version_info.minor}"
-        dll_name = f"python{python_version}.dll"
-        env["LIBPYTHON_LOC"] = str(Path(sys.base_prefix) / dll_name)
-        env["PYGPI_PYTHON_BIN"] = str(python)
+        env["LIBPYTHON_LOC"] = str(Path(sys.base_prefix) / f"python{python_version}.dll")
     elif sys.platform.startswith("linux"):
         libpython = _find_libpython()
         if libpython:
             env["LIBPYTHON_LOC"] = libpython
-    
-    sim_build = tb_dir / "sim_build"
+
+    sim_build = TB_DIR / f"sim_build_{target_name}"
     sim_build.mkdir(parents=True, exist_ok=True)
-    
-    print("\nCompiling RTL with Icarus Verilog...")
-    print(f"  Toplevel: {toplevel}")
-    print(f"  Test module: {test_module}")
     vvp_file = sim_build / "sim.vvp"
-    sources = [str(RTL_DIR / f) for f in rtl_files]
-    
+    sources = [str(RTL_DIR / f) for f in RTL_FILES]
+
+    print(f"\n[TEST] {target_name}")
     compile_cmd = [
-        iverilog_cmd, "-g2012",
+        iverilog_cmd,
+    ] + iverilog_args + [
+        "-g2012",
         "-s", toplevel,
         "-o", str(vvp_file),
-    ] + defines + param_overrides + sources
-    
-    result = subprocess.run(compile_cmd, env=env, cwd=sim_build, capture_output=True, text=True)
+    ] + sources
+
+    result = subprocess.run(compile_cmd, env=env, cwd=PROJECT_ROOT, capture_output=True, text=True)
     if result.returncode != 0:
-        print_error("Compilation failed")
+        print_error(f"Compilation failed for {target_name}")
         if result.stderr:
             print(result.stderr)
         if result.stdout:
             print(result.stdout)
         return 1
-    print_success("Compilation successful")
-    
-    print("\nRunning simulation...")
+
     sim_cmd = [
         vvp_cmd,
         "-M", str(cocotb_libs),
         "-m", "cocotbvpi_icarus",
         str(vvp_file)
     ]
-    
-    result = subprocess.run(sim_cmd, env=env, cwd=tb_dir)
-    
-    print_header("Tests Complete" if result.returncode == 0 else "Tests Failed")
+    result = subprocess.run(sim_cmd, env=env, cwd=TB_DIR)
     return result.returncode
+
+
+def run_tests(target="all"):
+    print_header("Running cocotb Verification Tests")
+    resolved = _resolve_test_target(target)
+
+    if resolved == "all":
+        failed = []
+        for name in TEST_TARGETS:
+            rc = _run_single_test(name)
+            if rc != 0:
+                failed.append(name)
+        if failed:
+            print_error(f"Failed test targets: {', '.join(failed)}")
+            print_header("Tests Failed")
+            return 1
+        print_header("Tests Complete")
+        return 0
+
+    if resolved not in TEST_TARGETS:
+        valid = ", ".join(["all"] + list(TEST_TARGETS.keys()))
+        print_error(f"Unknown test target: {target}. Use one of: {valid}")
+        return 1
+
+    rc = _run_single_test(resolved)
+    print_header("Tests Complete" if rc == 0 else "Tests Failed")
+    return rc
 
 
 def _synthesize(top_module, rtl_files, pcf_name, label="", arch_dir=None, allow_unconstrained=False):
@@ -574,21 +598,12 @@ def _synthesize(top_module, rtl_files, pcf_name, label="", arch_dir=None, allow_
 
 
 ARCH_SYNTH_CONFIG = {
-    # (top_module, rtl_files, pcf_name, label, subdir, allow_unconstrained)
     "voxel_bin": (
         "voxel_bin_top",
-        RTL_FILES_VOXEL,
+        RTL_FILES,
         "icebreaker.pcf",
         "Voxel-bin UART (voxel_bin_top)",
         "voxel_bin",
-        False,
-    ),
-    "gradient_map": (
-        "gradient_map_top",
-        RTL_FILES_GRADIENT,
-        "icebreaker.pcf",
-        "Gradient-map UART (gradient_map_top)",
-        "gradient_map",
         False,
     ),
 }
@@ -598,7 +613,7 @@ def run_synthesis(arch):
     if arch not in ARCH_SYNTH_CONFIG:
         print_error(
             f"Unknown architecture: {arch}. "
-            "Use voxel_bin or gradient_map."
+            "Use voxel_bin."
         )
         return 1
 
@@ -740,21 +755,21 @@ def clean():
     print_header("Cleaning Build Artifacts")
     
     dirs_to_clean = [
-        TB_DIR / "voxel_bin_architecture" / "sim_build",
-        TB_DIR / "voxel_bin_architecture" / "__pycache__",
-        TB_DIR / "gradient_map_architecture" / "sim_build",
-        TB_DIR / "gradient_map_architecture" / "__pycache__",
         TB_DIR / "__pycache__",
+        TB_DIR / "util" / "__pycache__",
         PROJECT_ROOT / "__pycache__",
         SYNTH_DIR / "voxel_bin",
-        SYNTH_DIR / "gradient_map",
     ]
     
     files_to_clean = [
-        TB_DIR / "voxel_bin_architecture" / "results.xml",
-        TB_DIR / "gradient_map_architecture" / "results.xml",
         TB_DIR / "results.xml",
     ]
+
+    for sim_build in TB_DIR.glob("sim_build*"):
+        if sim_build.is_dir():
+            dirs_to_clean.append(sim_build)
+        elif sim_build.is_file():
+            files_to_clean.append(sim_build)
     
     for d in dirs_to_clean:
         if d.exists():
@@ -771,7 +786,168 @@ def clean():
 
 
 def print_usage():
-    print(__doc__)
+    test_targets = ", ".join(TEST_TARGETS.keys())
+    synth_targets = ", ".join(ARCH_SYNTH_CONFIG.keys())
+    print(
+        "Usage:\n"
+        "  python setup.py setup [--skip-fpga]\n"
+        "  python setup.py doctor\n"
+        f"  python setup.py test [all|{test_targets}]\n"
+        f"  python setup.py synth [{synth_targets}]\n"
+        f"  python setup.py flash [{synth_targets}] [--port COM3 --serial <sn> --vid 0x0403 --pid 0x6010]\n"
+        "  python setup.py clean\n"
+        "\n"
+        "Defaults:\n"
+        "  python setup.py         -> setup\n"
+        "  python setup.py test    -> test all\n"
+        "  python setup.py synth   -> synth voxel_bin\n"
+        "  python setup.py flash   -> flash voxel_bin\n"
+    )
+
+
+def run_setup(skip_fpga=False):
+    print_header("DVS Gesture Accelerator - Setup")
+    print(f"Platform: {platform.system()} {platform.machine()}")
+    print(f"Python: {sys.version.split()[0]}")
+
+    if not setup_venv():
+        return 1
+    if not install_packages():
+        return 1
+    if not skip_fpga and not setup_oss_cad_suite():
+        return 1
+
+    print_header("Setup Complete")
+    print("\nNext steps:")
+    if sys.platform == "win32":
+        print("  Activate venv: .venv\\Scripts\\activate")
+    else:
+        print("  Activate venv: source .venv/bin/activate")
+    print("  Check setup:   python setup.py doctor")
+    print("  Run tests:     python setup.py test")
+    print("  Synthesize:    python setup.py synth voxel_bin")
+    print("  Flash:         python setup.py flash voxel_bin")
+    return 0
+
+
+def _check_python_packages():
+    python = get_python_cmd()
+    if not python.exists():
+        return None, ["venv-missing"]
+
+    check_script = (
+        "import importlib.util, json;"
+        "mods=['cocotb','pytest','numpy','cv2','serial'];"
+        "missing=[m for m in mods if importlib.util.find_spec(m) is None];"
+        "print(json.dumps(missing))"
+    )
+    result = run_cmd([str(python), "-c", check_script], check=False)
+    if result is None or result.returncode != 0:
+        return None, ["import-check-failed"]
+
+    try:
+        import json as _json
+        missing = _json.loads(result.stdout.strip() or "[]")
+    except Exception:
+        missing = ["import-check-parse-failed"]
+    return python, missing
+
+
+def _sim_tool_smoke_test(env, oss_root):
+    iverilog_cmd, vvp_cmd, iverilog_args = _get_sim_tools(env, oss_root)
+    tmp_dir = PROJECT_ROOT / ".doctor_smoke"
+    src = tmp_dir / "smoke.sv"
+    out = tmp_dir / "smoke.vvp"
+    try:
+        tmp_dir.mkdir(parents=True, exist_ok=True)
+        src.write_text(
+            "module smoke; initial begin $display(\"SMOKE_OK\"); $finish; end endmodule\n",
+            encoding="ascii",
+        )
+
+        compile_cmd = [iverilog_cmd] + iverilog_args + ["-g2012", "-s", "smoke", "-o", str(out), str(src)]
+        c = subprocess.run(compile_cmd, env=env, capture_output=True, text=True)
+        if c.returncode != 0:
+            return False, f"compile failed: {c.stderr.strip() or c.stdout.strip()}"
+
+        r = subprocess.run([vvp_cmd, str(out)], env=env, capture_output=True, text=True)
+        if r.returncode != 0:
+            return False, f"runtime failed: {r.stderr.strip() or r.stdout.strip()}"
+    except Exception as e:
+        return False, f"smoke test exception: {e}"
+    finally:
+        shutil.rmtree(tmp_dir, ignore_errors=True)
+
+    return True, "ok"
+
+
+def doctor():
+    print_header("Environment Doctor")
+    failures = 0
+    warnings = 0
+
+    python, missing_pkgs = _check_python_packages()
+    if python is None:
+        print_error("Python venv not found. Run: python setup.py setup")
+        failures += 1
+    else:
+        print_success(f"Python venv: {python}")
+        if missing_pkgs:
+            print_error(f"Missing Python packages in venv: {', '.join(missing_pkgs)}")
+            print("  Fix: python setup.py setup")
+            failures += 1
+        else:
+            print_success("Python packages: cocotb, pytest, numpy, opencv-python, pyserial")
+
+    oss_root = get_oss_cad_bin()
+    env = get_oss_cad_env()
+    if oss_root is None or env is None:
+        print_error("OSS CAD Suite tools not found. Run: python setup.py setup")
+        failures += 1
+    else:
+        print_success(f"OSS CAD Suite root: {oss_root}")
+        required_tools = ["iverilog", "vvp", "yosys", "nextpnr-ice40", "icepack"]
+        optional_tools = ["iceprog"]
+
+        for tool in required_tools:
+            path = shutil.which(tool, path=env.get("PATH"))
+            if path:
+                print_success(f"{tool}: {path}")
+            else:
+                print_error(f"{tool}: not found on PATH")
+                failures += 1
+
+        for tool in optional_tools:
+            path = shutil.which(tool, path=env.get("PATH"))
+            if path:
+                print_success(f"{tool}: {path}")
+            else:
+                print_warning(f"{tool}: not found (flash will fail until installed/accessible)")
+                warnings += 1
+
+        smoke_ok, smoke_msg = _sim_tool_smoke_test(env, oss_root)
+        if smoke_ok:
+            print_success("iverilog/vvp smoke test passed")
+        else:
+            print_error(f"iverilog/vvp smoke test failed: {smoke_msg}")
+            failures += 1
+
+    pcf = SYNTH_DIR / "icebreaker.pcf"
+    if pcf.exists():
+        print_success(f"Constraints file: {pcf}")
+    else:
+        print_error(f"Missing constraints file: {pcf}")
+        failures += 1
+
+    if failures == 0:
+        if warnings:
+            print_header("Doctor Complete (Warnings)")
+        else:
+            print_header("Doctor Complete")
+        return 0
+
+    print_header("Doctor Found Issues")
+    return 1
 
 def parse_args(raw_args):
     options = {
@@ -821,49 +997,28 @@ def main():
     args, options = parse_args(args)
     if args is None:
         return 1
-    skip_fpga = options["skip_fpga"]
-    
-    if not args:
-        print_header("DVS Gesture Accelerator - Setup")
-        print(f"Platform: {platform.system()} {platform.machine()}")
-        print(f"Python: {sys.version.split()[0]}")
-        
-        if not setup_venv():
-            return 1
-        if not install_packages():
-            return 1
-        if not skip_fpga:
-            setup_oss_cad_suite()
-        
-        print_header("Setup Complete!")
-        print("\nNext steps:")
-        if sys.platform == "win32":
-            print("  Activate:  .venv\\Scripts\\activate")
-        else:
-            print("  Activate:  source .venv/bin/activate")
-        print("  Run tests:       python setup.py test [voxel_bin_raw|voxel_bin_processed|gradient_map_raw|gradient_map_processed]")
-        print("  Synth:           python setup.py synth [voxel_bin_raw|voxel_bin_processed|gradient_map_raw|gradient_map_processed]")
-        print("  Flash:           python setup.py flash [voxel_bin_raw|voxel_bin_processed|gradient_map_raw|gradient_map_processed]")
-        return 0
-    
-    command = args[0].lower()
-    arch_arg = args[1] if len(args) > 1 else None
 
+    command = args[0].lower() if args else "setup"
+    target = args[1] if len(args) > 1 else None
+
+    if command == "setup":
+        return run_setup(skip_fpga=options["skip_fpga"])
+    if command == "doctor":
+        return doctor()
     if command in ["test", "verify", "sim"]:
-        module = arch_arg or "test_voxel_bin"
-        return run_tests(module)
-    elif command in ["synth", "synthesis", "build"]:
-        arch = arch_arg or "voxel_bin_raw"
+        return run_tests(target or "all")
+    if command in ["synth", "synthesis", "build"]:
+        arch = target or "voxel_bin"
         if arch not in ARCH_SYNTH_CONFIG:
-            valid = ", ".join(k for k in ARCH_SYNTH_CONFIG if not k in ("voxel_bin", "gradient_map"))
-            print_error(f"Unknown architecture: {arch}. Use one of: {valid}")
+            valid = ", ".join(ARCH_SYNTH_CONFIG.keys())
+            print_error(f"Unknown synthesis target: {arch}. Use one of: {valid}")
             return 1
         return run_synthesis(arch)
-    elif command in ["flash", "program", "prog"]:
-        arch = arch_arg or "voxel_bin_raw"
+    if command in ["flash", "program", "prog"]:
+        arch = target or "voxel_bin"
         if arch not in ARCH_SYNTH_CONFIG:
-            valid = ", ".join(k for k in ARCH_SYNTH_CONFIG if not k in ("voxel_bin", "gradient_map"))
-            print_error(f"Unknown architecture: {arch}. Use one of: {valid}")
+            valid = ", ".join(ARCH_SYNTH_CONFIG.keys())
+            print_error(f"Unknown flash target: {arch}. Use one of: {valid}")
             return 1
         return flash_fpga(
             port=options["port"],
@@ -872,15 +1027,12 @@ def main():
             pid=options["pid"],
             arch=arch,
         )
-    elif command == "clean":
+    if command == "clean":
         return clean()
-    elif command in ["help", "-h", "--help"]:
-        print_usage()
-        return 0
-    else:
-        print(f"Unknown command: {command}")
-        print_usage()
-        return 1
+
+    print(f"Unknown command: {command}")
+    print_usage()
+    return 1
 
 if __name__ == "__main__":
     sys.exit(main())
