@@ -20,14 +20,14 @@ module voxel_bin_top #(
     parameter int BAUD_RATE           = 115200,
     parameter int WINDOW_MS           = 400,
     parameter int CYCLES_PER_BIN      = 0,
-    parameter int GRID_SIZE           = 16,
-    parameter int NUM_BINS            = 8,
-    parameter int READOUT_BINS        = 8,
-    parameter int COUNTER_BITS        = 16,
+    parameter int GRID_SIZE           = 8,
+    parameter int NUM_BINS            = 4,
+    parameter int READOUT_BINS        = 4,
+    parameter int COUNTER_BITS        = 4,   // Counter width only affects feature/bin storage; SA still uses 9-bit data from 8-bit weights
     parameter int FIFO_DEPTH_LOG2     = 8,
     parameter int WEIGHT_BITS         = 8,
     parameter int WEIGHT_SCALE        = 1024,
-    parameter int N                   = 16,
+    parameter int N                   = 4,   // 4 → 4×4 systolic array; 9×9 LUT multiply ≈ 20 ns < 83 ns @ 12 MHz
     parameter int PASS_MARGIN         = 64,
     parameter int PERSISTENCE_COUNT   = 2,
     parameter int CONF_BITS           = 4,
@@ -37,8 +37,8 @@ module voxel_bin_top #(
     parameter int TX_FIFO_LOG2        = 5,
     parameter int POR_CYCLES          = 1024,
     parameter int SOFT_RESET_CYCLES   = 64,
-    parameter [7:0] CONFIG_BYTE0      = 8'h08, // NUM_BINS default
-    parameter [7:0] CONFIG_BYTE1      = 8'h08  // READOUT_BINS default
+    parameter [7:0] CONFIG_BYTE0      = 8'h04, // NUM_BINS default
+    parameter [7:0] CONFIG_BYTE1      = 8'h04  // READOUT_BINS default
 )(
     input  logic clk,
     input  logic uart_rx,

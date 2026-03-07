@@ -7,16 +7,16 @@
 module voxel_bin_core #(
     parameter int CLK_FREQ_HZ       = 12_000_000,
     parameter int WINDOW_MS         = 400,
-    parameter int GRID_SIZE         = 16,
-    parameter int NUM_BINS          = 8,
-    parameter int READOUT_BINS      = 8,
-    parameter int COUNTER_BITS      = 16,
+    parameter int GRID_SIZE         = 8,
+    parameter int NUM_BINS          = 4,
+    parameter int READOUT_BINS      = 4,
+    parameter int COUNTER_BITS      = 4,
     parameter int FIFO_DEPTH_LOG2   = 8,
     parameter int SENSOR_WIDTH      = 320,
     parameter int SENSOR_HEIGHT     = 320,
     parameter int WEIGHT_BITS       = 8,
     parameter int WEIGHT_SCALE      = 1024,
-    parameter int N                 = 16,
+    parameter int N                 = 4,
     parameter int PASS_MARGIN       = 64,
     parameter int PERSISTENCE_COUNT = 2,
     parameter int CONF_BITS         = 4,
@@ -42,6 +42,7 @@ module voxel_bin_core #(
     localparam int FEATURE_COUNT = READOUT_BINS * GRID_SIZE * GRID_SIZE;
     localparam int FEATURE_BITS  = $clog2(FEATURE_COUNT);
     localparam int GRID_BITS     = $clog2(GRID_SIZE);
+    localparam int WEIGHT_FILE_CLASS_STRIDE = 2048;
     localparam int WEIGHT_ADDR_BITS = $clog2(FEATURE_COUNT);
     localparam int TILES         = FEATURE_COUNT / N;
     localparam int SA_DATA_BITS  = ((COUNTER_BITS > WEIGHT_BITS) ? COUNTER_BITS : WEIGHT_BITS) + 1;
@@ -81,10 +82,12 @@ module voxel_bin_core #(
     logic [FEATURE_BITS-1:0] binner_readout_index;
     logic                 binner_readout_last;
 
-    logic [COUNTER_BITS-1:0] feature_buffer [0:FEATURE_COUNT-1];
     logic                    capture_active;
     logic                    feature_window_ready;
     logic                    consume_feature_window;
+    logic                    feature_rd_valid;
+    logic [FEATURE_BITS-1:0] feature_rd_addr;
+    logic [COUNTER_BITS-1:0] feature_rd_data;
 
     logic [WEIGHT_ADDR_BITS-1:0] weight_rd_addr;
     logic                        weight_rd_valid;
@@ -104,7 +107,6 @@ module voxel_bin_core #(
 
     logic signed [SCORE_BITS-1:0] score_acc [0:NUM_CLASSES-1];
     int cap_idx;
-    int feature_idx;
     logic [NUM_CLASSES*SCORE_BITS-1:0] scores_flat;
     logic scores_valid;
 
@@ -115,6 +117,10 @@ module voxel_bin_core #(
     generate
         if ((FEATURE_COUNT % N) != 0) begin : gen_invalid_tile_config
             initial $error("voxel_bin_core: FEATURE_COUNT (%0d) must be divisible by N (%0d)", FEATURE_COUNT, N);
+        end
+        if (FEATURE_COUNT > WEIGHT_FILE_CLASS_STRIDE) begin : gen_invalid_weight_stride
+            initial $error("voxel_bin_core: FEATURE_COUNT (%0d) exceeds weight file class stride (%0d)",
+                           FEATURE_COUNT, WEIGHT_FILE_CLASS_STRIDE);
         end
     endgenerate
 
@@ -188,6 +194,20 @@ module voxel_bin_core #(
         .readout_last (binner_readout_last)
     );
 
+    ram_1r1w_sync #(
+        .width_p (COUNTER_BITS),
+        .depth_p (FEATURE_COUNT)
+    ) u_feature_ram (
+        .clk_i      (clk),
+        .reset_i    (rst),
+        .wr_valid_i (binner_readout_valid),
+        .wr_data_i  (binner_readout_data),
+        .wr_addr_i  (binner_readout_index),
+        .rd_valid_i (feature_rd_valid),
+        .rd_addr_i  (feature_rd_addr),
+        .rd_data_o  (feature_rd_data)
+    );
+
     always_ff @(posedge clk) begin
         if (rst) begin
             capture_active       <= 1'b0;
@@ -199,9 +219,6 @@ module voxel_bin_core #(
             if (binner_readout_start)
                 capture_active <= 1'b1;
 
-            if (binner_readout_valid)
-                feature_buffer[binner_readout_index] <= binner_readout_data;
-
             if (binner_readout_valid && binner_readout_last) begin
                 capture_active       <= 1'b0;
                 feature_window_ready <= 1'b1;
@@ -212,9 +229,13 @@ module voxel_bin_core #(
     always_comb begin
         weight_rd_valid = 1'b0;
         weight_rd_addr  = '0;
+        feature_rd_valid = 1'b0;
+        feature_rd_addr  = '0;
         if ((score_state == SC_LOAD) && (load_cycle < N)) begin
             weight_rd_valid = 1'b1;
             weight_rd_addr  = (tile_idx * N) + load_cycle;
+            feature_rd_valid = 1'b1;
+            feature_rd_addr  = (tile_idx * N) + load_cycle;
         end
     end
 
@@ -225,7 +246,7 @@ module voxel_bin_core #(
                 .width_p       (WEIGHT_BITS),
                 .depth_p       (FEATURE_COUNT),
                 .filename_p    ("8192weights.txt"),
-                .init_offset_p (g * FEATURE_COUNT),
+                .init_offset_p (g * WEIGHT_FILE_CLASS_STRIDE),
                 .init_count_p  (FEATURE_COUNT),
                 .init_is_float_p(1'b1),
                 .init_scale_p  (WEIGHT_SCALE),
@@ -316,8 +337,7 @@ module voxel_bin_core #(
                 SC_LOAD: begin
                     if (load_cycle > 0) begin
                         cap_idx = load_cycle - 1;
-                        feature_idx = (tile_idx * N) + cap_idx;
-                        a_row[cap_idx] <= {{(SA_DATA_BITS-COUNTER_BITS){1'b0}}, feature_buffer[feature_idx]};
+                        a_row[cap_idx] <= {{(SA_DATA_BITS-COUNTER_BITS){1'b0}}, feature_rd_data};
                         for (int c = 0; c < NUM_CLASSES; c = c + 1)
                             weight_tile[cap_idx][c] <= weight_rd_raw[c];
                     end

@@ -8,9 +8,9 @@ import cocotb
 from cocotb.clock import Clock
 from cocotb.triggers import ClockCycles, NextTimeStep, ReadOnly, RisingEdge
 
-GRID_SIZE = 16
-NUM_BINS = 8
-READOUT_BINS = 8
+GRID_SIZE = 8
+NUM_BINS = 4
+READOUT_BINS = 4
 FEATURE_COUNT = GRID_SIZE * GRID_SIZE * READOUT_BINS
 PASS_MARGIN = 64
 PERSISTENCE_COUNT = 2
@@ -21,6 +21,8 @@ CLK_FREQ_HZ = 12_000_000
 WINDOW_MS = 400
 BIN_DURATION_MS = WINDOW_MS // READOUT_BINS
 CYCLES_PER_BIN_SAFE = (CLK_FREQ_HZ // 1000) * BIN_DURATION_MS
+SENSOR_DIM = 320
+BIN_DIV = SENSOR_DIM // GRID_SIZE
 
 EVT_CD_OFF = 0x0
 EVT_CD_ON = 0x1
@@ -39,8 +41,9 @@ def build_evt2_cd(pkt_type, x_sensor, y_sensor, ts_lsb):
 
 
 def sensor_from_grid(g):
-    # Decoder uses x_grid = x_raw / 20 for 320->16 mapping.
-    return (g & 0xF) * 20
+    # Drive the center of the corresponding sensor bin.
+    g = max(0, min(GRID_SIZE - 1, int(g)))
+    return min(SENSOR_DIM - 1, (g * BIN_DIV) + (BIN_DIV // 2))
 
 
 class Evt2DecoderModel:
@@ -65,10 +68,10 @@ class Evt2DecoderModel:
         if not self.have_time_high:
             return None
 
-        x_clamped = min(x_raw, 319)
-        y_clamped = min(y_raw, 319)
-        x_grid = min(x_clamped // 20, 15)
-        y_grid = min(y_clamped // 20, 15)
+        x_clamped = min(x_raw, SENSOR_DIM - 1)
+        y_clamped = min(y_raw, SENSOR_DIM - 1)
+        x_grid = min(x_clamped // BIN_DIV, GRID_SIZE - 1)
+        y_grid = min(y_clamped // BIN_DIV, GRID_SIZE - 1)
         pol = 1 if pkt == EVT_CD_ON else 0
         ts = (self.time_high << 6) | ts_lsb
         return (x_grid, y_grid, pol, ts)
@@ -323,14 +326,20 @@ class CoreHarness:
 
 
 def region_points(name):
+    x_lo = max(0, GRID_SIZE // 8)
+    x_hi = min(GRID_SIZE, GRID_SIZE - (GRID_SIZE // 8))
+    y_lo = x_lo
+    y_hi = x_hi
+    band = max(2, GRID_SIZE // 4)
+
     if name == "top":
-        ys, xs = range(1, 5), range(4, 12)
+        ys, xs = range(y_lo, min(y_lo + band, GRID_SIZE)), range(x_lo, x_hi)
     elif name == "bottom":
-        ys, xs = range(11, 15), range(4, 12)
+        ys, xs = range(max(GRID_SIZE - band, 0), y_hi), range(x_lo, x_hi)
     elif name == "left":
-        ys, xs = range(4, 12), range(1, 5)
+        ys, xs = range(y_lo, y_hi), range(x_lo, min(x_lo + band, GRID_SIZE))
     elif name == "right":
-        ys, xs = range(4, 12), range(11, 15)
+        ys, xs = range(y_lo, y_hi), range(max(GRID_SIZE - band, 0), x_hi)
     else:
         raise ValueError(name)
 

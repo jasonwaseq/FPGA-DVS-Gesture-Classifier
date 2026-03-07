@@ -20,24 +20,23 @@ class InputFifoModel:
         self.reset()
 
     def reset(self):
-        self.wr_ptr = 0
-        self.rd_ptr = 0
+        self.wr_ptr = 0  # tail write pointer (RAM)
+        self.rd_ptr = 0  # tail read pointer (RAM)
+        self.tail_count = 0
+        self.out_data = 0
+        self.out_valid = 0
+        self.rd_pending = 0
+        self.last_rd_data = 0
         self.ram = [0] * DEPTH
 
     @property
-    def full(self):
-        return int(((self.wr_ptr >> DEPTH_LOG2) ^ (self.rd_ptr >> DEPTH_LOG2)) and
-                   ((self.wr_ptr & ADDR_MASK) == (self.rd_ptr & ADDR_MASK)))
-
-    @property
-    def empty(self):
-        return int((not ((self.wr_ptr >> DEPTH_LOG2) ^ (self.rd_ptr >> DEPTH_LOG2))) and
-                   ((self.wr_ptr & ADDR_MASK) == (self.rd_ptr & ADDR_MASK)))
+    def total_count(self):
+        return self.tail_count + self.out_valid + self.rd_pending
 
     def outputs(self):
-        ready_o = 0 if self.full else 1
-        valid_o = 0 if self.empty else 1
-        data_o = self.ram[self.rd_ptr & ADDR_MASK]
+        ready_o = int(self.total_count < DEPTH)
+        valid_o = int(self.out_valid)
+        data_o = self.out_data
         return ready_o, valid_o, data_o & ((1 << WIDTH) - 1)
 
     def step(self, reset_i, valid_i, data_i, ready_i):
@@ -46,16 +45,62 @@ class InputFifoModel:
         wr_en = int(valid_i and ready_o_pre)
         rd_en = int(valid_o_pre and ready_i)
 
+        bypass_to_out = int(wr_en and (
+            ((not self.out_valid) and (not self.rd_pending) and (self.tail_count == 0)) or
+            (rd_en and (self.tail_count == 0))
+        ))
+        write_to_ram = int(wr_en and (not bypass_to_out))
+
         if reset_i:
             self.wr_ptr = 0
             self.rd_ptr = 0
+            self.tail_count = 0
+            self.out_data = 0
+            self.out_valid = 0
+            self.rd_pending = 0
+            self.last_rd_data = 0
         else:
-            if wr_en:
-                self.ram[self.wr_ptr & ADDR_MASK] = data_i & ((1 << WIDTH) - 1)
-                self.wr_ptr = (self.wr_ptr + 1) & PTR_MASK
+            wr_ptr_n = self.wr_ptr
+            rd_ptr_n = self.rd_ptr
+            tail_count_n = self.tail_count
+            out_data_n = self.out_data
+            out_valid_n = self.out_valid
+            rd_pending_n = self.rd_pending
+            last_rd_data_n = self.last_rd_data
+
+            if self.rd_pending:
+                out_data_n = self.last_rd_data
+                out_valid_n = 1
+                rd_pending_n = 0
 
             if rd_en:
-                self.rd_ptr = (self.rd_ptr + 1) & PTR_MASK
+                if self.tail_count != 0:
+                    out_valid_n = 0
+                    rd_pending_n = 1
+                    last_rd_data_n = self.ram[self.rd_ptr & ADDR_MASK]
+                    rd_ptr_n = (rd_ptr_n + 1) & ADDR_MASK
+                    tail_count_n -= 1
+                elif wr_en:
+                    out_data_n = data_i & ((1 << WIDTH) - 1)
+                    out_valid_n = 1
+                else:
+                    out_valid_n = 0
+            elif (not self.out_valid) and wr_en and (not self.rd_pending) and (self.tail_count == 0):
+                out_data_n = data_i & ((1 << WIDTH) - 1)
+                out_valid_n = 1
+
+            if write_to_ram:
+                self.ram[wr_ptr_n & ADDR_MASK] = data_i & ((1 << WIDTH) - 1)
+                wr_ptr_n = (wr_ptr_n + 1) & ADDR_MASK
+                tail_count_n += 1
+
+            self.wr_ptr = wr_ptr_n
+            self.rd_ptr = rd_ptr_n
+            self.tail_count = tail_count_n
+            self.out_data = out_data_n
+            self.out_valid = out_valid_n
+            self.rd_pending = rd_pending_n
+            self.last_rd_data = last_rd_data_n
 
         return self.outputs()
 

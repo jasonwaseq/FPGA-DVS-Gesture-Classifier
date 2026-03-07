@@ -1,10 +1,10 @@
 module systolic_array #(
-    parameter int N = 16,
+    parameter int N = 4,
     parameter int DATA_BIT_SIZE = 16,
     parameter int PRODUCT_BIT_SIZE = 2 * DATA_BIT_SIZE,
     parameter int ACC_BIT_SIZE = PRODUCT_BIT_SIZE + $clog2(N) + 1,
     parameter int WAVE_CYCLES = 2 * N - 1,
-    parameter int TOTAL_CYCLES = 3 * N - 2,
+    parameter int TOTAL_CYCLES = 3 * N - 1,
     parameter int T_BITS = $clog2(TOTAL_CYCLES + 1)
 )(
     input  logic clk,
@@ -40,6 +40,7 @@ module systolic_array #(
     logic signed [DATA_BIT_SIZE-1:0]    pe_a    [0:N-1][0:N-1];
     logic signed [DATA_BIT_SIZE-1:0]    pe_b    [0:N-1][0:N-1];
     logic signed [PRODUCT_BIT_SIZE-1:0] pe_prod [0:N-1][0:N-1];
+    logic signed [PRODUCT_BIT_SIZE-1:0] pe_prod_r [0:N-1][0:N-1];
 
     // Sequencing
     logic [T_BITS-1:0] t;
@@ -105,6 +106,7 @@ module systolic_array #(
                     a_pipe[r][c] <= '0;
                     b_pipe[r][c] <= '0;
                     acc[r][c]    <= '0;
+                    pe_prod_r[r][c] <= '0;
                 end
             end
         end else begin
@@ -121,16 +123,19 @@ module systolic_array #(
                         a_pipe[r][c] <= '0;
                         b_pipe[r][c] <= '0;
                         acc[r][c]    <= '0;
+                        pe_prod_r[r][c] <= '0;
                     end
                 end
             end
             else if (running) begin
-                // Update all PEs once per cycle
+                // Pipeline multiplier output before accumulation to reduce critical path.
                 for (int r = 0; r < N; r = r + 1) begin
                     for (int c = 0; c < N; c = c + 1) begin
                         a_pipe[r][c] <= pe_a[r][c];
                         b_pipe[r][c] <= pe_b[r][c];
-                        acc[r][c]    <= acc[r][c] + {{(ACC_BIT_SIZE - PRODUCT_BIT_SIZE){pe_prod[r][c][PRODUCT_BIT_SIZE-1]}}, pe_prod[r][c]};
+                        pe_prod_r[r][c] <= pe_prod[r][c];
+                        acc[r][c] <= acc[r][c] +
+                            {{(ACC_BIT_SIZE - PRODUCT_BIT_SIZE){pe_prod_r[r][c][PRODUCT_BIT_SIZE-1]}}, pe_prod_r[r][c]};
                     end
                 end
 

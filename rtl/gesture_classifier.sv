@@ -26,39 +26,161 @@ module gesture_classifier #(
 
     localparam int PERSIST_BITS = (PERSISTENCE_COUNT > 1) ? $clog2(PERSISTENCE_COUNT + 1) : 1;
 
-    logic signed [SCORE_BITS-1:0] scores [0:NUM_CLASSES-1];
-    logic signed [SCORE_BITS-1:0] max_score_c;
-    logic signed [SCORE_BITS-1:0] second_score_c;
-    logic [1:0]                   max_class_c;
-    logic signed [SCORE_BITS:0]   margin_c;
-    logic                         pass_c;
+    logic signed [SCORE_BITS-1:0] s0, s1, s2, s3;
+    logic signed [SCORE_BITS-1:0] pair0_max_c, pair0_min_c;
+    logic signed [SCORE_BITS-1:0] pair1_max_c, pair1_min_c;
+    logic [1:0]                   pair0_cls_c, pair1_cls_c;
+
+    logic                         pair_valid_r;
+    logic signed [SCORE_BITS-1:0] pair0_max_r, pair0_min_r;
+    logic signed [SCORE_BITS-1:0] pair1_max_r, pair1_min_r;
+    logic [1:0]                   pair0_cls_r, pair1_cls_r;
+
+    logic signed [SCORE_BITS-1:0] max_score_b;
+    logic signed [SCORE_BITS-1:0] second_score_b;
+    logic signed [SCORE_BITS-1:0] second_a_b, second_b_b;
+    logic [1:0]                   max_class_b;
+    logic signed [SCORE_BITS:0]   margin_b;
+    logic                         pass_b;
 
     logic [1:0] last_pass_class;
     logic [PERSIST_BITS-1:0] pass_streak;
-    logic [PERSIST_BITS-1:0] next_streak;
+    logic [PERSIST_BITS-1:0] next_streak_c;
 
-    always_comb begin
-        for (int i = 0; i < NUM_CLASSES; i = i + 1)
-            scores[i] = $signed(scores_flat[i*SCORE_BITS +: SCORE_BITS]);
+    // Stage-0 capture of incoming score vector.
+    logic [NUM_CLASSES*SCORE_BITS-1:0] scores_flat_r;
+    logic scores_valid_r;
+
+    // Stage-1 registered classifier decision.
+    logic                               decision_valid_r;
+    logic [1:0]                         max_class_r;
+    logic                               pass_r;
+    logic signed [SCORE_BITS:0]         margin_r;
+
+    logic                               conf_sat_c;
+    logic [CONF_BITS-1:0]               conf_quant_c;
+
+    generate
+        if (NUM_CLASSES != 4) begin : gen_invalid_num_classes
+            initial $error("gesture_classifier currently supports NUM_CLASSES=4 only (got %0d)", NUM_CLASSES);
+        end
+    endgenerate
+
+    always_ff @(posedge clk) begin
+        if (rst) begin
+            scores_flat_r  <= '0;
+            scores_valid_r <= 1'b0;
+        end else begin
+            scores_flat_r  <= scores_flat;
+            scores_valid_r <= scores_valid;
+        end
     end
 
     always_comb begin
-        max_score_c    = scores[0];
-        second_score_c = {1'b1, {(SCORE_BITS-1){1'b0}}};
-        max_class_c    = 2'd0;
+        s0 = $signed(scores_flat_r[0*SCORE_BITS +: SCORE_BITS]);
+        s1 = $signed(scores_flat_r[1*SCORE_BITS +: SCORE_BITS]);
+        s2 = $signed(scores_flat_r[2*SCORE_BITS +: SCORE_BITS]);
+        s3 = $signed(scores_flat_r[3*SCORE_BITS +: SCORE_BITS]);
+    end
 
-        for (int i = 1; i < NUM_CLASSES; i = i + 1) begin
-            if (scores[i] > max_score_c) begin
-                second_score_c = max_score_c;
-                max_score_c    = scores[i];
-                max_class_c    = i[1:0];
-            end else if (scores[i] > second_score_c) begin
-                second_score_c = scores[i];
-            end
+    always_comb begin
+        if (s0 >= s1) begin
+            pair0_max_c = s0;
+            pair0_min_c = s1;
+            pair0_cls_c = 2'd0;
+        end else begin
+            pair0_max_c = s1;
+            pair0_min_c = s0;
+            pair0_cls_c = 2'd1;
         end
 
-        margin_c = max_score_c - second_score_c;
-        pass_c   = (margin_c > PASS_MARGIN);
+        if (s2 >= s3) begin
+            pair1_max_c = s2;
+            pair1_min_c = s3;
+            pair1_cls_c = 2'd2;
+        end else begin
+            pair1_max_c = s3;
+            pair1_min_c = s2;
+            pair1_cls_c = 2'd3;
+        end
+    end
+
+    always_ff @(posedge clk) begin
+        if (rst) begin
+            pair_valid_r <= 1'b0;
+            pair0_max_r  <= '0;
+            pair0_min_r  <= '0;
+            pair1_max_r  <= '0;
+            pair1_min_r  <= '0;
+            pair0_cls_r  <= 2'd0;
+            pair1_cls_r  <= 2'd0;
+        end else begin
+            pair_valid_r <= scores_valid_r;
+            if (scores_valid_r) begin
+                pair0_max_r <= pair0_max_c;
+                pair0_min_r <= pair0_min_c;
+                pair1_max_r <= pair1_max_c;
+                pair1_min_r <= pair1_min_c;
+                pair0_cls_r <= pair0_cls_c;
+                pair1_cls_r <= pair1_cls_c;
+            end
+        end
+    end
+
+    always_comb begin
+        if (pair0_max_r >= pair1_max_r) begin
+            max_score_b = pair0_max_r;
+            max_class_b = pair0_cls_r;
+            second_a_b  = pair1_max_r;
+            second_b_b  = pair0_min_r;
+        end else begin
+            max_score_b = pair1_max_r;
+            max_class_b = pair1_cls_r;
+            second_a_b  = pair0_max_r;
+            second_b_b  = pair1_min_r;
+        end
+
+        second_score_b = (second_a_b >= second_b_b) ? second_a_b : second_b_b;
+        margin_b = $signed({max_score_b[SCORE_BITS-1], max_score_b}) -
+                   $signed({second_score_b[SCORE_BITS-1], second_score_b});
+        pass_b = (margin_b > PASS_MARGIN);
+    end
+
+    always_ff @(posedge clk) begin
+        if (rst) begin
+            decision_valid_r <= 1'b0;
+            max_class_r      <= 2'd0;
+            pass_r           <= 1'b0;
+            margin_r         <= '0;
+        end else begin
+            decision_valid_r <= pair_valid_r;
+            if (pair_valid_r) begin
+                max_class_r <= max_class_b;
+                pass_r      <= pass_b;
+                margin_r    <= margin_b;
+            end
+        end
+    end
+
+    always_comb begin
+        conf_sat_c   = 1'b0;
+        conf_quant_c = '0;
+        if (margin_r > 0) begin
+            conf_quant_c = margin_r[CONF_SHIFT +: CONF_BITS];
+            if (SCORE_BITS >= (CONF_SHIFT + CONF_BITS))
+                conf_sat_c = |margin_r[SCORE_BITS:CONF_SHIFT+CONF_BITS];
+        end
+    end
+
+    always_comb begin
+        if (max_class_r == last_pass_class) begin
+            if (pass_streak < PERSISTENCE_COUNT)
+                next_streak_c = pass_streak + 1'b1;
+            else
+                next_streak_c = pass_streak;
+        end else begin
+            next_streak_c = {{(PERSIST_BITS-1){1'b0}}, 1'b1};
+        end
     end
 
     always_ff @(posedge clk) begin
@@ -78,38 +200,29 @@ module gesture_classifier #(
             gesture_valid <= 1'b0;
             debug_state   <= 3'd0;
 
-            if (scores_valid) begin
-                class_gesture <= max_class_c;
+            if (decision_valid_r) begin
+                class_gesture <= max_class_r;
                 class_valid   <= 1'b1;
-                class_pass    <= pass_c;
+                class_pass    <= pass_r;
 
-                if (pass_c) begin
-                    if (max_class_c == last_pass_class) begin
-                        if (pass_streak < PERSISTENCE_COUNT)
-                            next_streak = pass_streak + 1'b1;
-                        else
-                            next_streak = pass_streak;
-                    end else begin
-                        next_streak = {{(PERSIST_BITS-1){1'b0}}, 1'b1};
-                    end
+                if (pass_r) begin
+                    last_pass_class <= max_class_r;
+                    pass_streak     <= next_streak_c;
 
-                    last_pass_class <= max_class_c;
-                    pass_streak     <= next_streak;
-
-                    if (next_streak >= PERSISTENCE_COUNT) begin
-                        gesture       <= max_class_c;
+                    if (next_streak_c >= PERSISTENCE_COUNT) begin
+                        gesture       <= max_class_r;
                         gesture_valid <= 1'b1;
                         debug_state   <= 3'd2;
                     end else begin
                         debug_state <= 3'd1;
                     end
 
-                    if ((margin_c >>> CONF_SHIFT) > ((1 << CONF_BITS) - 1))
+                    if (conf_sat_c)
                         gesture_confidence <= {CONF_BITS{1'b1}};
-                    else if (margin_c <= 0)
+                    else if (margin_r <= 0)
                         gesture_confidence <= '0;
                     else
-                        gesture_confidence <= margin_c[CONF_SHIFT +: CONF_BITS];
+                        gesture_confidence <= conf_quant_c;
                 end else begin
                     pass_streak <= '0;
                     debug_state <= 3'd0;

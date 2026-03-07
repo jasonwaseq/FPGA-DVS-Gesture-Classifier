@@ -12,7 +12,7 @@ module voxel_binning #(
     parameter int NUM_BINS       = 8,
     parameter int READOUT_BINS   = 8,
     parameter int GRID_SIZE      = 16,
-    parameter int COUNTER_BITS   = 16,
+    parameter int COUNTER_BITS   = 8,
     parameter int CYCLES_PER_BIN = 0
 )(
     input  logic                           clk,

@@ -14,6 +14,8 @@ CONF_BITS = 8
 CONF_SHIFT = 4
 CONF_MAX = (1 << CONF_BITS) - 1
 SCORE_MASK = (1 << SCORE_BITS) - 1
+# scores_valid -> class_valid latency through the pipelined classifier.
+CLASSIFY_PIPE_CYCLES = 3
 
 
 def to_signed(val, bits):
@@ -130,23 +132,31 @@ async def drive_and_check(dut, model, scores, valid, tag):
 
     model.step(packed, valid)
 
+    # Launch input into stage-0.
     await RisingEdge(dut.clk)
-    await ReadOnly()
+    dut.scores_valid.value = 0
 
-    assert int(dut.class_gesture.value) == model.class_gesture, \
-        f"{tag}: class_gesture DUT={int(dut.class_gesture.value)} model={model.class_gesture}"
-    assert int(dut.class_valid.value) == model.class_valid, \
-        f"{tag}: class_valid DUT={int(dut.class_valid.value)} model={model.class_valid}"
-    assert int(dut.class_pass.value) == model.class_pass, \
-        f"{tag}: class_pass DUT={int(dut.class_pass.value)} model={model.class_pass}"
-    assert int(dut.gesture.value) == model.gesture, \
-        f"{tag}: gesture DUT={int(dut.gesture.value)} model={model.gesture}"
-    assert int(dut.gesture_valid.value) == model.gesture_valid, \
-        f"{tag}: gesture_valid DUT={int(dut.gesture_valid.value)} model={model.gesture_valid}"
-    assert int(dut.gesture_confidence.value) == model.gesture_confidence, \
-        f"{tag}: confidence DUT={int(dut.gesture_confidence.value)} model={model.gesture_confidence}"
-    assert int(dut.debug_state.value) == model.debug_state, \
-        f"{tag}: debug_state DUT={int(dut.debug_state.value)} model={model.debug_state}"
+    # Wait for the pipelined decision point corresponding to this input.
+    for stage in range(CLASSIFY_PIPE_CYCLES):
+        await RisingEdge(dut.clk)
+        if stage != CLASSIFY_PIPE_CYCLES - 1:
+            continue
+        await ReadOnly()
+
+        assert int(dut.class_gesture.value) == model.class_gesture, \
+            f"{tag}: class_gesture DUT={int(dut.class_gesture.value)} model={model.class_gesture}"
+        assert int(dut.class_valid.value) == model.class_valid, \
+            f"{tag}: class_valid DUT={int(dut.class_valid.value)} model={model.class_valid}"
+        assert int(dut.class_pass.value) == model.class_pass, \
+            f"{tag}: class_pass DUT={int(dut.class_pass.value)} model={model.class_pass}"
+        assert int(dut.gesture.value) == model.gesture, \
+            f"{tag}: gesture DUT={int(dut.gesture.value)} model={model.gesture}"
+        assert int(dut.gesture_valid.value) == model.gesture_valid, \
+            f"{tag}: gesture_valid DUT={int(dut.gesture_valid.value)} model={model.gesture_valid}"
+        assert int(dut.gesture_confidence.value) == model.gesture_confidence, \
+            f"{tag}: confidence DUT={int(dut.gesture_confidence.value)} model={model.gesture_confidence}"
+        assert int(dut.debug_state.value) == model.debug_state, \
+            f"{tag}: debug_state DUT={int(dut.debug_state.value)} model={model.debug_state}"
 
     await NextTimeStep()
 

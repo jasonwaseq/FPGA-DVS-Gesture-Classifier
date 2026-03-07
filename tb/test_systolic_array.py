@@ -1,17 +1,33 @@
 """Robust cocotb testbench for systolic_array with signed matmul golden model."""
 
+import math
 import random
 
 import cocotb
 from cocotb.clock import Clock
 from cocotb.triggers import ClockCycles, NextTimeStep, ReadOnly, RisingEdge
 
-N = 16
+N = 4
 DATA_BITS = 16
-ACC_BITS = (2 * DATA_BITS) + 4 + 1  # PRODUCT(32) + clog2(16)=4 + 1 = 37
-TOTAL_CYCLES = (3 * N) - 2
+ACC_BITS = (2 * DATA_BITS) + 2 + 1
+TOTAL_CYCLES = (3 * N) - 1
 DATA_MASK = (1 << DATA_BITS) - 1
 ACC_MASK = (1 << ACC_BITS) - 1
+
+
+def configure_from_dut(dut):
+    global N, ACC_BITS, TOTAL_CYCLES, DATA_MASK, ACC_MASK
+
+    n_sq = len(dut.A_matrix_flat) // DATA_BITS
+    n = math.isqrt(n_sq)
+    assert n * n == n_sq, f"Non-square matrix flattening: bits={len(dut.A_matrix_flat)}"
+    N = n
+
+    acc_bits = len(dut.Out_matrix_flat) // (N * N)
+    ACC_BITS = acc_bits
+    TOTAL_CYCLES = (3 * N) - 1
+    DATA_MASK = (1 << DATA_BITS) - 1
+    ACC_MASK = (1 << ACC_BITS) - 1
 
 
 def to_signed(v, bits):
@@ -58,6 +74,7 @@ def golden_matmul(a, b):
 
 
 async def setup(dut):
+    configure_from_dut(dut)
     cocotb.start_soon(Clock(dut.clk, 10, unit="ns").start())
     dut.reset.value = 1
     dut.start.value = 0

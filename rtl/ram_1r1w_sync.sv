@@ -6,7 +6,7 @@
 module ram_1r1w_sync #(
     parameter int width_p = 8,
     parameter int depth_p = 512,
-    parameter string filename_p = "",
+    parameter        filename_p = "",
     parameter int init_offset_p = 0,
     parameter int init_count_p = depth_p,
     parameter bit init_is_float_p = 1'b0,
@@ -25,12 +25,13 @@ module ram_1r1w_sync #(
     output [width_p-1:0] rd_data_o
 );
 
+  logic [width_p-1:0] ram [depth_p-1:0];
+  logic [width_p-1:0] rd_data_l;
+
+`ifndef SYNTHESIS
   localparam longint signed MAX_INIT_SIGNED   = (64'sd1 << (width_p - 1)) - 1;
   localparam longint signed MIN_INIT_SIGNED   = -(64'sd1 << (width_p - 1));
   localparam longint signed MAX_INIT_UNSIGNED = (64'sd1 << width_p) - 1;
-
-  logic [width_p-1:0] ram [depth_p-1:0];
-  logic [width_p-1:0] rd_data_l;
 
   integer fd;
   integer scan_rc;
@@ -91,18 +92,28 @@ module ram_1r1w_sync #(
       end
     end
   end
+`endif // SYNTHESIS
 
+  // Keep read data register unreset so synthesis can map this to true block RAM.
   always_ff @(posedge clk_i) begin
+`ifdef SYNTHESIS
+    if (rd_valid_i) begin
+      rd_data_l <= ram[rd_addr_i];
+    end
+`else
+    // Deterministic simulation behavior while preserving BRAM inference in synthesis.
     if (reset_i) begin
       rd_data_l <= '0;
     end else if (rd_valid_i) begin
       rd_data_l <= ram[rd_addr_i];
     end
+`endif
     if (wr_valid_i) begin
       ram[wr_addr_i] <= wr_data_i;
     end
   end
 
   assign rd_data_o = rd_data_l;
+  wire _unused_reset = reset_i;
 
 endmodule

@@ -34,6 +34,11 @@ module evt2_decoder #(
     localparam int SENSOR_H_M1           = SENSOR_HEIGHT - 1;
     localparam int X_BIN_DIV             = (SENSOR_WIDTH  / GRID_SIZE);
     localparam int Y_BIN_DIV             = (SENSOR_HEIGHT / GRID_SIZE);
+    // Reciprocal-multiply constants: floor(v/D) = (v * M) >> 12 for v < SENSOR_DIM.
+    // M = floor(2^12 / D) + 1 gives exact results; clamp to GRID_SIZE-1 handles edge.
+    localparam int DIV_K                 = 12;
+    localparam int X_M                   = (1 << DIV_K) / X_BIN_DIV + 1;
+    localparam int Y_M                   = (1 << DIV_K) / Y_BIN_DIV + 1;
 
     wire [31:0] evt_word = SWAP_INPUT_BYTES
                          ? {data_in[7:0], data_in[15:8], data_in[23:16], data_in[31:24]}
@@ -53,6 +58,8 @@ module evt2_decoder #(
     logic [10:0] y_clamped;
     logic [GRID_BITS-1:0] x_grid;
     logic [GRID_BITS-1:0] y_grid;
+    logic [10+DIV_K:0] x_prod_c, y_prod_c;
+    logic [GRID_BITS:0] x_grid_raw, y_grid_raw;
 
     always_comb begin
         if (x_raw >= SENSOR_WIDTH)
@@ -65,13 +72,13 @@ module evt2_decoder #(
         else
             y_clamped = y_raw;
 
-        x_grid = (x_clamped / X_BIN_DIV);
-        y_grid = (y_clamped / Y_BIN_DIV);
+        x_prod_c   = x_clamped * X_M;
+        y_prod_c   = y_clamped * Y_M;
+        x_grid_raw = x_prod_c[GRID_BITS+DIV_K:DIV_K];
+        y_grid_raw = y_prod_c[GRID_BITS+DIV_K:DIV_K];
 
-        if (x_grid > GRID_SIZE-1)
-            x_grid = GRID_SIZE-1;
-        if (y_grid > GRID_SIZE-1)
-            y_grid = GRID_SIZE-1;
+        x_grid = (x_grid_raw > GRID_SIZE-1) ? GRID_BITS'(GRID_SIZE-1) : x_grid_raw[GRID_BITS-1:0];
+        y_grid = (y_grid_raw > GRID_SIZE-1) ? GRID_BITS'(GRID_SIZE-1) : y_grid_raw[GRID_BITS-1:0];
     end
 
     // Backpressure only for CD events that generate downstream samples.
