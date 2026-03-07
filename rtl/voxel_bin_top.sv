@@ -4,15 +4,15 @@
 // - Ingests raw EVT2.0 words over UART (4 bytes/word, MSB first)
 // - Supports control bytes at packet-boundary:
 //     0xFF: echo -> 0x55
-//     0xFE: status -> 0xBx
-//     0xFD: config -> 2 bytes
+//     0xFE: status -> 0xBx (bit2=fifo_full, bit1=fifo_empty, bit3=temporal_phase)
+//     0xFD: config -> 2 bytes (CONFIG_BYTE0, CONFIG_BYTE1)
 //     0xFC: soft reset
-// - Sends gesture packets:
-//     [0xA0|gesture, {confidence[3:0], event_count_hi[3:0]}]
+// - Sends gesture packets on valid gesture detection:
+//     byte0: 0xA0 | gesture[1:0]
+//     byte1: {confidence[CONF_BITS-1:0], event_count[7:4]}
 //
-// Gesture encoding on UART:
-//   0=UP, 1=DOWN, 2=LEFT, 3=RIGHT
-// Core internal class order is Down/Left/Right/Up and is mapped here.
+// Gesture encoding (matches weight file and core class order):
+//   0=Down, 1=Left, 2=Right, 3=Up
 
 module voxel_bin_top #(
     parameter int CLK_FREQ_HZ         = 12_000_000,
@@ -118,9 +118,9 @@ module voxel_bin_top #(
     logic [7:0] status_byte;
 
     // Core outputs.
-    logic [1:0] core_gesture;
-    logic       core_gesture_valid;
-    logic [3:0] core_gesture_confidence;
+    logic [1:0]          core_gesture;
+    logic                core_gesture_valid;
+    logic [CONF_BITS-1:0] core_gesture_confidence;
     logic [7:0] core_debug_event_count;
     logic [2:0] core_debug_state;
     logic       core_debug_fifo_empty;
@@ -128,24 +128,11 @@ module voxel_bin_top #(
     logic       core_debug_temporal_phase;
 
     // Gesture LED/output mapping.
-    logic [1:0] uart_gesture_code;
-    logic [1:0] last_uart_gesture;
+    // Gesture class directly matches weight file order: 0=Down,1=Left,2=Right,3=Up
+    logic [1:0] last_gesture;
     logic [LED_HOLD_BITS-1:0] gesture_led_ctr;
     logic [LED_HOLD_BITS-1:0] activity_led_ctr;
     logic [HEARTBEAT_BITS-1:0] heartbeat_ctr;
-
-    function automatic [1:0] map_internal_to_uart(input [1:0] g_internal);
-        // Internal class order: 0=Down,1=Left,2=Right,3=Up
-        // UART order:           0=Up,  1=Down,2=Left, 3=Right
-        case (g_internal)
-            2'd0: map_internal_to_uart = 2'd1;
-            2'd1: map_internal_to_uart = 2'd2;
-            2'd2: map_internal_to_uart = 2'd3;
-            default: map_internal_to_uart = 2'd0;
-        endcase
-    endfunction
-
-    assign uart_gesture_code = map_internal_to_uart(core_gesture);
 
     always_comb begin
         status_byte      = 8'hB0;
@@ -289,7 +276,7 @@ module voxel_bin_top #(
             led_heartbeat       <= 1'b0;
             gesture_led_ctr     <= '0;
             activity_led_ctr    <= '0;
-            last_uart_gesture   <= 2'd0;
+            last_gesture        <= 2'd0;
         end else begin
             word_fifo_in_valid <= 1'b0;
             tx_fifo_in_valid   <= 1'b0;
@@ -342,10 +329,10 @@ module voxel_bin_top #(
             // Queue gesture response packet.
             if (core_gesture_valid) begin
                 gesture_pkt_pending <= 1'b1;
-                gesture_pkt_code    <= uart_gesture_code;
-                gesture_pkt_conf    <= core_gesture_confidence;
+                gesture_pkt_code    <= core_gesture;
+                gesture_pkt_conf    <= core_gesture_confidence[3:0];
                 gesture_pkt_evthi   <= core_debug_event_count[7:4];
-                last_uart_gesture   <= uart_gesture_code;
+                last_gesture        <= core_gesture;
                 gesture_led_ctr     <= LED_HOLD_CYCLES[LED_HOLD_BITS-1:0];
             end else if (gesture_led_ctr != 0) begin
                 gesture_led_ctr <= gesture_led_ctr - 1'b1;
@@ -402,11 +389,11 @@ module voxel_bin_top #(
 
     assign led_activity      = (activity_led_ctr != 0);
     assign led_gesture_valid = (gesture_led_ctr != 0);
-    assign led_up            = (gesture_led_ctr != 0) && (last_uart_gesture == 2'd0);
-    assign led_down          = (gesture_led_ctr != 0) && (last_uart_gesture == 2'd1);
-    assign led_left          = (gesture_led_ctr != 0) && (last_uart_gesture == 2'd2);
-    assign led_right         = (gesture_led_ctr != 0) && (last_uart_gesture == 2'd3);
+    assign led_down          = (gesture_led_ctr != 0) && (last_gesture == 2'd0);
+    assign led_left          = (gesture_led_ctr != 0) && (last_gesture == 2'd1);
+    assign led_right         = (gesture_led_ctr != 0) && (last_gesture == 2'd2);
+    assign led_up            = (gesture_led_ctr != 0) && (last_gesture == 2'd3);
 
-    wire _unused_compat = (CORE_PARALLEL_READS != 0) ^ core_debug_state[0];
+    wire _unused_compat = core_debug_state[0] ^ (CORE_PARALLEL_READS > 0);
 
 endmodule

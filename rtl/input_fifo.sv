@@ -15,67 +15,49 @@ module input_fifo #(
     output [width_p-1:0] data_o 
 );
 
-    logic [depth_log2_p:0] wr_ptr, rd_ptr;  
-    logic wr_en;
-    assign wr_en = valid_i & ready_o;
-    logic rd_en;
-    assign rd_en = valid_o & ready_i;   
+    localparam int depth_p = (1 << depth_log2_p);
+
+    logic [width_p-1:0] mem [0:depth_p-1];
+    logic [depth_log2_p:0] wr_ptr;
+    logic [depth_log2_p:0] rd_ptr;
 
     logic [0:0] full;
-    assign full = (wr_ptr[depth_log2_p] ^ rd_ptr[depth_log2_p]) 
-                  && (wr_ptr[depth_log2_p-1:0] == rd_ptr[depth_log2_p-1:0]);  
-
     logic [0:0] empty;
-    assign empty = ~(wr_ptr[depth_log2_p] ^ rd_ptr[depth_log2_p]) 
-                   && (wr_ptr[depth_log2_p-1:0] == rd_ptr[depth_log2_p-1:0]);   
+    logic [0:0] wr_en;
+    logic [0:0] rd_en;
+
+    integer i;
+    initial begin
+        for (i = 0; i < depth_p; i = i + 1)
+            mem[i] = '0;
+    end
+
+    assign full  = (wr_ptr[depth_log2_p] ^ rd_ptr[depth_log2_p]) &&
+                   (wr_ptr[depth_log2_p-1:0] == rd_ptr[depth_log2_p-1:0]);
+    assign empty = (wr_ptr == rd_ptr);
 
     assign ready_o = ~full;
-    assign valid_o = ~empty;    
+    assign valid_o = ~empty;
 
-    logic [width_p-1:0] rd_data_l;
-    logic [depth_log2_p:0] mux;
-    assign mux = (rd_en) ? (rd_ptr + 1) : rd_ptr;
+    assign wr_en = valid_i & ready_o;
+    assign rd_en = valid_o & ready_i;
 
-    ram_1r1w_sync #(
-        .width_p(width_p),
-        .depth_p(1<<depth_log2_p),
-        .filename_p("")
-    ) ram_inst (
-        .clk_i(clk_i),
-        .reset_i(reset_i),
-        .wr_valid_i(wr_en),
-        .wr_data_i(data_i),
-        .wr_addr_i(wr_ptr[depth_log2_p-1:0]),
-        .rd_valid_i(1'b1),
-        .rd_addr_i(mux[depth_log2_p-1:0]),
-        .rd_data_o(rd_data_l)
-    );  
-
-    logic [0:0] trail;
-    logic [width_p-1:0] data_l;
-    logic [0:0] firstwrite;
+    // First-word-fall-through view of the current read pointer.
+    assign data_o = mem[rd_ptr[depth_log2_p-1:0]];
 
     always_ff @(posedge clk_i) begin
         if (reset_i) begin
             wr_ptr <= '0;
             rd_ptr <= '0;
-            data_l <= '0;
-            trail <= '0;
-            firstwrite <= '0;
-        end
-        else begin
+        end else begin
             if (wr_en) begin
-                wr_ptr <= wr_ptr + 1;
-                data_l <= data_i;
+                mem[wr_ptr[depth_log2_p-1:0]] <= data_i;
+                wr_ptr <= wr_ptr + 1'b1;
             end
             if (rd_en) begin
-                rd_ptr <= rd_ptr + 1;
+                rd_ptr <= rd_ptr + 1'b1;
             end
-            firstwrite <= (wr_en & empty) | (firstwrite & rd_en);
-            trail <= (mux == wr_ptr) & rd_en;
         end
-    end 
-    
-    assign data_o = (firstwrite | trail) ? data_l : rd_data_l;
+    end
 
 endmodule

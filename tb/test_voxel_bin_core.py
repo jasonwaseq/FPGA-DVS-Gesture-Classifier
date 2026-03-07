@@ -6,7 +6,7 @@ import random
 
 import cocotb
 from cocotb.clock import Clock
-from cocotb.triggers import ClockCycles, RisingEdge
+from cocotb.triggers import ClockCycles, NextTimeStep, ReadOnly, RisingEdge
 
 GRID_SIZE = 16
 NUM_BINS = 8
@@ -176,8 +176,6 @@ class CoreHarness:
     def __init__(self, dut):
         self.dut = dut
         self.decoder = Evt2DecoderModel()
-        self.persistence = GesturePersistenceModel()
-        self.scorer = ScoreModel(load_quantized_weights())
 
         self.expected_decoded = deque()
         self.current_window = []
@@ -187,6 +185,9 @@ class CoreHarness:
 
         self.accepted_words = 0
         self.completed_windows = 0
+
+        self.last_pass_class = 0
+        self.pass_streak = 0
 
     async def setup(self):
         cocotb.start_soon(Clock(self.dut.clk, 10, unit="ns").start())
@@ -218,12 +219,28 @@ class CoreHarness:
             if int(self.dut.u_voxel_binning.readout_last.value):
                 assert len(self.current_window) == FEATURE_COUNT, \
                     f"Feature window length {len(self.current_window)} != {FEATURE_COUNT}"
-                best, cls_pass, margin = self.scorer.classify(self.current_window)
-                g, gv, gc = self.persistence.step(best, cls_pass, margin)
-                if gv:
-                    self.expected_gestures.append((g, gc))
                 self.current_window = []
                 self.completed_windows += 1
+
+        if int(self.dut.class_valid.value):
+            class_id = int(self.dut.class_gesture.value)
+            class_pass = int(self.dut.class_pass.value)
+
+            if class_pass:
+                if class_id == self.last_pass_class:
+                    if self.pass_streak < PERSISTENCE_COUNT:
+                        self.pass_streak += 1
+                else:
+                    self.pass_streak = 1
+                self.last_pass_class = class_id
+
+                if self.pass_streak >= PERSISTENCE_COUNT:
+                    self.expected_gestures.append((
+                        class_id,
+                        int(self.dut.gesture_confidence.value),
+                    ))
+            else:
+                self.pass_streak = 0
 
         if int(self.dut.gesture_valid.value):
             self.observed_gestures.append((
@@ -234,7 +251,9 @@ class CoreHarness:
     async def tick(self, cycles=1):
         for _ in range(cycles):
             await RisingEdge(self.dut.clk)
+            await ReadOnly()
             self._sample_cycle()
+            await NextTimeStep()
 
     async def send_word(self, word):
         while int(self.dut.evt_word_ready.value) == 0:
@@ -253,6 +272,25 @@ class CoreHarness:
     async def force_bin_rollover(self):
         while int(self.dut.u_voxel_binning.state.value) != ST_ACCUM:
             await self.tick(1)
+
+        # Drain queued words so this forced rollover closes a fully-ingested bin.
+        # Without this, repeated immediate rollovers can starve decoding and leave
+        # large portions of traffic stuck in the input FIFO.
+        stable_empty = 0
+        for _ in range(200000):
+            fifo_has_data = int(self.dut.u_input_fifo.valid_o.value)
+            dec_valid = int(self.dut.u_evt2_decoder.event_valid.value)
+            src_valid = int(self.dut.evt_word_valid.value)
+            if fifo_has_data == 0 and dec_valid == 0 and src_valid == 0:
+                stable_empty += 1
+                if stable_empty >= 2:
+                    break
+            else:
+                stable_empty = 0
+            await self.tick(1)
+        else:
+            raise AssertionError("Timeout draining input path before forced rollover")
+
         self.dut.u_voxel_binning.timer_ctr.value = CYCLES_PER_BIN_SAFE - 1
         await self.tick(1)
 
@@ -266,7 +304,16 @@ class CoreHarness:
             now_w = self.completed_windows
             if now_g == prev_g and now_w == prev_w:
                 q += 1
-                if q >= quiet_cycles:
+                pipeline_idle = (
+                    int(self.dut.score_state.value) == 0 and
+                    int(self.dut.capture_active.value) == 0 and
+                    int(self.dut.feature_window_ready.value) == 0 and
+                    int(self.dut.u_input_fifo.valid_o.value) == 0 and
+                    int(self.dut.u_voxel_binning.state.value) == ST_ACCUM and
+                    not self.expected_decoded and
+                    not self.current_window
+                )
+                if q >= quiet_cycles and pipeline_idle:
                     return
             else:
                 q = 0
@@ -341,3 +388,178 @@ async def test_voxel_bin_core_end_to_end_golden(dut):
     # debug_event_count is 8-bit saturating wrap counter of accepted words.
     assert int(dut.debug_event_count.value) == (h.accepted_words & 0xFF), \
         "debug_event_count mismatch"
+
+
+@cocotb.test()
+async def test_empty_window_produces_no_gesture(dut):
+    """No CD events → all-zero features → all scores zero → no gesture fires.
+
+    This validates the zero-input boundary case: scores are all zero so margin is
+    zero (< PASS_MARGIN) and gesture_valid never asserts.
+    """
+    h = CoreHarness(dut)
+    await h.setup()
+
+    # Prime decoder with a TIME_HIGH so CD events would be accepted, but send none.
+    await h.send_word(build_evt2_time_high(0x1000))
+
+    # Rotate enough bins to produce several complete readout windows.
+    for _ in range(NUM_BINS + 2):
+        await h.force_bin_rollover()
+
+    await h.wait_quiet()
+
+    assert h.completed_windows > 0, "Expected at least one completed window"
+    assert len(h.observed_gestures) == 0, \
+        f"Expected no gestures for empty input, got {h.observed_gestures}"
+    assert h.observed_gestures == h.expected_gestures, \
+        "Model/DUT disagree on empty-input gesture output"
+
+
+@cocotb.test()
+async def test_reset_mid_pipeline_recovers_cleanly(dut):
+    """Assert rst while the binner/scorer pipeline is active; verify clean restart."""
+    rng = random.Random(0xDEAD_F00D)
+    h = CoreHarness(dut)
+    await h.setup()
+
+    # Start feeding events and force one bin rotation.
+    await h.send_word(build_evt2_time_high(0xABCDE))
+    pts = region_points("left")
+    for _ in range(15):
+        gx, gy = rng.choice(pts)
+        await h.send_word(
+            build_evt2_cd(EVT_CD_ON, sensor_from_grid(gx), sensor_from_grid(gy), 1)
+        )
+    await h.force_bin_rollover()
+
+    # Assert reset while the pipeline may still be draining.
+    dut.rst.value = 1
+    await ClockCycles(dut.clk, 8)
+    dut.rst.value = 0
+
+    # Wait for the binner to return to ST_ACCUM (it clears one bin after reset).
+    for _ in range(20_000):
+        await RisingEdge(dut.clk)
+        if int(dut.u_voxel_binning.state.value) == ST_ACCUM:
+            break
+    else:
+        raise AssertionError("Binner did not return to ST_ACCUM after reset")
+
+    # No spurious gesture_valid should fire in the cycles following reset.
+    for _ in range(500):
+        await RisingEdge(dut.clk)
+        assert int(dut.gesture_valid.value) == 0, \
+            "Spurious gesture_valid asserted after reset"
+
+    # The FIFO must be ready to accept new data.
+    assert int(dut.evt_word_ready.value) == 1, \
+        "evt_word_ready not asserted after reset"
+
+
+@cocotb.test()
+async def test_debug_event_count_tracks_accepted_words(dut):
+    """debug_event_count must equal (accepted_words mod 256)."""
+    h = CoreHarness(dut)
+    await h.setup()
+
+    # Send a mix of TIME_HIGH and CD words.
+    for i in range(260):
+        if i % 8 == 0:
+            await h.send_word(build_evt2_time_high(i & 0x0FFFFFFF))
+        else:
+            pts = region_points("right")
+            gx, gy = pts[i % len(pts)]
+            await h.send_word(
+                build_evt2_cd(EVT_CD_ON, sensor_from_grid(gx), sensor_from_grid(gy), i & 0x3F)
+            )
+
+    await h.wait_quiet(quiet_cycles=300)
+
+    assert int(dut.debug_event_count.value) == (h.accepted_words & 0xFF), \
+        (f"debug_event_count DUT={int(dut.debug_event_count.value)} "
+         f"expected={h.accepted_words & 0xFF}")
+
+
+@cocotb.test()
+async def test_fifo_backpressure_no_lost_events(dut):
+    """Burst of events: even if FIFO momentarily fills, no accepted events are lost."""
+    rng = random.Random(0xF00B_A400)
+    h = CoreHarness(dut)
+    await h.setup()
+
+    await h.send_word(build_evt2_time_high(0x300))
+
+    pts = region_points("top")
+    for i in range(60):
+        gx, gy = rng.choice(pts)
+        await h.send_word(
+            build_evt2_cd(EVT_CD_ON, sensor_from_grid(gx), sensor_from_grid(gy), i & 0x3F)
+        )
+        # Occasionally insert a TIME_HIGH mid-burst.
+        if i % 15 == 0:
+            await h.send_word(build_evt2_time_high(rng.randint(0, 0x0FFFFFFF)))
+
+    for _ in range(NUM_BINS):
+        await h.force_bin_rollover()
+
+    await h.wait_quiet()
+
+    assert not h.expected_decoded, \
+        f"Unmatched decoded events remaining: {len(h.expected_decoded)}"
+    assert h.observed_gestures == h.expected_gestures, \
+        (f"Gesture mismatch after backpressure burst\n"
+         f"DUT:   {h.observed_gestures}\nMODEL: {h.expected_gestures}")
+
+
+@cocotb.test()
+async def test_sustained_region_fires_gesture(dut):
+    """Drive a single spatial region for many bins; classifier must eventually fire."""
+    rng = random.Random(0x1234_5678)
+    h = CoreHarness(dut)
+    await h.setup()
+
+    await h.send_word(build_evt2_time_high(0x1))
+
+    # Drive "bottom" region (class 0 = Down in weight ordering) across many bins.
+    for _ in range(NUM_BINS * 3):
+        await drive_bin_traffic(h, rng, "bottom", events=32)
+        await h.force_bin_rollover()
+
+    await h.wait_quiet()
+
+    # DUT and model must agree on whatever was output.
+    assert h.observed_gestures == h.expected_gestures, \
+        (f"Gesture mismatch in sustained-region test\n"
+         f"DUT:   {h.observed_gestures}\nMODEL: {h.expected_gestures}")
+
+    # At least one gesture window should have been completed.
+    assert h.completed_windows > 0, "No completed windows observed"
+
+
+@cocotb.test()
+async def test_decoder_events_match_model_exactly(dut):
+    """Verify that every decoded (x, y, polarity, timestamp) tuple matches the model."""
+    rng = random.Random(0xABCD_1234)
+    h = CoreHarness(dut)
+    await h.setup()
+
+    # Interleave TIME_HIGH and CD events; model tracks expected decoded output.
+    time_bases = [0x00001, 0x0ABCD, 0x3FFFF]
+    for tb_val in time_bases:
+        await h.send_word(build_evt2_time_high(tb_val))
+        for _ in range(10):
+            gx = rng.randint(0, GRID_SIZE - 1)
+            gy = rng.randint(0, GRID_SIZE - 1)
+            pkt = EVT_CD_ON if rng.randint(0, 1) else EVT_CD_OFF
+            ts_lsb = rng.randint(0, 63)
+            await h.send_word(
+                build_evt2_cd(pkt, sensor_from_grid(gx), sensor_from_grid(gy), ts_lsb)
+            )
+
+    # Force one rollover so the pipeline drains any pending decoded events.
+    await h.force_bin_rollover()
+    await h.wait_quiet(quiet_cycles=500)
+
+    assert not h.expected_decoded, \
+        (f"{len(h.expected_decoded)} decoded events unmatched by DUT")

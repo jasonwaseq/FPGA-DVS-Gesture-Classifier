@@ -6,7 +6,7 @@ import cocotb
 from cocotb.clock import Clock
 from cocotb.triggers import ClockCycles, NextTimeStep, ReadOnly, RisingEdge
 
-WIDTH = 32
+WIDTH = 8
 DEPTH = 512
 ADDR_MASK = DEPTH - 1
 DATA_MASK = (1 << WIDTH) - 1
@@ -63,7 +63,7 @@ async def drive_and_check(dut, model, reset_i, wr_valid_i, wr_data_i, wr_addr_i,
     await ReadOnly()
 
     got = int(dut.rd_data_o.value)
-    assert got == exp, f"{tag}: rd_data_o DUT=0x{got:08X} model=0x{exp:08X}"
+    assert got == exp, f"{tag}: rd_data_o DUT=0x{got:02X} model=0x{exp:02X}"
 
     await NextTimeStep()
 
@@ -78,9 +78,9 @@ async def test_reset_and_basic_read_write(dut):
     for _ in range(2):
         await drive_and_check(dut, model, 0, 0, 0, 0, 0, 0, "idle")
 
-    await drive_and_check(dut, model, 0, 1, 0xDEADBEEF, 7, 0, 0, "write")
+    await drive_and_check(dut, model, 0, 1, 0xEF, 7, 0, 0, "write")
     await drive_and_check(dut, model, 0, 0, 0, 0, 1, 7, "read")
-    assert int(dut.rd_data_o.value) == 0xDEADBEEF
+    assert int(dut.rd_data_o.value) == 0xEF
 
 
 @cocotb.test()
@@ -94,15 +94,15 @@ async def test_read_before_write_same_cycle_same_addr(dut):
         await drive_and_check(dut, model, 0, 0, 0, 0, 0, 0, "idle")
 
     # Prime location.
-    await drive_and_check(dut, model, 0, 1, 0x11111111, 12, 0, 0, "prime")
+    await drive_and_check(dut, model, 0, 1, 0x11, 12, 0, 0, "prime")
 
     # Same-cycle read and write same addr: rd_data should return old value.
-    await drive_and_check(dut, model, 0, 1, 0x22222222, 12, 1, 12, "rw-same")
-    assert int(dut.rd_data_o.value) == 0x11111111
+    await drive_and_check(dut, model, 0, 1, 0x22, 12, 1, 12, "rw-same")
+    assert int(dut.rd_data_o.value) == 0x11
 
     # Next read sees new value.
     await drive_and_check(dut, model, 0, 0, 0, 0, 1, 12, "read-new")
-    assert int(dut.rd_data_o.value) == 0x22222222
+    assert int(dut.rd_data_o.value) == 0x22
 
 
 @cocotb.test()
@@ -112,11 +112,11 @@ async def test_write_during_reset(dut):
     model = Ram1R1WSyncModel()
 
     # Keep reset high and write.
-    await drive_and_check(dut, model, 1, 1, 0xA5A5A5A5, 33, 0, 0, "wr-in-rst")
+    await drive_and_check(dut, model, 1, 1, 0xA5, 33, 0, 0, "wr-in-rst")
 
     # Deassert reset and read back written value.
     await drive_and_check(dut, model, 0, 0, 0, 0, 1, 33, "read-after-rst")
-    assert int(dut.rd_data_o.value) == 0xA5A5A5A5
+    assert int(dut.rd_data_o.value) == 0xA5
 
 
 @cocotb.test()
@@ -150,3 +150,90 @@ async def test_randomized_golden_scoreboard(dut):
             rd_addr_i,
             f"rnd-{cycle}",
         )
+
+
+@cocotb.test()
+async def test_rd_valid_low_holds_output(dut):
+    """When rd_valid_i=0, rd_data_o must hold its previously latched value."""
+    await setup(dut)
+    model = Ram1R1WSyncModel()
+
+    for _ in range(5):
+        await drive_and_check(dut, model, 1, 0, 0, 0, 0, 0, "rst")
+    for _ in range(2):
+        await drive_and_check(dut, model, 0, 0, 0, 0, 0, 0, "idle")
+
+    # Write a known value then read it to latch into rd_data_l.
+    await drive_and_check(dut, model, 0, 1, 0xBE, 5, 0, 0, "write")
+    await drive_and_check(dut, model, 0, 0, 0, 0, 1, 5, "read")
+    latched = int(dut.rd_data_o.value)
+    assert latched == 0xBE, f"Expected 0xBE, got 0x{latched:02X}"
+
+    # Issue several cycles with rd_valid_i=0 pointing at different (zero) addresses.
+    # Output must not change even though the address changes.
+    for addr in [0, 100, 255, DEPTH - 1]:
+        await drive_and_check(dut, model, 0, 0, 0, 0, 0, addr, f"hold-{addr}")
+        assert int(dut.rd_data_o.value) == 0xBE, \
+            f"rd_data_o changed while rd_valid_i=0 (addr={addr})"
+
+
+@cocotb.test()
+async def test_boundary_addresses(dut):
+    """Write then read at address 0, DEPTH-1, and DEPTH//2."""
+    await setup(dut)
+    model = Ram1R1WSyncModel()
+
+    for _ in range(5):
+        await drive_and_check(dut, model, 1, 0, 0, 0, 0, 0, "rst")
+    for _ in range(2):
+        await drive_and_check(dut, model, 0, 0, 0, 0, 0, 0, "idle")
+
+    test_cases = [
+        (0,          0xAA),
+        (DEPTH - 1,  0x55),
+        (DEPTH // 2, 0xDE),
+    ]
+    for addr, data in test_cases:
+        await drive_and_check(dut, model, 0, 1, data, addr, 0, 0, f"wr-{addr}")
+        await drive_and_check(dut, model, 0, 0, 0, 0, 1, addr, f"rd-{addr}")
+        got = int(dut.rd_data_o.value)
+        assert got == data, \
+            f"Addr {addr}: expected 0x{data:02X}, got 0x{got:02X}"
+
+
+@cocotb.test()
+async def test_all_ones_data(dut):
+    """All-ones data word (DATA_MASK) stored and read back intact."""
+    await setup(dut)
+    model = Ram1R1WSyncModel()
+
+    for _ in range(5):
+        await drive_and_check(dut, model, 1, 0, 0, 0, 0, 0, "rst")
+    for _ in range(2):
+        await drive_and_check(dut, model, 0, 0, 0, 0, 0, 0, "idle")
+
+    await drive_and_check(dut, model, 0, 1, DATA_MASK, 0, 0, 0, "wr-max")
+    await drive_and_check(dut, model, 0, 0, 0, 0, 1, 0, "rd-max")
+    got = int(dut.rd_data_o.value)
+    assert got == DATA_MASK, f"All-ones data corrupted: 0x{got:08X}"
+
+
+@cocotb.test()
+async def test_overwrite_same_address(dut):
+    """Overwriting the same address multiple times; final value must be last write."""
+    await setup(dut)
+    model = Ram1R1WSyncModel()
+
+    for _ in range(5):
+        await drive_and_check(dut, model, 1, 0, 0, 0, 0, 0, "rst")
+    for _ in range(2):
+        await drive_and_check(dut, model, 0, 0, 0, 0, 0, 0, "idle")
+
+    addr = 42
+    values = [0x11, 0x22, 0x33, 0x44]
+    for v in values:
+        await drive_and_check(dut, model, 0, 1, v, addr, 0, 0, f"wr-{v:08X}")
+
+    await drive_and_check(dut, model, 0, 0, 0, 0, 1, addr, "rd-final")
+    got = int(dut.rd_data_o.value)
+    assert got == values[-1], f"Expected 0x{values[-1]:02X}, got 0x{got:02X}"

@@ -13,8 +13,8 @@ synth/**/*.v
 *.sv2v.v
 
 # ── Python ───────────────────────────────────────────────────────────────────
-.venv/
-.wsl-venv/
+*.venv-win
+*.venv-wsl
 __pycache__/
 *.pyc
 *.pyo

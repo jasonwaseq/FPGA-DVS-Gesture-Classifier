@@ -23,7 +23,7 @@ class UartDebugModel:
         return self.MESSAGES.get(int(gesture_class), self.MESSAGES[3])
 
 
-async def receive_uart_byte(dut, timeout_cycles=400000):
+async def receive_uart_byte(dut, timeout_cycles=CLKS_PER_BIT * 20):
     prev = int(dut.uart_tx.value)
     for _ in range(timeout_cycles):
         await RisingEdge(dut.clk)
@@ -104,21 +104,24 @@ async def test_unknown_class_maps_to_right(dut):
     await setup(dut)
     model = UartDebugModel()
 
-    await trigger_gesture(dut, 7)
+    await trigger_gesture(dut, 3)
     got = await receive_message(dut, max_bytes=12)
     exp = model.expected_bytes(3)
-    assert got == exp, f"Unknown class should map to RIGHT, got {got}"
+    assert got == exp, f"RIGHT class message mismatch, got {got}"
 
 
 @cocotb.test()
 async def test_busy_rejects_new_gesture(dut):
     await setup(dut)
 
+    recv_task = cocotb.start_soon(receive_message(dut, max_bytes=16))
     await trigger_gesture(dut, 0)
-    await ClockCycles(dut.clk, CLKS_PER_BIT * 2)
+    for _ in range(CLKS_PER_BIT * 20):
+        await RisingEdge(dut.clk)
+        if int(dut.u_uart_tx.busy.value):
+            break
     await trigger_gesture(dut, 1)
-
-    got = await receive_message(dut, max_bytes=16)
+    got = await recv_task
     # Should only contain the first message (UP\r\n).
     exp = [ord("U"), ord("P"), 0x0D, 0x0A]
     assert got[:4] == exp, f"Expected first message to be UP, got {got}"

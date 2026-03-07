@@ -99,6 +99,7 @@ async def run_mul(dut, a, b, tag):
 
     # done is one-cycle pulse.
     await RisingEdge(dut.clk)
+    await ReadOnly()
     assert int(dut.done.value) == 0, f"{tag}: done not a single-cycle pulse"
 
     await NextTimeStep()
@@ -174,3 +175,126 @@ async def test_randomized_golden(dut):
         b = [[rng.randint(-300, 300) for _ in range(N)] for _ in range(N)]
         await run_mul(dut, a, b, f"rnd-{trial}")
         await ClockCycles(dut.clk, 2)
+
+
+@cocotb.test()
+async def test_back_to_back_runs(dut):
+    """Start a new multiply immediately after done pulses; no idle gap between runs."""
+    await setup(dut)
+    rng = random.Random(0xB2B2B2B2)
+
+    for trial in range(5):
+        await NextTimeStep()
+        a = [[rng.randint(-100, 100) for _ in range(N)] for _ in range(N)]
+        b = [[rng.randint(-100, 100) for _ in range(N)] for _ in range(N)]
+
+        dut.A_matrix_flat.value = pack_matrix(a, DATA_BITS)
+        dut.B_matrix_flat.value = pack_matrix(b, DATA_BITS)
+
+        dut.start.value = 1
+        await RisingEdge(dut.clk)
+        dut.start.value = 0
+
+        saw_done = False
+        for _ in range(TOTAL_CYCLES + 20):
+            await RisingEdge(dut.clk)
+            await ReadOnly()
+            if int(dut.done.value):
+                saw_done = True
+                break
+        assert saw_done, f"trial {trial}: timed out waiting for done"
+
+        got = unpack_matrix(int(dut.Out_matrix_flat.value), ACC_BITS)
+        exp = golden_matmul(a, b)
+        assert got == exp, f"trial {trial}: output mismatch"
+        # No gap: next trial's start fires next cycle (loop continues immediately)
+
+
+@cocotb.test()
+async def test_identity_times_identity(dut):
+    """I × I = I: verify every element explicitly."""
+    await setup(dut)
+
+    a = [[1 if i == j else 0 for j in range(N)] for i in range(N)]
+    b = [[1 if i == j else 0 for j in range(N)] for i in range(N)]
+    await run_mul(dut, a, b, "I*I")
+
+    got = unpack_matrix(int(dut.Out_matrix_flat.value), ACC_BITS)
+    for i in range(N):
+        for j in range(N):
+            exp_val = 1 if i == j else 0
+            assert got[i][j] == exp_val, \
+                f"I*I mismatch at [{i}][{j}]: DUT={got[i][j]} expected={exp_val}"
+
+
+@cocotb.test()
+async def test_single_nonzero_element(dut):
+    """A[0][0]=k, B[0][0]=k, all others 0 → Out[0][0]=k*k, rest 0."""
+    await setup(dut)
+
+    k = 127
+    a = [[0 for _ in range(N)] for _ in range(N)]
+    b = [[0 for _ in range(N)] for _ in range(N)]
+    a[0][0] = k
+    b[0][0] = k
+    await run_mul(dut, a, b, "single-elem")
+
+    got = unpack_matrix(int(dut.Out_matrix_flat.value), ACC_BITS)
+    assert got[0][0] == k * k, f"Expected {k*k} at [0][0], got {got[0][0]}"
+    for i in range(N):
+        for j in range(N):
+            if (i, j) != (0, 0):
+                assert got[i][j] == 0, f"Expected 0 at [{i}][{j}], got {got[i][j]}"
+
+
+@cocotb.test()
+async def test_all_negative_values(dut):
+    """neg × neg = positive accumulation; every output element must be >= 0."""
+    await setup(dut)
+    rng = random.Random(0xABCDEF01)
+
+    a = [[-rng.randint(1, 50) for _ in range(N)] for _ in range(N)]
+    b = [[-rng.randint(1, 50) for _ in range(N)] for _ in range(N)]
+    await run_mul(dut, a, b, "neg*neg")
+
+    got = unpack_matrix(int(dut.Out_matrix_flat.value), ACC_BITS)
+    exp = golden_matmul(a, b)
+    assert got == exp, "neg*neg matrix mismatch"
+    for i in range(N):
+        for j in range(N):
+            assert got[i][j] >= 0, \
+                f"Expected non-negative at [{i}][{j}], got {got[i][j]}"
+
+
+@cocotb.test()
+async def test_accumulator_does_not_persist_across_runs(dut):
+    """Accumulators must zero at the start of each run; no bleed from a prior result."""
+    await setup(dut)
+
+    # First run fills accumulators with large positive values.
+    a1 = [[1 for _ in range(N)] for _ in range(N)]
+    b1 = [[1 for _ in range(N)] for _ in range(N)]
+    await run_mul(dut, a1, b1, "ones-run")
+
+    # Second run: all-zeros → result must be exactly zero.
+    a2 = [[0 for _ in range(N)] for _ in range(N)]
+    b2 = [[0 for _ in range(N)] for _ in range(N)]
+    await run_mul(dut, a2, b2, "zeros-run")
+
+    got = unpack_matrix(int(dut.Out_matrix_flat.value), ACC_BITS)
+    for i in range(N):
+        for j in range(N):
+            assert got[i][j] == 0, \
+                f"Accumulator bleed at [{i}][{j}]: {got[i][j]} (expected 0)"
+
+
+@cocotb.test()
+async def test_mixed_sign_stress(dut):
+    """High-range mixed-sign values; golden comparison over 15 trials."""
+    await setup(dut)
+    rng = random.Random(0xFACEFEED)
+
+    for trial in range(15):
+        a = [[rng.randint(-500, 500) for _ in range(N)] for _ in range(N)]
+        b = [[rng.randint(-500, 500) for _ in range(N)] for _ in range(N)]
+        await run_mul(dut, a, b, f"mix-{trial}")

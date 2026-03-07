@@ -12,15 +12,48 @@ import tempfile
 from pathlib import Path
 
 PROJECT_ROOT = Path(__file__).parent.resolve()
-VENV_PATH = PROJECT_ROOT / ".venv"
 OSS_CAD_PATH = PROJECT_ROOT / "oss-cad-suite"
 RTL_DIR = PROJECT_ROOT / "rtl"
 TB_DIR = PROJECT_ROOT / "tb"
 SYNTH_DIR = PROJECT_ROOT / "synth"
 
+
+def _is_wsl():
+    if not sys.platform.startswith("linux"):
+        return False
+    try:
+        return "microsoft" in Path("/proc/sys/kernel/osrelease").read_text(encoding="ascii", errors="ignore").lower()
+    except Exception:
+        return False
+
+
+def _primary_venv_name():
+    if sys.platform == "win32":
+        return ".venv-win"
+    if sys.platform == "darwin":
+        return ".venv-macos"
+    if _is_wsl():
+        return ".venv-wsl"
+    if sys.platform.startswith("linux"):
+        return ".venv-linux"
+    return ".venv"
+
+
+def _venv_has_expected_layout(path):
+    if sys.platform == "win32":
+        return (path / "Scripts" / "python.exe").exists() and (path / "Scripts" / "pip.exe").exists()
+    return (path / "bin" / "python").exists() and (path / "bin" / "pip").exists()
+
+
+PRIMARY_VENV_PATH = PROJECT_ROOT / _primary_venv_name()
+LEGACY_VENV_PATH = PROJECT_ROOT / ".venv"
+VENV_PATH = PRIMARY_VENV_PATH
+
 PYTHON_PACKAGES = [
     "cocotb",
+    "cocotb-test",
     "pytest",
+    "gitpython",
     "numpy",
     "opencv-python",
     "pyserial",
@@ -102,10 +135,26 @@ def get_pip_cmd():
         return VENV_PATH / "Scripts" / "pip.exe"
     return VENV_PATH / "bin" / "pip"
 
+def _venv_expected_layout_exists():
+    return get_python_cmd().exists() and get_pip_cmd().exists()
+
+
+def _venv_wrong_platform_layout_exists():
+    if sys.platform == "win32":
+        return (VENV_PATH / "bin" / "python").exists() or (VENV_PATH / "bin" / "pip").exists()
+    return (VENV_PATH / "Scripts" / "python.exe").exists() or (VENV_PATH / "Scripts" / "pip.exe").exists()
+
+
+def _recreate_venv():
+    if VENV_PATH.exists():
+        shutil.rmtree(VENV_PATH)
+    result = run_cmd([sys.executable, "-m", "venv", str(VENV_PATH)])
+    return result is not None
+
 def get_oss_cad_bin():
     iverilog_exe = "iverilog.exe" if sys.platform == "win32" else "iverilog"
 
-    # 1. Project-local install (preferred — placed here by setup.py download)
+    # 1. Project-local install (preferred — placed here by workflow download)
     candidates = [
         OSS_CAD_PATH / "oss-cad-suite",  # nested layout from Windows self-extractor
         OSS_CAD_PATH,                     # flat layout from tgz extraction
@@ -211,16 +260,41 @@ def download_with_progress(url, dest):
 
 def setup_venv():
     print_step("1/3", "Setting up Python virtual environment...")
+
+    if LEGACY_VENV_PATH.exists() and (LEGACY_VENV_PATH != VENV_PATH):
+        print_warning(
+            f"Legacy venv detected at {LEGACY_VENV_PATH.name}. "
+            f"Using {VENV_PATH.name} for this platform."
+        )
     
     if VENV_PATH.exists():
-        print_success("Virtual environment already exists")
+        if _venv_expected_layout_exists():
+            print_success("Virtual environment already exists")
+            return True
+
+        if _venv_wrong_platform_layout_exists():
+            print_warning(
+                f"Existing {VENV_PATH.name} was created for another OS/shell layout. "
+                "Recreating it for this environment."
+            )
+        else:
+            print_warning(f"Existing {VENV_PATH.name} is incomplete/corrupt. Recreating it.")
+
+        try:
+            if not _recreate_venv():
+                print_error("Failed to recreate virtual environment")
+                return False
+        except Exception as e:
+            print_error(f"Failed to recreate virtual environment: {e}")
+            return False
+
+        print_success(f"Recreated virtual environment at {VENV_PATH.name}")
         return True
-    
-    result = run_cmd([sys.executable, "-m", "venv", str(VENV_PATH)])
-    if result is None:
+
+    if not _recreate_venv():
         print_error("Failed to create virtual environment")
         return False
-    
+
     print_success(f"Created virtual environment at {VENV_PATH.name}")
     return True
 
@@ -396,6 +470,20 @@ def _get_sim_tools(env, oss_root):
     return iverilog_cmd, vvp_cmd, iverilog_args
 
 
+def _get_linux_system_sim_tools():
+    if not sys.platform.startswith("linux"):
+        return None, None
+
+    candidates = [
+        (Path("/usr/bin/iverilog"), Path("/usr/bin/vvp")),
+        (Path("/usr/local/bin/iverilog"), Path("/usr/local/bin/vvp")),
+    ]
+    for ivl, vvp in candidates:
+        if ivl.exists() and vvp.exists():
+            return str(ivl), str(vvp)
+    return None, None
+
+
 def _get_cocotb_libs(python_cmd, env):
     result = run_cmd(
         [str(python_cmd), "-c", "import cocotb, os; print(os.path.dirname(cocotb.__file__))"],
@@ -406,14 +494,27 @@ def _get_cocotb_libs(python_cmd, env):
 
     cocotb_path = Path(result.stdout.strip())
     cocotb_libs = cocotb_path / "libs"
-    vpi_module = cocotb_libs / "cocotbvpi_icarus.vpi"
-    vpi_fallback = cocotb_libs / "cocotbvpi_icarus.vpl"
-    if not vpi_module.exists() and vpi_fallback.exists():
-        try:
-            vpi_module.symlink_to(vpi_fallback.name)
-        except OSError:
-            shutil.copyfile(vpi_fallback, vpi_module)
-    return cocotb_libs
+    module_names = ["cocotbvpi_icarus", "libcocotbvpi_icarus"]
+    chosen_module = None
+    for module_name in module_names:
+        vpi_module = cocotb_libs / f"{module_name}.vpi"
+        vpi_vpl = cocotb_libs / f"{module_name}.vpl"
+        vpi_so = cocotb_libs / f"{module_name}.so"
+
+        if not vpi_module.exists() and vpi_vpl.exists():
+            try:
+                vpi_module.symlink_to(vpi_vpl.name)
+            except OSError:
+                shutil.copyfile(vpi_vpl, vpi_module)
+
+        if vpi_module.exists() or vpi_vpl.exists() or vpi_so.exists():
+            chosen_module = module_name
+            break
+
+    if chosen_module is None:
+        return None, None
+
+    return cocotb_libs, chosen_module
 
 
 def _run_single_test(target_name):
@@ -423,7 +524,7 @@ def _run_single_test(target_name):
 
     oss_root = get_oss_cad_bin()
     if oss_root is None:
-        print_error("OSS CAD Suite not found. Run 'python setup.py setup' first.")
+        print_error("OSS CAD Suite not found. Run 'make setup' first.")
         return 1
 
     env = get_oss_cad_env()
@@ -433,15 +534,22 @@ def _run_single_test(target_name):
 
     python = get_python_cmd()
     if not python.exists():
-        print_error("Python venv not found. Run 'python setup.py setup' first.")
+        print_error("Python venv not found. Run 'make setup' first.")
         return 1
 
-    cocotb_libs = _get_cocotb_libs(python, env)
-    if cocotb_libs is None:
-        print_error("cocotb not installed in .venv. Run 'python setup.py setup' first.")
+    cocotb_libs, cocotb_vpi_module = _get_cocotb_libs(python, env)
+    if cocotb_libs is None or cocotb_vpi_module is None:
+        print_error("cocotb not installed in the project venv. Run 'make setup' first.")
         return 1
 
     iverilog_cmd, vvp_cmd, iverilog_args = _get_sim_tools(env, oss_root)
+
+    # In WSL/Linux, bundled OSS-CAD runtime libs can conflict with host libpython
+    # (GLIBC/libm mismatch). Prefer distro-native Icarus for cocotb tests when present.
+    sys_iverilog, sys_vvp = _get_linux_system_sim_tools()
+    if sys_iverilog and sys_vvp:
+        iverilog_cmd, vvp_cmd, iverilog_args = sys_iverilog, sys_vvp, []
+        env = os.environ.copy()
 
     env["PYGPI_PYTHON_BIN"] = str(python)
     env["COCOTB_TEST_MODULES"] = test_module
@@ -486,11 +594,29 @@ def _run_single_test(target_name):
     sim_cmd = [
         vvp_cmd,
         "-M", str(cocotb_libs),
-        "-m", "cocotbvpi_icarus",
+        "-m", cocotb_vpi_module,
         str(vvp_file)
     ]
-    result = subprocess.run(sim_cmd, env=env, cwd=TB_DIR)
-    return result.returncode
+    results_file = sim_build / "results.xml"
+    if results_file.exists():
+        results_file.unlink()
+    env["COCOTB_RESULTS_FILE"] = str(results_file)
+
+    # Run from project root so relative data files used by RTL init blocks
+    # (e.g. 8192weights.txt) resolve consistently.
+    result = subprocess.run(sim_cmd, env=env, cwd=PROJECT_ROOT, capture_output=True, text=True)
+    if result.stdout:
+        print(result.stdout, end="")
+    if result.stderr:
+        print(result.stderr, end="")
+
+    if result.returncode != 0:
+        return result.returncode
+    if not results_file.exists():
+        print_error("cocotb did not produce results.xml; simulator likely failed to load VPI module.")
+        return 1
+
+    return 0
 
 
 def run_tests(target="all"):
@@ -526,7 +652,7 @@ def _synthesize(top_module, rtl_files, pcf_name, label="", arch_dir=None, allow_
 
     oss_root = get_oss_cad_bin()
     if oss_root is None:
-        print_error("OSS CAD Suite not found. Run 'python setup.py' first.")
+        print_error("OSS CAD Suite not found. Run 'make setup' first.")
         return 1
 
     env = get_oss_cad_env()
@@ -691,7 +817,7 @@ def flash_fpga(port=None, serial=None, vid=None, pid=None, bitfile_name=None, ar
     bitfile = bitfile_dir / bitfile_name
     if not bitfile.exists():
         print_error(f"Bitstream not found: {bitfile}")
-        print("  Run 'python setup.py synth <arch>' first (e.g. synth voxel_bin)")
+        print("  Run 'make synth' first")
         return 1
     
     env = get_oss_cad_env()
@@ -787,21 +913,22 @@ def clean():
 
 def print_usage():
     test_targets = ", ".join(TEST_TARGETS.keys())
-    synth_targets = ", ".join(ARCH_SYNTH_CONFIG.keys())
     print(
         "Usage:\n"
-        "  python setup.py setup [--skip-fpga]\n"
-        "  python setup.py doctor\n"
-        f"  python setup.py test [all|{test_targets}]\n"
-        f"  python setup.py synth [{synth_targets}]\n"
-        f"  python setup.py flash [{synth_targets}] [--port COM3 --serial <sn> --vid 0x0403 --pid 0x6010]\n"
-        "  python setup.py clean\n"
+        "  make setup [SKIP_FPGA=1]\n"
+        "  make doctor\n"
+        f"  make test [all|{test_targets}]\n"
+        "  make synth\n"
+        "  make flash [PORT=COM3 SERIAL=<sn> VID=0x0403 PID=0x6010]\n"
+        "  make clean\n"
         "\n"
         "Defaults:\n"
-        "  python setup.py         -> setup\n"
-        "  python setup.py test    -> test all\n"
-        "  python setup.py synth   -> synth voxel_bin\n"
-        "  python setup.py flash   -> flash voxel_bin\n"
+        "  make test               -> test all\n"
+        "  make synth              -> synth voxel_bin\n"
+        "  make flash              -> flash voxel_bin\n"
+        "\n"
+        "Internal script (if needed):\n"
+        "  python setup.py <command>\n"
     )
 
 
@@ -809,6 +936,7 @@ def run_setup(skip_fpga=False):
     print_header("DVS Gesture Accelerator - Setup")
     print(f"Platform: {platform.system()} {platform.machine()}")
     print(f"Python: {sys.version.split()[0]}")
+    print(f"Venv path: {VENV_PATH.name}")
 
     if not setup_venv():
         return 1
@@ -820,13 +948,13 @@ def run_setup(skip_fpga=False):
     print_header("Setup Complete")
     print("\nNext steps:")
     if sys.platform == "win32":
-        print("  Activate venv: .venv\\Scripts\\activate")
+        print(f"  Activate venv: {VENV_PATH.name}\\Scripts\\activate")
     else:
-        print("  Activate venv: source .venv/bin/activate")
-    print("  Check setup:   python setup.py doctor")
-    print("  Run tests:     python setup.py test")
-    print("  Synthesize:    python setup.py synth voxel_bin")
-    print("  Flash:         python setup.py flash voxel_bin")
+        print(f"  Activate venv: source {VENV_PATH.name}/bin/activate")
+    print("  Check setup:   make doctor")
+    print("  Run tests:     make test")
+    print("  Synthesize:    make synth")
+    print("  Flash:         make flash")
     return 0
 
 
@@ -837,7 +965,7 @@ def _check_python_packages():
 
     check_script = (
         "import importlib.util, json;"
-        "mods=['cocotb','pytest','numpy','cv2','serial'];"
+        "mods=['cocotb','cocotb_test','pytest','git','numpy','cv2','serial'];"
         "missing=[m for m in mods if importlib.util.find_spec(m) is None];"
         "print(json.dumps(missing))"
     )
@@ -888,21 +1016,21 @@ def doctor():
 
     python, missing_pkgs = _check_python_packages()
     if python is None:
-        print_error("Python venv not found. Run: python setup.py setup")
+        print_error("Python venv not found. Run: make setup")
         failures += 1
     else:
         print_success(f"Python venv: {python}")
         if missing_pkgs:
             print_error(f"Missing Python packages in venv: {', '.join(missing_pkgs)}")
-            print("  Fix: python setup.py setup")
+            print("  Fix: make setup")
             failures += 1
         else:
-            print_success("Python packages: cocotb, pytest, numpy, opencv-python, pyserial")
+            print_success("Python packages: cocotb, cocotb-test, pytest, gitpython, numpy, opencv-python, pyserial")
 
     oss_root = get_oss_cad_bin()
     env = get_oss_cad_env()
     if oss_root is None or env is None:
-        print_error("OSS CAD Suite tools not found. Run: python setup.py setup")
+        print_error("OSS CAD Suite tools not found. Run: make setup")
         failures += 1
     else:
         print_success(f"OSS CAD Suite root: {oss_root}")

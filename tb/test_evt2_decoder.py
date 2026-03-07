@@ -210,3 +210,153 @@ async def test_randomized_golden_scoreboard(dut):
         dv = rng.choice([0, 1, 1, 1])
         ready = rng.choice([0, 1, 1])
         await drive_and_check(dut, model, 0, word, dv, ready, f"rnd-{cycle}")
+
+
+@cocotb.test()
+async def test_polarity_off_vs_on(dut):
+    """CD_OFF → polarity=0; CD_ON → polarity=1."""
+    await setup(dut)
+    model = Evt2DecoderModel()
+
+    for _ in range(5):
+        await drive_and_check(dut, model, 1, 0, 0, 1, "rst")
+    for _ in range(2):
+        await drive_and_check(dut, model, 0, 0, 0, 1, "idle")
+
+    await drive_and_check(dut, model, 0, build_evt2_time_high(0x100), 1, 1, "th")
+
+    cd_off = build_evt2_cd(EVT_CD_OFF, 10, 10, 5)
+    await drive_and_check(dut, model, 0, cd_off, 1, 1, "cd-off")
+    assert int(dut.event_valid.value) == 1, "Expected event_valid for CD_OFF"
+    assert int(dut.polarity.value) == 0, "CD_OFF should set polarity=0"
+
+    cd_on = build_evt2_cd(EVT_CD_ON, 20, 20, 6)
+    await drive_and_check(dut, model, 0, cd_on, 1, 1, "cd-on")
+    assert int(dut.event_valid.value) == 1, "Expected event_valid for CD_ON"
+    assert int(dut.polarity.value) == 1, "CD_ON should set polarity=1"
+
+
+@cocotb.test()
+async def test_grid_coordinate_lower_boundaries(dut):
+    """Sensor coordinate at exact lower boundary of each grid cell maps to correct cell."""
+    await setup(dut)
+    model = Evt2DecoderModel()
+
+    for _ in range(5):
+        await drive_and_check(dut, model, 1, 0, 0, 1, "rst")
+    for _ in range(2):
+        await drive_and_check(dut, model, 0, 0, 0, 1, "idle")
+
+    await drive_and_check(dut, model, 0, build_evt2_time_high(0x1), 1, 1, "th")
+
+    step = SENSOR_WIDTH // GRID_SIZE  # = 20
+    for g in range(GRID_SIZE):
+        x_sensor = g * step  # lower boundary of each cell
+        word = build_evt2_cd(EVT_CD_ON, x_sensor, 0, g & 0x3F)
+        await drive_and_check(dut, model, 0, word, 1, 1, f"x-lb-{g}")
+        assert int(dut.event_valid.value) == 1
+        assert int(dut.x_out.value) == g, \
+            f"x_sensor={x_sensor} should map to grid {g}, got {int(dut.x_out.value)}"
+
+
+@cocotb.test()
+async def test_unknown_packet_types_no_event(dut):
+    """Packet types other than 0x0, 0x1, 0x8 must not emit event_valid."""
+    await setup(dut)
+    model = Evt2DecoderModel()
+
+    for _ in range(5):
+        await drive_and_check(dut, model, 1, 0, 0, 1, "rst")
+    for _ in range(2):
+        await drive_and_check(dut, model, 0, 0, 0, 1, "idle")
+
+    await drive_and_check(dut, model, 0, build_evt2_time_high(0xAB), 1, 1, "th")
+
+    for pkt_type in [0x2, 0x3, 0x4, 0x5, 0x6, 0x7, 0x9, 0xA, 0xF]:
+        word = (pkt_type << 28) | 0x00ABCDEF
+        await drive_and_check(dut, model, 0, word, 1, 1, f"unk-0x{pkt_type:X}")
+        assert int(dut.event_valid.value) == 0, \
+            f"Packet type 0x{pkt_type:X} should not emit event_valid"
+
+
+@cocotb.test()
+async def test_consecutive_cd_events_all_valid(dut):
+    """Back-to-back CD events (no stall) all produce event_valid on successive cycles."""
+    await setup(dut)
+    model = Evt2DecoderModel()
+
+    for _ in range(5):
+        await drive_and_check(dut, model, 1, 0, 0, 1, "rst")
+    for _ in range(2):
+        await drive_and_check(dut, model, 0, 0, 0, 1, "idle")
+
+    await drive_and_check(dut, model, 0, build_evt2_time_high(0x7777), 1, 1, "th")
+
+    step = SENSOR_WIDTH // GRID_SIZE
+    coords = [(0, 0), (15, 15), (8, 8), (3, 12), (10, 2)]
+    for i, (gx, gy) in enumerate(coords):
+        word = build_evt2_cd(EVT_CD_ON, gx * step, gy * step, i & 0x3F)
+        await drive_and_check(dut, model, 0, word, 1, 1, f"cd-{i}")
+        assert int(dut.event_valid.value) == 1, f"No event_valid for CD event {i}"
+        assert int(dut.x_out.value) == gx, f"x_out mismatch at event {i}"
+        assert int(dut.y_out.value) == gy, f"y_out mismatch at event {i}"
+
+
+@cocotb.test()
+async def test_time_high_updates_timestamp_correctly(dut):
+    """Multiple TIME_HIGH words update the timestamp base; CD event picks up the latest."""
+    await setup(dut)
+    model = Evt2DecoderModel()
+
+    for _ in range(5):
+        await drive_and_check(dut, model, 1, 0, 0, 1, "rst")
+    for _ in range(2):
+        await drive_and_check(dut, model, 0, 0, 0, 1, "idle")
+
+    th_values = [0x000001, 0x00ABCD, 0x3FFFFF, 0x0FFFFFF]
+    for th_val in th_values:
+        await drive_and_check(dut, model, 0, build_evt2_time_high(th_val), 1, 1, f"th-{th_val}")
+
+    ts_lsb = 0x2A
+    cd = build_evt2_cd(EVT_CD_ON, 0, 0, ts_lsb)
+    await drive_and_check(dut, model, 0, cd, 1, 1, "cd-final")
+    assert int(dut.event_valid.value) == 1
+
+    exp_ts = ((th_values[-1] & 0x0FFFFFFF) << 6) | ts_lsb
+    assert int(dut.timestamp.value) == exp_ts, \
+        f"Timestamp mismatch: DUT=0x{int(dut.timestamp.value):X} expected=0x{exp_ts:X}"
+
+
+@cocotb.test()
+async def test_reset_clears_time_high_requirement(dut):
+    """After reset, REQUIRE_TIME_HIGH blocks events again until a new TIME_HIGH arrives."""
+    await setup(dut)
+    model = Evt2DecoderModel()
+
+    # Bring model through reset.
+    for _ in range(5):
+        await drive_and_check(dut, model, 1, 0, 0, 1, "rst")
+    for _ in range(2):
+        await drive_and_check(dut, model, 0, 0, 0, 1, "idle")
+
+    # Prime with TIME_HIGH, emit one event.
+    await drive_and_check(dut, model, 0, build_evt2_time_high(0x55), 1, 1, "th1")
+    cd = build_evt2_cd(EVT_CD_ON, 40, 40, 1)
+    await drive_and_check(dut, model, 0, cd, 1, 1, "cd1")
+    assert int(dut.event_valid.value) == 1
+
+    # Reset.
+    for _ in range(3):
+        await drive_and_check(dut, model, 1, 0, 0, 1, "rst2")
+    for _ in range(2):
+        await drive_and_check(dut, model, 0, 0, 0, 1, "post-rst")
+
+    # Without a new TIME_HIGH, a CD event should be suppressed.
+    await drive_and_check(dut, model, 0, cd, 1, 1, "cd-no-th")
+    assert int(dut.event_valid.value) == 0, \
+        "event_valid should be suppressed when no TIME_HIGH since reset"
+
+    # After a fresh TIME_HIGH it should work again.
+    await drive_and_check(dut, model, 0, build_evt2_time_high(0x66), 1, 1, "th2")
+    await drive_and_check(dut, model, 0, cd, 1, 1, "cd2")
+    assert int(dut.event_valid.value) == 1

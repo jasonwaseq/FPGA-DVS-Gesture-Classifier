@@ -4,7 +4,7 @@ import random
 
 import cocotb
 from cocotb.clock import Clock
-from cocotb.triggers import ClockCycles, RisingEdge
+from cocotb.triggers import ClockCycles, NextTimeStep, ReadOnly, RisingEdge
 
 CLKS_PER_BIT = 104
 
@@ -90,6 +90,23 @@ async def send_uart_byte(dut, byte_val):
     await ClockCycles(dut.clk, CLKS_PER_BIT)
 
 
+async def expect_valid_byte(dut, expected, timeout_cycles):
+    # Catch the case where valid pulses on the cycle we return from send.
+    await ReadOnly()
+    if int(dut.valid.value):
+        assert int(dut.data.value) == expected, f"Expected 0x{expected:02X}, got 0x{int(dut.data.value):02X}"
+        return
+
+    for _ in range(timeout_cycles):
+        await RisingEdge(dut.clk)
+        await ReadOnly()
+        if int(dut.valid.value):
+            assert int(dut.data.value) == expected, f"Expected 0x{expected:02X}, got 0x{int(dut.data.value):02X}"
+            return
+
+    raise AssertionError(f"No valid pulse observed for byte 0x{expected:02X}")
+
+
 async def setup(dut):
     cocotb.start_soon(Clock(dut.clk, 10, unit="ns").start())
     dut.rst.value = 1
@@ -109,16 +126,9 @@ async def test_reset_defaults(dut):
 @cocotb.test()
 async def test_single_byte(dut):
     await setup(dut)
+    wait_task = cocotb.start_soon(expect_valid_byte(dut, 0xA5, CLKS_PER_BIT * 14))
     await send_uart_byte(dut, 0xA5)
-
-    seen = False
-    for _ in range(CLKS_PER_BIT * 3):
-        await RisingEdge(dut.clk)
-        if int(dut.valid.value):
-            seen = True
-            assert int(dut.data.value) == 0xA5
-            break
-    assert seen, "No valid pulse observed"
+    await wait_task
 
 
 @cocotb.test()
@@ -136,6 +146,7 @@ async def test_framing_error_rejected(dut):
 
     for _ in range(CLKS_PER_BIT * 4):
         await RisingEdge(dut.clk)
+        await ReadOnly()
         assert int(dut.valid.value) == 0, "Framing-error byte should be dropped"
 
 
@@ -143,15 +154,9 @@ async def test_framing_error_rejected(dut):
 async def test_all_byte_values(dut):
     await setup(dut)
     for val in range(256):
+        wait_task = cocotb.start_soon(expect_valid_byte(dut, val, CLKS_PER_BIT * 14))
         await send_uart_byte(dut, val)
-        seen = False
-        for _ in range(CLKS_PER_BIT * 4):
-            await RisingEdge(dut.clk)
-            if int(dut.valid.value):
-                assert int(dut.data.value) == val, f"Expected 0x{val:02X}, got 0x{int(dut.data.value):02X}"
-                seen = True
-                break
-        assert seen, f"No valid for byte 0x{val:02X}"
+        await wait_task
 
 
 @cocotb.test()
@@ -187,12 +192,14 @@ async def test_randomized_golden_waveform(dut):
     for bit in waveform:
         dut.rx.value = bit
         await RisingEdge(dut.clk)
+        await ReadOnly()
         m_data, m_valid = model.step(int(dut.rst.value), bit)
 
         if m_valid:
             model_observed.append(m_data)
         if int(dut.valid.value):
             observed.append(int(dut.data.value))
+        await NextTimeStep()
 
     assert observed == model_observed, f"DUT bytes {observed} != model {model_observed}"
     assert observed == expected_bytes, f"Decoded bytes {observed} != expected {expected_bytes}"

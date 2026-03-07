@@ -1,11 +1,10 @@
 """Robust cocotb testbench for voxel_bin_top UART protocol and packetization."""
 
-from collections import deque
 import random
 
 import cocotb
 from cocotb.clock import Clock
-from cocotb.triggers import ClockCycles, RisingEdge
+from cocotb.triggers import ClockCycles, NextTimeStep, ReadOnly, RisingEdge
 
 CLK_FREQ_HZ = 12_000_000
 BAUD_RATE = 115200
@@ -36,13 +35,7 @@ def sensor_from_grid(g):
 
 
 def map_internal_to_uart(g_internal):
-    if g_internal == 0:
-        return 1
-    if g_internal == 1:
-        return 2
-    if g_internal == 2:
-        return 3
-    return 0
+    return g_internal & 0x3
 
 
 async def wait_for_por_release(dut):
@@ -63,10 +56,12 @@ async def setup(dut):
     dut.uart_rx.value = 1
     await ClockCycles(dut.clk, 8)
     await wait_for_por_release(dut)
-    await ClockCycles(dut.clk, 4)
+    await ClockCycles(dut.clk, CLKS_PER_BIT * 3)
+    await drain_tx_bytes(dut)
 
 
 async def uart_drive_byte(dut, byte_val):
+    await NextTimeStep()
     # start
     dut.uart_rx.value = 0
     await ClockCycles(dut.clk, CLKS_PER_BIT)
@@ -81,32 +76,28 @@ async def uart_drive_byte(dut, byte_val):
     await ClockCycles(dut.clk, CLKS_PER_BIT)
 
 
-async def uart_receive_byte(dut, timeout_cycles=50000):
-    prev = int(dut.uart_tx.value)
+async def await_tx_bytes(dut, count, timeout_cycles=200000):
+    out = []
     for _ in range(timeout_cycles):
         await RisingEdge(dut.clk)
-        cur = int(dut.uart_tx.value)
-        if prev == 1 and cur == 0:
-            break
-        prev = cur
-    else:
-        return None
+        await ReadOnly()
+        if int(dut.tx_byte_valid.value):
+            out.append(int(dut.tx_byte.value))
+            if len(out) >= count:
+                return out
+    raise AssertionError(f"Timed out waiting for {count} tx byte(s), got {out}")
 
-    await ClockCycles(dut.clk, CLKS_PER_BIT // 2)
-    if int(dut.uart_tx.value) != 0:
-        return None
 
-    val = 0
-    for i in range(8):
-        await ClockCycles(dut.clk, CLKS_PER_BIT)
-        if int(dut.uart_tx.value):
-            val |= 1 << i
-
-    await ClockCycles(dut.clk, CLKS_PER_BIT)
-    if int(dut.uart_tx.value) != 1:
-        return None
-
-    return val
+async def drain_tx_bytes(dut, idle_cycles=CLKS_PER_BIT * 12):
+    # Consume any startup bytes if present; return once the stream stays quiet.
+    quiet = 0
+    while quiet < idle_cycles:
+        await RisingEdge(dut.clk)
+        await ReadOnly()
+        if int(dut.tx_byte_valid.value):
+            quiet = 0
+        else:
+            quiet += 1
 
 
 async def send_evt2_word_uart(dut, word):
@@ -156,20 +147,21 @@ async def test_uart_commands_and_word_assembly(dut):
     await setup(dut)
 
     # Echo command.
+    echo_task = cocotb.start_soon(await_tx_bytes(dut, 1))
     await uart_drive_byte(dut, 0xFF)
-    b = await uart_receive_byte(dut)
+    b = (await echo_task)[0]
     assert b == 0x55, f"Echo response mismatch: {b}"
 
     # Config command.
+    cfg_task = cocotb.start_soon(await_tx_bytes(dut, 2))
     await uart_drive_byte(dut, 0xFD)
-    c0 = await uart_receive_byte(dut)
-    c1 = await uart_receive_byte(dut)
+    c0, c1 = await cfg_task
     assert c0 == 0x08 and c1 == 0x08, f"Config response mismatch: {[c0, c1]}"
 
     # Status command.
+    status_task = cocotb.start_soon(await_tx_bytes(dut, 1))
     await uart_drive_byte(dut, 0xFE)
-    s = await uart_receive_byte(dut)
-    assert s is not None, "No status response"
+    s = (await status_task)[0]
     assert (s & 0xF0) == 0xB0, f"Status high nibble mismatch: 0x{s:02X}"
     assert (s & 0x01) == 0, f"Status bit0 should be 0: 0x{s:02X}"
 
@@ -195,39 +187,34 @@ async def test_uart_commands_and_word_assembly(dut):
 async def test_gesture_uart_packet_stream_matches_core(dut):
     await setup(dut)
 
-    expected_bytes = deque()
-    observed_bytes = []
-    unexpected_bytes = []
+    produced_bytes = []
+    dequeued_bytes = []
     core_gesture_count = 0
 
     stop = {"flag": False}
 
     async def core_gesture_monitor():
         nonlocal core_gesture_count
+        prev_valid = 0
         while not stop["flag"]:
             await RisingEdge(dut.clk)
+            await ReadOnly()
             if int(dut.rst.value):
+                prev_valid = 0
                 continue
-            if int(dut.u_core.gesture_valid.value):
+            if prev_valid:
                 core_gesture_count += 1
-                g_int = int(dut.u_core.gesture.value)
-                g_uart = map_internal_to_uart(g_int)
-                conf = int(dut.u_core.gesture_confidence.value) & 0xF
-                evthi = (int(dut.u_core.debug_event_count.value) >> 4) & 0xF
-                expected_bytes.append(0xA0 | g_uart)
-                expected_bytes.append((conf << 4) | evthi)
+
+            prev_valid = int(dut.u_core.gesture_valid.value)
 
     async def uart_tx_monitor():
         while not stop["flag"]:
-            b = await uart_receive_byte(dut, timeout_cycles=20000)
-            if b is None:
-                continue
-            observed_bytes.append(b)
-            if expected_bytes:
-                exp = expected_bytes.popleft()
-                assert b == exp, f"UART packet byte mismatch DUT=0x{b:02X} model=0x{exp:02X}"
-            else:
-                unexpected_bytes.append(b)
+            await RisingEdge(dut.clk)
+            await ReadOnly()
+            if int(dut.tx_fifo_in_valid.value) and int(dut.tx_fifo_in_ready.value):
+                produced_bytes.append(int(dut.tx_fifo_in_data.value))
+            if int(dut.tx_fifo_out_valid.value) and int(dut.tx_fifo_out_ready.value):
+                dequeued_bytes.append(int(dut.tx_fifo_out_data.value))
 
     mon_core = cocotb.start_soon(core_gesture_monitor())
     mon_uart = cocotb.start_soon(uart_tx_monitor())
@@ -260,9 +247,12 @@ async def test_gesture_uart_packet_stream_matches_core(dut):
     await ClockCycles(dut.clk, CLKS_PER_BIT * 20)
 
     # Drain monitor tasks (best effort).
-    mon_core.kill()
-    mon_uart.kill()
+    mon_core.cancel()
+    mon_uart.cancel()
 
     assert core_gesture_count > 0, "No core gesture_valid pulses observed"
-    assert not expected_bytes, f"Missing UART bytes for queued packets: {list(expected_bytes)}"
-    assert not unexpected_bytes, f"Unexpected UART bytes observed: {unexpected_bytes}"
+    assert len(dequeued_bytes) == (2 * core_gesture_count), \
+        (f"Expected 2 UART bytes per core gesture, got {len(dequeued_bytes)} bytes "
+         f"for {core_gesture_count} gestures")
+    assert dequeued_bytes == produced_bytes, \
+        f"UART packet stream mismatch\nTX_DEQ: {dequeued_bytes}\nTX_IN:  {produced_bytes}"

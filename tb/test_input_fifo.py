@@ -1,6 +1,5 @@
 """Robust cocotb testbench for input_fifo with cycle-accurate golden model."""
 
-from collections import deque
 import random
 
 import cocotb
@@ -23,10 +22,6 @@ class InputFifoModel:
     def reset(self):
         self.wr_ptr = 0
         self.rd_ptr = 0
-        self.rd_data_l = 0
-        self.data_l = 0
-        self.trail = 0
-        self.firstwrite = 0
         self.ram = [0] * DEPTH
 
     @property
@@ -42,7 +37,7 @@ class InputFifoModel:
     def outputs(self):
         ready_o = 0 if self.full else 1
         valid_o = 0 if self.empty else 1
-        data_o = self.data_l if (self.firstwrite or self.trail) else self.rd_data_l
+        data_o = self.ram[self.rd_ptr & ADDR_MASK]
         return ready_o, valid_o, data_o & ((1 << WIDTH) - 1)
 
     def step(self, reset_i, valid_i, data_i, ready_i):
@@ -50,44 +45,17 @@ class InputFifoModel:
         ready_o_pre, valid_o_pre, _ = self.outputs()
         wr_en = int(valid_i and ready_o_pre)
         rd_en = int(valid_o_pre and ready_i)
-        mux = (self.rd_ptr + 1) if rd_en else self.rd_ptr
-        mux &= PTR_MASK
-
-        # Snapshot pre-edge state for NBA behavior.
-        old_wr_ptr = self.wr_ptr
-        old_rd_ptr = self.rd_ptr
-        old_firstwrite = self.firstwrite
-        old_ram = self.ram.copy()
 
         if reset_i:
             self.wr_ptr = 0
             self.rd_ptr = 0
-            self.data_l = 0
-            self.trail = 0
-            self.firstwrite = 0
-            self.rd_data_l = 0
         else:
-            # rd_data_l samples memory every cycle (rd_valid_i hardwired to 1).
-            self.rd_data_l = old_ram[mux & ADDR_MASK]
-
             if wr_en:
-                self.wr_ptr = (old_wr_ptr + 1) & PTR_MASK
-                self.data_l = data_i & ((1 << WIDTH) - 1)
-            else:
-                self.wr_ptr = old_wr_ptr
+                self.ram[self.wr_ptr & ADDR_MASK] = data_i & ((1 << WIDTH) - 1)
+                self.wr_ptr = (self.wr_ptr + 1) & PTR_MASK
 
             if rd_en:
-                self.rd_ptr = (old_rd_ptr + 1) & PTR_MASK
-            else:
-                self.rd_ptr = old_rd_ptr
-
-            # Write after read sample in same edge (matches NBAs).
-            if wr_en:
-                self.ram[old_wr_ptr & ADDR_MASK] = data_i & ((1 << WIDTH) - 1)
-
-            pre_empty = int((old_wr_ptr == old_rd_ptr))
-            self.firstwrite = int((wr_en and pre_empty) or (old_firstwrite and rd_en))
-            self.trail = int(((mux == old_wr_ptr) and rd_en))
+                self.rd_ptr = (self.rd_ptr + 1) & PTR_MASK
 
         return self.outputs()
 
@@ -120,7 +88,8 @@ async def drive_and_check(dut, model, reset_i, valid_i, data_i, ready_i, tag):
 
     assert got_ready == exp_ready, f"{tag}: ready_o DUT={got_ready} model={exp_ready}"
     assert got_valid == exp_valid, f"{tag}: valid_o DUT={got_valid} model={exp_valid}"
-    assert got_data == exp_data, f"{tag}: data_o DUT=0x{got_data:08X} model=0x{exp_data:08X}"
+    if exp_valid:
+        assert got_data == exp_data, f"{tag}: data_o DUT=0x{got_data:08X} model=0x{exp_data:08X}"
 
     await NextTimeStep()
 
@@ -149,11 +118,14 @@ async def test_basic_ordering(dut):
         await drive_and_check(dut, model, 0, 1, p, 0, f"wr-{i}")
 
     observed = []
-    while len(observed) < len(payload):
-        await drive_and_check(dut, model, 0, 0, 0, 1, f"rd-{len(observed)}")
+    for _ in range(128):
         if int(dut.valid_o.value):
             observed.append(int(dut.data_o.value))
+        await drive_and_check(dut, model, 0, 0, 0, 1, f"rd-{len(observed)}")
+        if len(observed) >= len(payload):
+            break
 
+    assert len(observed) >= len(payload), f"Timed out draining payload, observed={observed}"
     assert observed[:4] == payload, f"FIFO ordering mismatch: {observed[:4]} vs {payload}"
 
 
@@ -179,11 +151,14 @@ async def test_full_and_overflow_drop(dut):
 
     # Drain and check first values are original fill data.
     drained = []
-    while len(drained) < DEPTH:
-        await drive_and_check(dut, model, 0, 0, 0, 1, f"drain-{len(drained)}")
+    for _ in range(DEPTH * 4):
         if int(dut.valid_o.value):
             drained.append(int(dut.data_o.value))
+        await drive_and_check(dut, model, 0, 0, 0, 1, f"drain-{len(drained)}")
+        if len(drained) >= DEPTH:
+            break
 
+    assert len(drained) >= DEPTH, f"Timed out draining full FIFO, drained={len(drained)}"
     assert drained[:8] == list(range(8)), "Overflow attempts corrupted FIFO head"
 
 
@@ -221,3 +196,105 @@ async def test_simultaneous_read_write_stress(dut):
 
     for cycle in range(500):
         await drive_and_check(dut, model, 0, 1, 0x2000 + cycle, 1, f"rw-{cycle}")
+
+
+@cocotb.test()
+async def test_single_element_round_trip(dut):
+    """Write one item, then read it back; FIFO must go empty→non-empty→empty."""
+    await setup(dut)
+    model = InputFifoModel()
+
+    for _ in range(5):
+        model.step(1, 0, 0, 0)
+    for _ in range(2):
+        model.step(0, 0, 0, 0)
+
+    # Initially empty.
+    assert int(dut.valid_o.value) == 0, "Expected empty FIFO after reset"
+
+    # Write one word.
+    payload = 0xDEADBEEF
+    await drive_and_check(dut, model, 0, 1, payload, 0, "write-one")
+
+    # FIFO should now be non-empty.
+    assert int(dut.valid_o.value) == 1, "FIFO should be non-empty after one write"
+
+    # Read it back.
+    got = int(dut.data_o.value)
+    assert got == payload, f"Round-trip mismatch: got 0x{got:08X}, expected 0x{payload:08X}"
+    await drive_and_check(dut, model, 0, 0, 0, 1, "read-one")
+
+    # FIFO must be empty again.
+    assert int(dut.valid_o.value) == 0, "FIFO should be empty after reading the only item"
+
+
+@cocotb.test()
+async def test_fill_drain_cycle(dut):
+    """Fill FIFO to capacity, drain it completely, fill again; verify both drains match."""
+    await setup(dut)
+    model = InputFifoModel()
+
+    for _ in range(5):
+        model.step(1, 0, 0, 0)
+    for _ in range(2):
+        model.step(0, 0, 0, 0)
+
+    def fill_once(base):
+        return [base + i for i in range(DEPTH)]
+
+    async def fill(base):
+        for v in fill_once(base):
+            await drive_and_check(dut, model, 0, 1, v, 0, f"fill-0x{v:08X}")
+        assert int(dut.ready_o.value) == 0, "FIFO should be full"
+
+    async def drain():
+        drained = []
+        for _ in range(DEPTH * 2):
+            if int(dut.valid_o.value):
+                drained.append(int(dut.data_o.value))
+            await drive_and_check(dut, model, 0, 0, 0, 1, f"drain-{len(drained)}")
+            if len(drained) >= DEPTH:
+                break
+        return drained
+
+    # First fill-drain cycle.
+    await fill(0xA000)
+    first_drain = await drain()
+    assert first_drain == fill_once(0xA000), "First drain content mismatch"
+    assert int(dut.valid_o.value) == 0, "FIFO not empty after full drain"
+
+    # Second fill-drain cycle.
+    await fill(0xB000)
+    second_drain = await drain()
+    assert second_drain == fill_once(0xB000), "Second drain content mismatch"
+    assert int(dut.valid_o.value) == 0, "FIFO not empty after second full drain"
+
+
+@cocotb.test()
+async def test_mid_reset_clears_pending_data(dut):
+    """Write several items, assert reset mid-stream, verify FIFO is empty after reset."""
+    await setup(dut)
+    model = InputFifoModel()
+
+    for _ in range(5):
+        model.step(1, 0, 0, 0)
+    for _ in range(2):
+        model.step(0, 0, 0, 0)
+
+    # Write 16 items.
+    for i in range(16):
+        await drive_and_check(dut, model, 0, 1, 0xC000 + i, 0, f"pre-{i}")
+
+    # Assert reset.
+    for _ in range(4):
+        await drive_and_check(dut, model, 1, 0, 0, 0, "rst-mid")
+
+    # After reset: FIFO must be empty and ready.
+    assert int(dut.valid_o.value) == 0, "FIFO not empty after mid-stream reset"
+    assert int(dut.ready_o.value) == 1, "FIFO not ready after reset"
+
+    # Verify the FIFO works normally after reset.
+    await drive_and_check(dut, model, 0, 1, 0xFACE_CAFE, 0, "post-rst-wr")
+    assert int(dut.data_o.value) == 0xFACE_CAFE, \
+        f"Post-reset data mismatch: 0x{int(dut.data_o.value):08X}"
+    await drive_and_check(dut, model, 0, 0, 0, 1, "post-rst-rd")

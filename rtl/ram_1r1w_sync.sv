@@ -4,7 +4,7 @@
 `timescale 1ns/1ps
 
 module ram_1r1w_sync #(
-    parameter int width_p = 32,
+    parameter int width_p = 8,
     parameter int depth_p = 512,
     parameter string filename_p = "",
     parameter int init_offset_p = 0,

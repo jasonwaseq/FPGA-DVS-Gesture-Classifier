@@ -1,70 +1,84 @@
 # FPGA DVS Gesture Classifier
 
-Cross-platform workflow for simulation, synthesis, and flashing with one top-level CLI.
+Cross-platform workflow for setup, verification, synthesis, and flash using a top-level `Makefile`.
 
-## Top-level commands
+## Top-level workflow
 
 From repo root:
 
 ```bash
-python setup.py setup
-python setup.py doctor
-python setup.py test
-python setup.py synth voxel_bin
-python setup.py flash voxel_bin
+make setup
+make doctor
+make test
+make synth
+make flash
 ```
 
-`setup.py` is the canonical entrypoint on Windows, Linux, and macOS.
+Run `make help` to see full usage and variables.
 
-## What `setup` installs/configures
+## What `make setup` does
 
-`python setup.py setup`:
+`make setup` calls the project bootstrap flow and:
 
-1. Creates `.venv`
-2. Installs Python packages from `requirements.txt`:
+1. Creates a platform-specific venv:
+   - PowerShell/Windows: `.venv-win`
+   - WSL: `.venv-wsl`
+   - Native Linux: `.venv-linux`
+   - macOS: `.venv-macos`
+2. Installs required Python packages:
    - `cocotb`
+   - `cocotb-test`
    - `pytest`
+   - `gitpython`
    - `numpy`
    - `opencv-python`
    - `pyserial`
-3. Detects or installs OSS CAD Suite tools (`iverilog`, `vvp`, `yosys`, `nextpnr-ice40`, `icepack`, `iceprog`)
+3. Detects or installs OSS CAD Suite tools:
+   - `iverilog`, `vvp`, `yosys`, `nextpnr-ice40`, `icepack`, `iceprog`
 
-Use `python setup.py setup --skip-fpga` if you only want the Python environment.
-
-## Doctor / health check
-
-Run:
+If you only want Python dependencies:
 
 ```bash
-python setup.py doctor
+make setup SKIP_FPGA=1
 ```
 
-It verifies:
+## Doctor
 
-- `.venv` exists
-- required Python modules import correctly
+```bash
+make doctor
+```
+
+Checks:
+- current platform venv exists
+- required Python modules import
 - OSS CAD tools are discoverable
-- `synth/icebreaker.pcf` is present
+- `iverilog/vvp` smoke test
+- `synth/icebreaker.pcf` exists
 
-## Test workflow
+Prerequisites:
+- GNU Make must be installed and available as `make`.
+- Python with `venv` support must be available (`python -m venv`).
+- On WSL/Linux, install `python3-venv` and `python3-dev` if venv creation or cocotb/libpython loading fails.
 
-Run all cocotb benches:
+## Test
+
+All benches:
 
 ```bash
-python setup.py test
+make test
 ```
 
-Run one bench:
+Single bench:
 
 ```bash
-python setup.py test evt2_decoder
-python setup.py test input_fifo
-python setup.py test voxel_bin_core
-python setup.py test voxel_bin_top
+make test input_fifo
+make test evt2_decoder
+make test voxel_bin_core
+make test voxel_bin_top
 ```
 
-Supported test targets:
-
+Supported module targets for `make test <module_name>`:
+- `all` (default)
 - `evt2_decoder`
 - `gesture_classifier`
 - `input_fifo`
@@ -78,58 +92,42 @@ Supported test targets:
 - `voxel_bin_top`
 
 Aliases:
+- `make test unit`
+- `make test core`
+- `make test top`
 
-- `python setup.py test all`
-- `python setup.py test unit`
-- `python setup.py test core`
-- `python setup.py test top`
-
-## Synthesis and flash
-
-Synthesize:
+## Synthesis
 
 ```bash
-python setup.py synth voxel_bin
+make synth
 ```
 
-Output bitstream:
-
+Output:
 - `synth/voxel_bin/voxel_bin_top.bit`
 
-Flash:
+## Flash
 
 ```bash
-python setup.py flash voxel_bin
+make flash
 ```
 
-Optional flash flags:
+Optional flash arguments:
 
 ```bash
-python setup.py flash voxel_bin --port COM3 --serial ABC123 --vid 0x0403 --pid 0x6010
+make flash PORT=COM3 SERIAL=ABC123 VID=0x0403 PID=0x6010
 ```
 
 Notes:
-
-- Current flashing path uses `iceprog`.
-- On Windows, run elevated PowerShell if USB permission errors occur.
+- Flash uses `iceprog`.
+- On Windows, use elevated PowerShell if USB permission errors occur.
 - In devcontainers/codespaces, flashing usually fails due no USB passthrough.
 
-## Cleanup
-
-Remove generated test/synthesis artifacts:
+## Clean
 
 ```bash
-python setup.py clean
+make clean
 ```
 
-## Command reference
+## Notes
 
-```bash
-python setup.py setup [--skip-fpga]
-python setup.py doctor
-python setup.py test [all|<test_target>]
-python setup.py synth [voxel_bin]
-python setup.py flash [voxel_bin] [--port ... --serial ... --vid ... --pid ...]
-python setup.py clean
-```
-
+- The top-level workflow is intentionally `make`-first for consistency across setup, verification, synthesis, and flashing.

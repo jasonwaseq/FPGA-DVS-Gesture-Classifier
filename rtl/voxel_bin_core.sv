@@ -30,7 +30,7 @@ module voxel_bin_core #(
     output logic        evt_word_ready,
     output logic [1:0]  gesture,
     output logic        gesture_valid,
-    output logic [3:0]  gesture_confidence,
+    output logic [CONF_BITS-1:0] gesture_confidence,
     output logic [7:0]  debug_event_count,
     output logic [2:0]  debug_state,
     output logic        debug_fifo_empty,
@@ -103,6 +103,8 @@ module voxel_bin_core #(
     logic                        sa_done;
 
     logic signed [SCORE_BITS-1:0] score_acc [0:NUM_CLASSES-1];
+    int cap_idx;
+    int feature_idx;
     logic [NUM_CLASSES*SCORE_BITS-1:0] scores_flat;
     logic scores_valid;
 
@@ -312,8 +314,6 @@ module voxel_bin_core #(
                 end
 
                 SC_LOAD: begin
-                    int cap_idx;
-                    int feature_idx;
                     if (load_cycle > 0) begin
                         cap_idx = load_cycle - 1;
                         feature_idx = (tile_idx * N) + cap_idx;

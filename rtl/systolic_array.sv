@@ -24,7 +24,6 @@ module systolic_array #(
 
     logic signed [DATA_BIT_SIZE-1:0] A_matrix [0:N-1][0:N-1];
     logic signed [DATA_BIT_SIZE-1:0] B_matrix [0:N-1][0:N-1];
-    logic signed [ACC_BIT_SIZE-1:0]  Out_matrix [0:N-1][0:N-1];
 
     // Internal pipes for A and B
     logic signed [DATA_BIT_SIZE-1:0] a_pipe [0:N-1][0:N-1];
@@ -37,12 +36,14 @@ module systolic_array #(
     logic signed [DATA_BIT_SIZE-1:0] a_in [0:N-1];
     logic signed [DATA_BIT_SIZE-1:0] b_in [0:N-1];
 
+    // PE combinatorial inputs
+    logic signed [DATA_BIT_SIZE-1:0]    pe_a    [0:N-1][0:N-1];
+    logic signed [DATA_BIT_SIZE-1:0]    pe_b    [0:N-1][0:N-1];
+    logic signed [PRODUCT_BIT_SIZE-1:0] pe_prod [0:N-1][0:N-1];
+
     // Sequencing
     logic [T_BITS-1:0] t;
     logic running;
-
-    integer r, c;
-    integer k;
 
     always_comb begin
         for (int i = 0; i < N; i++) begin
@@ -56,24 +57,37 @@ module systolic_array #(
     // Generate the current diagonal slice from t
     always_comb begin
         // Default zero padding
-        for (r = 0; r < N; r = r + 1)
+        for (int r = 0; r < N; r = r + 1)
             a_in[r] = '0;
 
-        for (c = 0; c < N; c = c + 1)
+        for (int c = 0; c < N; c = c + 1)
             b_in[c] = '0;
 
         // Only inject real data during the active wave phase
         if (running && (t < WAVE_CYCLES)) begin
-            for (r = 0; r < N; r = r + 1) begin
-                k = t - r;
+            for (int r = 0; r < N; r = r + 1) begin
+                int k;
+                k = int'(t) - r;
                 if ((k >= 0) && (k < N))
                     a_in[r] = A_matrix[r][k];
             end
 
-            for (c = 0; c < N; c = c + 1) begin
-                k = t - c;
+            for (int c = 0; c < N; c = c + 1) begin
+                int k;
+                k = int'(t) - c;
                 if ((k >= 0) && (k < N))
                     b_in[c] = B_matrix[k][c];
+            end
+        end
+    end
+
+    // Combinatorial PE input mux: left-edge gets a_in, others get left-neighbour pipe
+    always_comb begin
+        for (int r = 0; r < N; r = r + 1) begin
+            for (int c = 0; c < N; c = c + 1) begin
+                pe_a[r][c]    = (c == 0) ? a_in[r]       : a_pipe[r][c-1];
+                pe_b[r][c]    = (r == 0) ? b_in[c]       : b_pipe[r-1][c];
+                pe_prod[r][c] = pe_a[r][c] * pe_b[r][c];
             end
         end
     end
@@ -86,8 +100,8 @@ module systolic_array #(
             done    <= 1'b0;
             t       <= '0;
 
-            for (r = 0; r < N; r = r + 1) begin
-                for (c = 0; c < N; c = c + 1) begin
+            for (int r = 0; r < N; r = r + 1) begin
+                for (int c = 0; c < N; c = c + 1) begin
                     a_pipe[r][c] <= '0;
                     b_pipe[r][c] <= '0;
                     acc[r][c]    <= '0;
@@ -102,8 +116,8 @@ module systolic_array #(
                 busy    <= 1'b1;
                 t       <= '0;
 
-                for (r = 0; r < N; r = r + 1) begin
-                    for (c = 0; c < N; c = c + 1) begin
+                for (int r = 0; r < N; r = r + 1) begin
+                    for (int c = 0; c < N; c = c + 1) begin
                         a_pipe[r][c] <= '0;
                         b_pipe[r][c] <= '0;
                         acc[r][c]    <= '0;
@@ -112,31 +126,11 @@ module systolic_array #(
             end
             else if (running) begin
                 // Update all PEs once per cycle
-                for (r = 0; r < N; r = r + 1) begin
-                    for (c = 0; c < N; c = c + 1) begin
-                        logic signed [DATA_BIT_SIZE-1:0] a_val;
-                        logic signed [DATA_BIT_SIZE-1:0] b_val;
-                        logic signed [PRODUCT_BIT_SIZE-1:0] product;
-
-                        // A enters from left, then moves right
-                        if (c == 0)
-                            a_val = a_in[r];
-                        else
-                            a_val = a_pipe[r][c-1];
-
-                        // B enters from top, then moves down
-                        if (r == 0)
-                            b_val = b_in[c];
-                        else
-                            b_val = b_pipe[r-1][c];
-
-                        // Register propagated values
-                        a_pipe[r][c] <= a_val;
-                        b_pipe[r][c] <= b_val;
-
-                        // Multiply-accumulate
-                        product = a_val * b_val;
-                        acc[r][c] <= acc[r][c] + {{(ACC_BIT_SIZE - PRODUCT_BIT_SIZE){product[PRODUCT_BIT_SIZE-1]}}, product};
+                for (int r = 0; r < N; r = r + 1) begin
+                    for (int c = 0; c < N; c = c + 1) begin
+                        a_pipe[r][c] <= pe_a[r][c];
+                        b_pipe[r][c] <= pe_b[r][c];
+                        acc[r][c]    <= acc[r][c] + {{(ACC_BIT_SIZE - PRODUCT_BIT_SIZE){pe_prod[r][c][PRODUCT_BIT_SIZE-1]}}, pe_prod[r][c]};
                     end
                 end
 
@@ -152,19 +146,11 @@ module systolic_array #(
         end
     end
 
-    // Drive output matrix
-    always_comb begin
-        for (r = 0; r < N; r = r + 1) begin
-            for (c = 0; c < N; c = c + 1) begin
-                Out_matrix[r][c] = acc[r][c];
-            end
-        end
-    end
-
+    // Drive flattened output directly from accumulators
     always_comb begin
         for (int i = 0; i < N; i++) begin
             for (int j = 0; j < N; j++) begin
-                Out_matrix_flat[(i*N + j)*ACC_BIT_SIZE +: ACC_BIT_SIZE] = Out_matrix[i][j];
+                Out_matrix_flat[(i*N + j)*ACC_BIT_SIZE +: ACC_BIT_SIZE] = acc[i][j];
             end
         end
     end

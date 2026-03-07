@@ -114,23 +114,28 @@ async def force_timer_rollover(dut):
     assert int(dut.state.value) == ST_ACCUM, "Rollover forcing requires ST_ACCUM"
     dut.timer_ctr.value = CYCLES_PER_BIN_SAFE - 1
     await RisingEdge(dut.clk)
+    await ReadOnly()
 
 
 async def collect_readout(dut):
     # Wait for readout_start pulse.
-    for _ in range(20000):
-        await RisingEdge(dut.clk)
-        if int(dut.readout_start.value) == 1:
-            break
-    else:
-        raise AssertionError("Timed out waiting for readout_start")
+    await ReadOnly()
+    start_seen = int(dut.readout_start.value) == 1
+    if not start_seen:
+        for _ in range(20000):
+            await RisingEdge(dut.clk)
+            await ReadOnly()
+            if int(dut.readout_start.value) == 1:
+                start_seen = True
+                break
+        else:
+            raise AssertionError("Timed out waiting for readout_start")
 
     values = []
     expected_idx = 0
 
-    for _ in range(FEATURE_COUNT + 2000):
-        await RisingEdge(dut.clk)
-        await ReadOnly()
+    def sample_cycle():
+        nonlocal expected_idx
         if int(dut.readout_valid.value):
             idx = int(dut.readout_index.value)
             val = int(dut.readout_data.value)
@@ -138,9 +143,20 @@ async def collect_readout(dut):
             values.append(val)
             if int(dut.readout_last.value):
                 assert expected_idx == FEATURE_COUNT - 1, "readout_last asserted at wrong index"
-                break
+                return True
             expected_idx += 1
-        await NextTimeStep()
+        return False
+
+    # readout_valid can already be high in the same cycle as readout_start.
+    if start_seen and sample_cycle():
+        assert len(values) == FEATURE_COUNT, f"Readout length {len(values)} != {FEATURE_COUNT}"
+        return values
+
+    for _ in range(FEATURE_COUNT + 2000):
+        await RisingEdge(dut.clk)
+        await ReadOnly()
+        if sample_cycle():
+            break
 
     assert len(values) == FEATURE_COUNT, f"Readout length {len(values)} != {FEATURE_COUNT}"
     return values
@@ -148,13 +164,17 @@ async def collect_readout(dut):
 
 async def rotate_and_check(dut, model, tag):
     expected = model.rotate_bin()
-    await force_timer_rollover(dut)
 
     if expected is None:
+        await force_timer_rollover(dut)
         await wait_for_state(dut, ST_ACCUM)
         return
 
-    got = await collect_readout(dut)
+    # Arm collection before rollover so a same-cycle readout_start pulse is not missed.
+    read_task = cocotb.start_soon(collect_readout(dut))
+    await NextTimeStep()
+    await force_timer_rollover(dut)
+    got = await read_task
     assert got == expected, f"{tag}: readout mismatch"
     await wait_for_state(dut, ST_ACCUM)
 
@@ -198,11 +218,13 @@ async def test_wait_rd_backpressure(dut):
     saw_start_while_low = False
     for _ in range(50):
         await RisingEdge(dut.clk)
+        await ReadOnly()
         if int(dut.readout_start.value):
             saw_start_while_low = True
             break
     assert not saw_start_while_low, "readout_start asserted despite readout_ready=0"
 
+    await NextTimeStep()
     dut.readout_ready.value = 1
     got = await collect_readout(dut)
     assert got == expected, "Backpressured readout mismatch"
@@ -238,11 +260,14 @@ async def test_events_ignored_when_not_accum(dut):
         await rotate_and_check(dut, model, "pre")
 
     expected = model.rotate_bin()
+    read_task = cocotb.start_soon(collect_readout(dut))
+    await NextTimeStep()
     await force_timer_rollover(dut)
     assert expected is not None
 
     # While not in ST_ACCUM, pulse event_valid; model does not accept this event.
     if int(dut.state.value) != ST_ACCUM:
+        await NextTimeStep()
         dut.event_x.value = 9
         dut.event_y.value = 9
         dut.event_polarity.value = 1
@@ -250,7 +275,7 @@ async def test_events_ignored_when_not_accum(dut):
         await RisingEdge(dut.clk)
         dut.event_valid.value = 0
 
-    got = await collect_readout(dut)
+    got = await read_task
     assert got == expected, "Non-accum event unexpectedly affected readout"
     await wait_for_state(dut, ST_ACCUM)
 
@@ -270,3 +295,103 @@ async def test_randomized_multibin_scoreboard(dut):
             await inject_event(dut, model, x, y, pol)
 
         await rotate_and_check(dut, model, f"rnd-{bin_idx}")
+
+
+@cocotb.test()
+async def test_corner_coordinates_binned_correctly(dut):
+    """Events at all four grid corners and centre are stored in the right cells."""
+    await setup(dut)
+    model = VoxelBinningModel()
+
+    corners = [
+        (0,           0),
+        (GRID_SIZE-1, 0),
+        (0,           GRID_SIZE-1),
+        (GRID_SIZE-1, GRID_SIZE-1),
+        (GRID_SIZE//2, GRID_SIZE//2),
+    ]
+    for x, y in corners:
+        await inject_event(dut, model, x, y)
+        await inject_event(dut, model, x, y)  # inject twice to distinguish from zero
+
+    for i in range(READOUT_BINS):
+        await rotate_and_check(dut, model, f"corner-{i}")
+
+
+@cocotb.test()
+async def test_readout_index_monotonically_increasing(dut):
+    """readout_index must count from 0 to FEATURE_COUNT-1 with no gaps or repeats."""
+    await setup(dut)
+    model = VoxelBinningModel()
+
+    # Inject a handful of events so the readout is non-trivial.
+    for _ in range(8):
+        await inject_event(dut, model, 4, 4)
+
+    # Advance to the first readout-eligible rotation.
+    for _ in range(READOUT_BINS - 1):
+        await rotate_and_check(dut, model, "prime")
+
+    # Trigger one readout and capture the index sequence.
+    model.rotate_bin()
+    await force_timer_rollover(dut)
+
+    indices = []
+    if int(dut.readout_valid.value):
+        idx = int(dut.readout_index.value)
+        indices.append(idx)
+        if int(dut.readout_last.value):
+            assert indices == list(range(FEATURE_COUNT)), \
+                f"readout_index sequence wrong: first={indices[:5]}... last={indices[-5:]}"
+            return
+
+    for _ in range(FEATURE_COUNT + 2000):
+        await RisingEdge(dut.clk)
+        await ReadOnly()
+        if int(dut.readout_valid.value):
+            idx = int(dut.readout_index.value)
+            indices.append(idx)
+            if int(dut.readout_last.value):
+                break
+
+    assert indices == list(range(FEATURE_COUNT)), \
+        f"readout_index sequence wrong: first={indices[:5]}... last={indices[-5:]}"
+
+
+@cocotb.test()
+async def test_clear_zeros_old_bin_data(dut):
+    """After rotation, the newly cleared bin must read back as zero in the next window."""
+    await setup(dut)
+    model = VoxelBinningModel()
+
+    hot_x, hot_y = 7, 3
+
+    # Fill bin 0 heavily, then rotate all bins so those counts appear in readout.
+    for _ in range(50):
+        await inject_event(dut, model, hot_x, hot_y)
+
+    # Rotate enough bins to push those events through the entire readout window.
+    for i in range(READOUT_BINS + NUM_BINS):
+        await rotate_and_check(dut, model, f"flush-{i}")
+
+    # Now the model has cleared all bins; the hot cell should be zero.
+    hot_cell = (model.wr_bin_idx * CELLS_PER_BIN) + (hot_y * GRID_SIZE + hot_x)
+    assert model.mem[hot_cell] == 0, \
+        f"Model hot cell not zeroed after full rotation: {model.mem[hot_cell]}"
+
+
+@cocotb.test()
+async def test_high_event_rate_multi_bin_accuracy(dut):
+    """Dense event stream across many bins; compare each readout against golden model."""
+    await setup(dut)
+    model = VoxelBinningModel()
+    rng = random.Random(0xE7E7_E7E7)
+
+    for bin_idx in range(20):
+        n_events = rng.randint(10, 60)
+        for _ in range(n_events):
+            x = rng.randint(0, GRID_SIZE - 1)
+            y = rng.randint(0, GRID_SIZE - 1)
+            await inject_event(dut, model, x, y, rng.randint(0, 1))
+
+        await rotate_and_check(dut, model, f"dense-{bin_idx}")

@@ -1,10 +1,12 @@
 # Python dependencies for simulation, testing, and host-side tools.
 # Install with:  pip install -r requirements.txt
-# Or let setup.py manage everything:  python setup.py
+# Or let the workflow manage everything:  make setup
 
 # Simulation / verification
 cocotb
+cocotb-test
 pytest
+gitpython
 
 # Numerical processing (weight generation, event processing)
 numpy
