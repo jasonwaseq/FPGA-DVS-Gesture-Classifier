@@ -4,14 +4,15 @@
 `timescale 1ns/1ps
 
 module ram_1r1w_sync #(
-    parameter int width_p = 8,
-    parameter int depth_p = 512,
-    parameter        filename_p = "",
-    parameter int init_offset_p = 0,
-    parameter int init_count_p = depth_p,
-    parameter bit init_is_float_p = 1'b0,
-    parameter int init_scale_p = 1,
-    parameter bit init_signed_p = 1'b1
+    parameter width_p = 8,
+    parameter depth_p = 512,
+    parameter [8*128-1:0] filename_p = "",
+    parameter synth_init_file_p = 1'b0,
+    parameter init_offset_p = 0,
+    parameter init_count_p = depth_p,
+    parameter init_is_float_p = 1'b0,
+    parameter init_scale_p = 1,
+    parameter init_signed_p = 1'b1
 )(
     input [0:0] clk_i,
     input [0:0] reset_i,
@@ -28,7 +29,17 @@ module ram_1r1w_sync #(
   logic [width_p-1:0] ram [depth_p-1:0];
   logic [width_p-1:0] rd_data_l;
 
-`ifndef SYNTHESIS
+`ifdef SYNTHESIS
+  integer si;
+  initial begin
+    for (si = 0; si < depth_p; si = si + 1)
+      ram[si] = '0;
+
+    // Synthesis-friendly memory init path: use pre-quantized hex files.
+    if (synth_init_file_p)
+      $readmemh(filename_p, ram);
+  end
+`else
   localparam longint signed MAX_INIT_SIGNED   = (64'sd1 << (width_p - 1)) - 1;
   localparam longint signed MIN_INIT_SIGNED   = -(64'sd1 << (width_p - 1));
   localparam longint signed MAX_INIT_UNSIGNED = (64'sd1 << width_p) - 1;
@@ -92,7 +103,7 @@ module ram_1r1w_sync #(
       end
     end
   end
-`endif // SYNTHESIS
+`endif // SYNTHESIS / !SYNTHESIS
 
   // Keep read data register unreset so synthesis can map this to true block RAM.
   always_ff @(posedge clk_i) begin

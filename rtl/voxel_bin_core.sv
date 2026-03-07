@@ -35,7 +35,12 @@ module voxel_bin_core #(
     output logic [2:0]  debug_state,
     output logic        debug_fifo_empty,
     output logic        debug_fifo_full,
-    output logic        debug_temporal_phase
+    output logic        debug_temporal_phase,
+    output logic        debug_class_valid,
+    output logic        debug_class_pass,
+    output logic        debug_feature_window_ready,
+    output logic        debug_capture_active,
+    output logic        debug_score_busy
 );
 
     localparam int NUM_CLASSES   = 4;
@@ -127,6 +132,11 @@ module voxel_bin_core #(
     assign debug_fifo_empty     = ~fifo_out_valid;
     assign debug_fifo_full      = ~evt_word_ready;
     assign debug_temporal_phase = ~binner_event_ready;
+    assign debug_class_valid    = class_valid;
+    assign debug_class_pass     = class_pass;
+    assign debug_feature_window_ready = feature_window_ready;
+    assign debug_capture_active = capture_active;
+    assign debug_score_busy     = (score_state != SC_IDLE);
     assign fifo_out_ready       = dec_data_ready;
     assign binner_readout_ready = (!capture_active) && (score_state == SC_IDLE) && (!feature_window_ready);
 
@@ -239,6 +249,38 @@ module voxel_bin_core #(
         end
     end
 
+`ifdef SYNTHESIS
+    // Synthesis path: weight RAMs with pre-quantized hex init files.
+    // Dummy write port (wr_en=0) is required so Yosys infers SB_RAM40_4K instead of registers.
+    // $readmemh init is then propagated into BRAM INIT_* attributes by memory_bram.
+    logic [WEIGHT_BITS-1:0] weight_mem_c0 [0:FEATURE_COUNT-1];
+    logic [WEIGHT_BITS-1:0] weight_mem_c1 [0:FEATURE_COUNT-1];
+    logic [WEIGHT_BITS-1:0] weight_mem_c2 [0:FEATURE_COUNT-1];
+    logic [WEIGHT_BITS-1:0] weight_mem_c3 [0:FEATURE_COUNT-1];
+
+    initial begin
+        $readmemh("../256weights_q8_c0.mem", weight_mem_c0);
+        $readmemh("../256weights_q8_c1.mem", weight_mem_c1);
+        $readmemh("../256weights_q8_c2.mem", weight_mem_c2);
+        $readmemh("../256weights_q8_c3.mem", weight_mem_c3);
+    end
+
+    always_ff @(posedge clk) begin
+        // Dummy write port: never fires, but required for BRAM inference.
+        if (1'b0) begin
+            weight_mem_c0[0] <= '0;
+            weight_mem_c1[0] <= '0;
+            weight_mem_c2[0] <= '0;
+            weight_mem_c3[0] <= '0;
+        end
+        if (weight_rd_valid) begin
+            weight_rd_raw[0] <= weight_mem_c0[weight_rd_addr];
+            weight_rd_raw[1] <= weight_mem_c1[weight_rd_addr];
+            weight_rd_raw[2] <= weight_mem_c2[weight_rd_addr];
+            weight_rd_raw[3] <= weight_mem_c3[weight_rd_addr];
+        end
+    end
+`else
     generate
         genvar g;
         for (g = 0; g < NUM_CLASSES; g = g + 1) begin : gen_weight_rams
@@ -263,6 +305,7 @@ module voxel_bin_core #(
             );
         end
     endgenerate
+`endif
 
     always_comb begin
         for (int r = 0; r < N; r = r + 1) begin

@@ -4,14 +4,12 @@
 import argparse
 import time
 import sys
-import struct
 import threading
 import queue
-from typing import Optional, List, Tuple
+from typing import Optional, List
 from dataclasses import dataclass
 from enum import IntEnum
 import random
-import math
 
 try:
     import serial
@@ -39,12 +37,30 @@ GESTURE_NAMES = {
     Gesture.RIGHT: "RIGHT"
 }
 
+# EVT2.0 packet types used by voxel_bin_top/evt2_decoder.
+EVT_CD_OFF = 0x0
+EVT_CD_ON = 0x1
+EVT_TIME_HIGH = 0x8
+
+# voxel_bin_top UART gesture packet uses weight/class order:
+#   0=Down, 1=Left, 2=Right, 3=Up
+VOXEL_BIN_CODE_TO_GESTURE = {
+    0: Gesture.DOWN,
+    1: Gesture.LEFT,
+    2: Gesture.RIGHT,
+    3: Gesture.UP,
+}
+
 DEFAULT_BAUD_RATE = 115200
 DEFAULT_TIMEOUT = 1.0
 SENSOR_WIDTH = 320
 SENSOR_HEIGHT = 320
+GRID_SIZE = 8
 GESTURE_DURATION_MS = 400
 EVENT_RATE_HZ = 500
+DEFAULT_GESTURE_TIMEOUT_S = 1.5
+DEFAULT_READOUT_BINS = 4
+WINDOW_MS = 400
 
 
 @dataclass
@@ -110,6 +126,95 @@ def generate_random_events(count: int) -> List[DVSEvent]:
                      y=random.randint(0, SENSOR_HEIGHT - 1),
                      polarity=random.randint(0, 1),
                      timestamp_us=i * 1000) for i in range(count)]
+
+
+def sensor_from_grid(g: int, grid_size: int = GRID_SIZE) -> int:
+    bin_div = max(1, SENSOR_WIDTH // grid_size)
+    g_clamped = max(0, min(grid_size - 1, int(g)))
+    return min(SENSOR_WIDTH - 1, (g_clamped * bin_div) + (bin_div // 2))
+
+
+def voxel_region_points(name: str, grid_size: int = GRID_SIZE) -> List[tuple]:
+    x_lo = max(0, grid_size // 8)
+    x_hi = min(grid_size, grid_size - (grid_size // 8))
+    y_lo = x_lo
+    y_hi = x_hi
+    band = max(2, grid_size // 4)
+
+    if name == "top":
+        ys, xs = range(y_lo, min(y_lo + band, grid_size)), range(x_lo, x_hi)
+    elif name == "bottom":
+        ys, xs = range(max(grid_size - band, 0), y_hi), range(x_lo, x_hi)
+    elif name == "left":
+        ys, xs = range(y_lo, y_hi), range(x_lo, min(x_lo + band, grid_size))
+    elif name == "right":
+        ys, xs = range(y_lo, y_hi), range(max(grid_size - band, 0), x_hi)
+    else:
+        raise ValueError(name)
+
+    pts: List[tuple] = []
+    for y in ys:
+        for x in xs:
+            pts.append((x, y))
+    return pts
+
+
+def gesture_to_region(gesture: Gesture) -> str:
+    if gesture == Gesture.UP:
+        return "top"
+    if gesture == Gesture.DOWN:
+        return "bottom"
+    if gesture == Gesture.LEFT:
+        return "left"
+    if gesture == Gesture.RIGHT:
+        return "right"
+    raise ValueError(f"Unknown gesture: {gesture}")
+
+
+def generate_voxel_bin_bin_events(
+    gesture: Gesture,
+    events_per_bin: int = 32,
+    timestamp_base_us: int = 0
+) -> List[DVSEvent]:
+    """Generate one temporal-bin worth of region-concentrated EVT traffic."""
+    region = gesture_to_region(gesture)
+    pts = voxel_region_points(region, GRID_SIZE)
+    events: List[DVSEvent] = []
+
+    # Keep ts_lsb progression within a narrow range to avoid extra TIME_HIGH packets.
+    for i in range(max(1, events_per_bin)):
+        gx, gy = random.choice(pts)
+        events.append(DVSEvent(
+            x=sensor_from_grid(gx, GRID_SIZE),
+            y=sensor_from_grid(gy, GRID_SIZE),
+            polarity=1,
+            timestamp_us=timestamp_base_us + i
+        ))
+
+    return events
+
+
+def send_voxel_bin_pattern(
+    fpga: "FPGAGestureInterface",
+    gesture: Gesture,
+    bins_to_drive: int,
+    events_per_bin: int,
+    bin_duration_ms: int
+):
+    """Send burst traffic each bin, then wait for next rollover interval."""
+    for b in range(max(1, bins_to_drive)):
+        t0 = time.time()
+        bin_events = generate_voxel_bin_bin_events(
+            gesture=gesture,
+            events_per_bin=events_per_bin,
+            timestamp_base_us=b * 64
+        )
+        fpga.send_event_stream(bin_events, delay_us=0)
+
+        elapsed_ms = (time.time() - t0) * 1000.0
+        remaining_ms = max(0.0, float(bin_duration_ms) - elapsed_ms)
+        if remaining_ms > 0:
+            time.sleep(remaining_ms / 1000.0)
 
 
 class FPGAGestureInterface:
@@ -251,7 +356,29 @@ class FPGAGestureInterface:
         response = self._receive_bytes(2, timeout=0.5)
         if len(response) != 2:
             return None
-        return {'min_event_thresh': response[0], 'motion_thresh': response[1]}
+        return {'num_bins': response[0], 'readout_bins': response[1]}
+
+    def query_diag(self) -> Optional[dict]:
+        if self.architecture == Architecture.GRADIENT_MAP:
+            return None
+        self.clear_rx_buffer()
+        self._send_byte(0xFB)
+        response = self._receive_bytes(2, timeout=0.5)
+        if len(response) != 2:
+            return None
+        b0, b1 = response[0], response[1]
+        return {
+            'event_count': b0,
+            'seen_capture': (b1 >> 7) & 0x1,
+            'seen_feature_window': (b1 >> 6) & 0x1,
+            'seen_score_busy': (b1 >> 5) & 0x1,
+            'seen_class_valid': (b1 >> 4) & 0x1,
+            'seen_class_pass': (b1 >> 3) & 0x1,
+            'seen_gesture_valid': (b1 >> 2) & 0x1,
+            'gesture_valid_live': (b1 >> 1) & 0x1,
+            'temporal_phase': b1 & 0x1,
+            'raw': (b0, b1),
+        }
 
     def soft_reset(self):
         if self.architecture == Architecture.GRADIENT_MAP:
@@ -259,14 +386,38 @@ class FPGAGestureInterface:
         self._send_byte(0xFC)
         time.sleep(0.01)
 
+    def _send_evt2_word(self, word: int):
+        # UART ingest path expects MSB-first EVT2 words.
+        self._send_bytes((word & 0xFFFFFFFF).to_bytes(4, "big"))
+
+    @staticmethod
+    def _build_evt2_time_high_word(timestamp_us: int) -> int:
+        time_high = (int(timestamp_us) >> 6) & 0x0FFFFFFF
+        return (EVT_TIME_HIGH << 28) | time_high
+
+    @staticmethod
+    def _build_evt2_cd_word(event: DVSEvent) -> int:
+        pkt_type = EVT_CD_ON if int(event.polarity) else EVT_CD_OFF
+        ts_lsb = int(event.timestamp_us) & 0x3F
+        x = int(event.x) & 0x7FF
+        y = int(event.y) & 0x7FF
+        return (pkt_type << 28) | (ts_lsb << 22) | (x << 11) | y
+
     def send_dvs_event(self, event: DVSEvent):
-        evt_type = 0x1 if event.polarity else 0x0
-        word = (evt_type << 28) | ((event.x & 0x7FF) << 11) | (event.y & 0x7FF)
-        self._send_bytes(word.to_bytes(4, "big"))
+        # Standalone event send (includes TIME_HIGH and one CD packet).
+        self._send_evt2_word(self._build_evt2_time_high_word(event.timestamp_us))
+        self._send_evt2_word(self._build_evt2_cd_word(event))
 
     def send_event_stream(self, events: List[DVSEvent], delay_us: float = 0):
+        if not events:
+            return
+        last_time_high = None
         for event in events:
-            self.send_dvs_event(event)
+            current_time_high = (int(event.timestamp_us) >> 6) & 0x0FFFFFFF
+            if current_time_high != last_time_high:
+                self._send_evt2_word(self._build_evt2_time_high_word(event.timestamp_us))
+                last_time_high = current_time_high
+            self._send_evt2_word(self._build_evt2_cd_word(event))
             if delay_us > 0:
                 time.sleep(delay_us / 1_000_000)
 
@@ -297,19 +448,41 @@ class FPGAGestureInterface:
     def check_gesture(self, timeout: float = 0.1) -> Optional[GestureResult]:
         if self.architecture == Architecture.GRADIENT_MAP:
             return self._check_gesture_ascii(timeout)
-        byte1 = self._receive_byte(timeout=timeout)
-        if byte1 is None:
-            return None
-        if (byte1 & 0xF0) != 0xA0:
-            return None
-        byte2 = self._receive_byte(timeout=0.1)
-        if byte2 is None:
-            byte2 = 0
-        gesture = Gesture(byte1 & 0x03)
-        confidence = (byte2 >> 4) & 0x0F
-        event_count_hi = byte2 & 0x0F
-        return GestureResult(gesture=gesture, confidence=confidence,
-                             event_count_hi=event_count_hi, raw_bytes=bytes([byte1, byte2]))
+        deadline = time.time() + timeout
+        while time.time() < deadline:
+            byte1 = self._receive_byte(timeout=max(0.001, deadline - time.time()))
+            if byte1 is None:
+                return None
+            if (byte1 & 0xF0) != 0xA0:
+                continue
+            byte2 = self._receive_byte(timeout=0.1)
+            if byte2 is None:
+                byte2 = 0
+            gesture_code = byte1 & 0x03
+            if gesture_code not in VOXEL_BIN_CODE_TO_GESTURE:
+                continue
+            gesture = VOXEL_BIN_CODE_TO_GESTURE[gesture_code]
+            confidence = (byte2 >> 4) & 0x0F
+            event_count_hi = byte2 & 0x0F
+            return GestureResult(
+                gesture=gesture,
+                confidence=confidence,
+                event_count_hi=event_count_hi,
+                raw_bytes=bytes([byte1, byte2]),
+            )
+        return None
+
+    def collect_gesture_packets(self, timeout_s: float = DEFAULT_GESTURE_TIMEOUT_S,
+                                post_detect_extension_s: float = 0.25) -> List[GestureResult]:
+        """Collect one or more gesture packets over a bounded window."""
+        end_time = time.time() + timeout_s
+        out: List[GestureResult] = []
+        while time.time() < end_time:
+            result = self.check_gesture(timeout=0.05)
+            if result is not None:
+                out.append(result)
+                end_time = max(end_time, time.time() + post_detect_extension_s)
+        return out
 
 
 def test_connection(fpga: FPGAGestureInterface) -> bool:
@@ -332,71 +505,151 @@ def test_status(fpga: FPGAGestureInterface) -> bool:
 def test_config(fpga: FPGAGestureInterface) -> bool:
     config = fpga.query_config()
     if config:
-        print(f"Config: min_event_thresh={config['min_event_thresh']}, motion_thresh={config['motion_thresh']}")
+        print(f"Config: num_bins={config['num_bins']}, readout_bins={config['readout_bins']}")
         return True
     print("Config query FAILED")
     return False
 
 
+def test_diag(fpga: FPGAGestureInterface) -> bool:
+    diag = fpga.query_diag()
+    if diag:
+        print(
+            "Diag: "
+            f"event_count={diag['event_count']}, "
+            f"seen_capture={diag['seen_capture']}, "
+            f"seen_window={diag['seen_feature_window']}, "
+            f"seen_score={diag['seen_score_busy']}, "
+            f"seen_class_valid={diag['seen_class_valid']}, "
+            f"seen_class_pass={diag['seen_class_pass']}, "
+            f"seen_gesture={diag['seen_gesture_valid']}, "
+            f"gesture_live={diag['gesture_valid_live']}, "
+            f"phase={diag['temporal_phase']}"
+        )
+        return True
+    print("Diag query FAILED")
+    return False
+
+
 def test_gesture(fpga: FPGAGestureInterface, gesture: Gesture,
-                 num_events: int = 200, verbose: bool = True) -> Optional[GestureResult]:
+                 num_events: int = 220, timeout_s: float = DEFAULT_GESTURE_TIMEOUT_S,
+                 reset_first: bool = False, verbose: bool = True) -> Optional[GestureResult]:
     gesture_name = GESTURE_NAMES[gesture]
-    fpga.soft_reset()
+    if reset_first:
+        fpga.soft_reset()
     fpga.clear_rx_buffer()
     if hasattr(fpga, "_ascii_line_buffer"):
         fpga._ascii_line_buffer.clear()
-    time.sleep(0.05)
+    time.sleep(0.02)
     if fpga.architecture == Architecture.VOXEL_BIN:
         status = fpga.query_status()
         if status and status.get("phase") == 1:
             if verbose:
                 print("Waiting for early phase start...")
             time.sleep(0.25)
-    events = generate_gesture_events(
-        gesture, event_rate=EVENT_RATE_HZ * 2, duration_ms=GESTURE_DURATION_MS,
-        motion_amplitude=120, spatial_noise=5.0, noise_ratio=0.0
-    )
-    if verbose:
-        print(f"Sending {len(events)} events for {gesture_name}...")
-    if fpga.architecture == Architecture.GRADIENT_MAP:
-        fpga.send_event_stream(events, delay_us=200)
-        time.sleep(0.2)
+    if fpga.architecture == Architecture.VOXEL_BIN:
+        diag_before = fpga.query_diag()
+        if verbose and diag_before:
+            print(
+                f"  diag-before: ec={diag_before['event_count']} "
+                f"cap={diag_before['seen_capture']} "
+                f"win={diag_before['seen_feature_window']} "
+                f"score={diag_before['seen_score_busy']} "
+                f"cv={diag_before['seen_class_valid']} "
+                f"cp={diag_before['seen_class_pass']} "
+                f"gv={diag_before['seen_gesture_valid']} "
+                f"ph={diag_before['temporal_phase']}"
+            )
+        # Match voxel_bin training/test style: sustained regional activity across many bins.
+        readout_bins = DEFAULT_READOUT_BINS
+        cfg = fpga.query_config()
+        if cfg and isinstance(cfg.get("readout_bins"), int):
+            readout_bins = max(1, int(cfg["readout_bins"]))
+        bins_to_drive = readout_bins + 2 + 4  # warmup + persistence + margin
+        bin_duration_ms = WINDOW_MS // readout_bins
+        per_bin = max(24, int(num_events // max(1, bins_to_drive)))
+        total_events = bins_to_drive * per_bin
+        timeout_s = max(timeout_s, (bins_to_drive * (WINDOW_MS / readout_bins) / 1000.0) + 1.0)
     else:
-        half = len(events) // 2
-        fpga.send_event_stream(events[:half], delay_us=500)
-        time.sleep(0.2)
-        fpga.send_event_stream(events[half:], delay_us=500)
-    time.sleep(0.5)
-    result = fpga.check_gesture(timeout=1.0)
-    if result:
+        event_rate_hz = max(1.0, (float(num_events) * 1000.0) / float(GESTURE_DURATION_MS))
+        events = generate_gesture_events(
+            gesture, event_rate=event_rate_hz, duration_ms=GESTURE_DURATION_MS,
+            motion_amplitude=120, spatial_noise=5.0, noise_ratio=0.0
+        )
+        total_events = len(events)
+        delay_us = 350
+    if verbose:
+        print(f"Sending {total_events} events for {gesture_name}...")
+        if fpga.architecture == Architecture.VOXEL_BIN:
+            print(f"  pacing: {per_bin} events/bin for ~{bins_to_drive} bins (bin={bin_duration_ms} ms)")
+    if fpga.architecture == Architecture.VOXEL_BIN:
+        send_voxel_bin_pattern(
+            fpga=fpga,
+            gesture=gesture,
+            bins_to_drive=bins_to_drive,
+            events_per_bin=per_bin,
+            bin_duration_ms=bin_duration_ms,
+        )
+    else:
+        fpga.send_event_stream(events, delay_us=delay_us)
+    time.sleep(0.20)
+    if fpga.architecture == Architecture.VOXEL_BIN:
+        diag_after = fpga.query_diag()
+        if verbose and diag_after:
+            print(
+                f"  diag-after:  ec={diag_after['event_count']} "
+                f"cap={diag_after['seen_capture']} "
+                f"win={diag_after['seen_feature_window']} "
+                f"score={diag_after['seen_score_busy']} "
+                f"cv={diag_after['seen_class_valid']} "
+                f"cp={diag_after['seen_class_pass']} "
+                f"gv={diag_after['seen_gesture_valid']} "
+                f"ph={diag_after['temporal_phase']}"
+            )
+    results = fpga.collect_gesture_packets(timeout_s=timeout_s)
+    if results:
+        result = max(results, key=lambda r: (r.confidence, r.event_count_hi))
         detected_name = GESTURE_NAMES[result.gesture]
         if verbose:
             correct = "CORRECT" if result.gesture == gesture else f"INCORRECT (expected {gesture_name})"
-            print(f"Detected: {detected_name} (confidence={result.confidence}) — {correct}")
+            print(f"Detected: {detected_name} (confidence={result.confidence}) — {correct} "
+                  f"(packets={len(results)})")
         return result
     else:
         if verbose:
-            print(f"No gesture detected (expected {gesture_name})")
+            print(f"No gesture detected (expected {gesture_name}). "
+                  f"Try increasing --events or --trials, and verify status/config commands respond.")
         return None
 
 
-def test_all_gestures(fpga: FPGAGestureInterface) -> dict:
-    results = {}
+def test_all_gestures(fpga: FPGAGestureInterface, trials_per_gesture: int = 1,
+                      num_events: int = 220) -> dict:
+    # Reset once at suite start to avoid stale state, but keep continuity between trials.
+    fpga.soft_reset()
+    time.sleep(0.05)
+
+    matrix = {g: {d: 0 for d in Gesture} for g in Gesture}
+    misses = {g: 0 for g in Gesture}
+
     for gesture in Gesture:
-        result = test_gesture(fpga, gesture, verbose=True)
-        results[gesture] = result
-        time.sleep(0.5)
-    correct = sum(1 for g, r in results.items() if r and r.gesture == g)
-    print(f"\nSummary: {correct}/4 correct")
-    for gesture, result in results.items():
-        name = GESTURE_NAMES[gesture]
-        if result:
-            detected = GESTURE_NAMES[result.gesture]
-            ok = "+" if result.gesture == gesture else "-"
-            print(f"  [{ok}] {name}: detected {detected} (conf={result.confidence})")
-        else:
-            print(f"  [-] {name}: no detection")
-    return results
+        print(f"\n=== Expected {GESTURE_NAMES[gesture]} ({trials_per_gesture} trial(s)) ===")
+        for trial in range(trials_per_gesture):
+            print(f"Trial {trial + 1}/{trials_per_gesture}")
+            result = test_gesture(fpga, gesture, num_events=num_events, reset_first=False, verbose=True)
+            if result is None:
+                misses[gesture] += 1
+            else:
+                matrix[gesture][result.gesture] += 1
+            time.sleep(0.4)
+
+    total_trials = len(Gesture) * trials_per_gesture
+    correct = sum(matrix[g][g] for g in Gesture)
+    accuracy = (100.0 * correct / total_trials) if total_trials else 0.0
+    print(f"\nSummary: {correct}/{total_trials} correct ({accuracy:.1f}%)")
+    for expected in Gesture:
+        row = ", ".join(f"{GESTURE_NAMES[det]}={matrix[expected][det]}" for det in Gesture)
+        print(f"  expected {GESTURE_NAMES[expected]}: {row}, miss={misses[expected]}")
+    return {"matrix": matrix, "misses": misses, "correct": correct, "total": total_trials}
 
 
 def test_noise_rejection(fpga: FPGAGestureInterface) -> bool:
@@ -436,7 +689,7 @@ def continuous_monitoring(fpga: FPGAGestureInterface, duration_s: float = 60):
 
 
 def interactive_mode(fpga: FPGAGestureInterface):
-    print("Commands: u/d/l/r=gesture  e=echo  s=status  c=config  x=reset  n=noise  a=all  q=quit")
+    print("Commands: u/d/l/r=gesture  e=echo  s=status  c=config  p=diag  x=reset  n=noise  a=all  q=quit")
     while True:
         try:
             cmd = input("Command> ").strip().lower()
@@ -456,6 +709,12 @@ def interactive_mode(fpga: FPGAGestureInterface):
                 else:
                     config = fpga.query_config()
                     print(f"Config: {config}" if config else "Config: FAILED")
+            elif cmd == 'p':
+                if fpga.architecture == Architecture.GRADIENT_MAP:
+                    print("Diag: not supported (gradient_map)")
+                else:
+                    diag = fpga.query_diag()
+                    print(f"Diag: {diag}" if diag else "Diag: FAILED")
             elif cmd == 'x':
                 fpga.soft_reset()
                 print("Reset sent")
@@ -496,11 +755,17 @@ def main():
     parser.add_argument('--baud', '-b', type=int, default=DEFAULT_BAUD_RATE)
     parser.add_argument('--arch', '-a', type=str, choices=['voxel_bin', 'gradient_map'], default=None)
     parser.add_argument('--list-ports', action='store_true')
-    parser.add_argument('--test', '-t', type=str, choices=['echo', 'status', 'config', 'noise', 'all'])
+    parser.add_argument('--test', '-t', type=str, choices=['echo', 'status', 'config', 'diag', 'noise', 'all'])
     parser.add_argument('--gesture', '-g', type=str, choices=['up', 'down', 'left', 'right'])
     parser.add_argument('--interactive', '-i', action='store_true')
     parser.add_argument('--continuous', '-c', action='store_true')
     parser.add_argument('--duration', '-d', type=float, default=60)
+    parser.add_argument('--trials', type=int, default=1,
+                        help='Trials per gesture when running --test all (default: 1)')
+    parser.add_argument('--events', type=int, default=220,
+                        help='Events to synthesize per gesture sweep (default: 220)')
+    parser.add_argument('--seed', type=int, default=1234,
+                        help='PRNG seed for deterministic event generation (default: 1234)')
     args = parser.parse_args()
     if args.list_ports:
         list_ports()
@@ -520,6 +785,7 @@ def main():
             return 1
         architecture = fpga.detect_architecture()
         fpga.architecture = architecture
+    random.seed(args.seed)
     try:
         if not test_connection(fpga):
             print("WARNING: Echo test failed")
@@ -535,6 +801,11 @@ def main():
                 print("(gradient_map: no config command)")
             else:
                 test_config(fpga)
+        elif args.test == 'diag':
+            if architecture == Architecture.GRADIENT_MAP:
+                print("(gradient_map: no diag command)")
+            else:
+                test_diag(fpga)
         elif args.test == 'noise':
             test_noise_rejection(fpga)
         elif args.test == 'all':
@@ -542,10 +813,10 @@ def main():
                 test_status(fpga)
                 test_config(fpga)
             test_noise_rejection(fpga)
-            test_all_gestures(fpga)
+            test_all_gestures(fpga, trials_per_gesture=max(1, args.trials), num_events=max(1, args.events))
         elif args.gesture:
             gesture_map = {'up': Gesture.UP, 'down': Gesture.DOWN, 'left': Gesture.LEFT, 'right': Gesture.RIGHT}
-            test_gesture(fpga, gesture_map[args.gesture])
+            test_gesture(fpga, gesture_map[args.gesture], num_events=max(1, args.events), reset_first=True)
         elif args.continuous:
             continuous_monitoring(fpga, args.duration)
         elif args.interactive:
@@ -554,7 +825,7 @@ def main():
             if architecture != Architecture.GRADIENT_MAP:
                 test_status(fpga)
                 test_config(fpga)
-            test_all_gestures(fpga)
+            test_all_gestures(fpga, trials_per_gesture=max(1, args.trials), num_events=max(1, args.events))
     except KeyboardInterrupt:
         print("\nInterrupted by user")
     finally:

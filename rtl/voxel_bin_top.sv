@@ -6,6 +6,7 @@
 //     0xFF: echo -> 0x55
 //     0xFE: status -> 0xBx (bit2=fifo_full, bit1=fifo_empty, bit3=temporal_phase)
 //     0xFD: config -> 2 bytes (CONFIG_BYTE0, CONFIG_BYTE1)
+//     0xFB: diag -> 2 bytes ({debug_event_count}, {debug bits})
 //     0xFC: soft reset
 // - Sends gesture packets on valid gesture detection:
 //     byte0: 0xA0 | gesture[1:0]
@@ -28,7 +29,7 @@ module voxel_bin_top #(
     parameter int WEIGHT_BITS         = 8,
     parameter int WEIGHT_SCALE        = 1024,
     parameter int N                   = 4,   // 4 → 4×4 systolic array; 9×9 LUT multiply ≈ 20 ns < 83 ns @ 12 MHz
-    parameter int PASS_MARGIN         = 64,
+    parameter int PASS_MARGIN         = 0,
     parameter int PERSISTENCE_COUNT   = 2,
     parameter int CONF_BITS           = 4,
     parameter int CONF_SHIFT          = 4,
@@ -64,6 +65,7 @@ module voxel_bin_top #(
     localparam logic [7:0] CMD_ECHO       = 8'hFF;
     localparam logic [7:0] CMD_STATUS     = 8'hFE;
     localparam logic [7:0] CMD_CONFIG     = 8'hFD;
+    localparam logic [7:0] CMD_DIAG       = 8'hFB;
     localparam logic [7:0] CMD_SOFT_RESET = 8'hFC;
 
     typedef enum logic [1:0] {
@@ -109,6 +111,7 @@ module voxel_bin_top #(
     logic cmd_echo_pending;
     logic cmd_status_pending;
     logic cmd_config_pending;
+    logic cmd_diag_pending;
     logic gesture_pkt_pending;
     logic [1:0] gesture_pkt_code;
     logic [3:0] gesture_pkt_conf;
@@ -116,6 +119,7 @@ module voxel_bin_top #(
     logic second_byte_pending;
     logic [7:0] second_byte_data;
     logic [7:0] status_byte;
+    logic [7:0] diag_byte1;
 
     // Core outputs.
     logic [1:0]          core_gesture;
@@ -126,6 +130,19 @@ module voxel_bin_top #(
     logic       core_debug_fifo_empty;
     logic       core_debug_fifo_full;
     logic       core_debug_temporal_phase;
+    logic       core_debug_class_valid;
+    logic       core_debug_class_pass;
+    logic       core_debug_feature_window_ready;
+    logic       core_debug_capture_active;
+    logic       core_debug_score_busy;
+
+    // Sticky diagnostic bits (clear on reset).
+    logic diag_seen_capture;
+    logic diag_seen_feature_window;
+    logic diag_seen_score_busy;
+    logic diag_seen_class_valid;
+    logic diag_seen_class_pass;
+    logic diag_seen_gesture_valid;
 
     // Gesture LED/output mapping.
     // Gesture class directly matches weight file order: 0=Down,1=Left,2=Right,3=Up
@@ -140,6 +157,25 @@ module voxel_bin_top #(
         status_byte[2]   = core_debug_fifo_full;
         status_byte[1]   = core_debug_fifo_empty;
         status_byte[0]   = 1'b0;
+
+        // Sticky stage visibility:
+        // [7]=capture_active seen
+        // [6]=feature_window_ready seen
+        // [5]=score_busy seen
+        // [4]=class_valid seen
+        // [3]=class_pass seen
+        // [2]=gesture_valid seen
+        // [1]=live gesture pulse
+        // [0]=temporal phase (live)
+        diag_byte1       = 8'h00;
+        diag_byte1[7]    = diag_seen_capture;
+        diag_byte1[6]    = diag_seen_feature_window;
+        diag_byte1[5]    = diag_seen_score_busy;
+        diag_byte1[4]    = diag_seen_class_valid;
+        diag_byte1[3]    = diag_seen_class_pass;
+        diag_byte1[2]    = diag_seen_gesture_valid;
+        diag_byte1[1]    = core_gesture_valid;
+        diag_byte1[0]    = core_debug_temporal_phase;
     end
 
     // Power-on reset generator.
@@ -248,7 +284,12 @@ module voxel_bin_top #(
         .debug_state        (core_debug_state),
         .debug_fifo_empty   (core_debug_fifo_empty),
         .debug_fifo_full    (core_debug_fifo_full),
-        .debug_temporal_phase(core_debug_temporal_phase)
+        .debug_temporal_phase(core_debug_temporal_phase),
+        .debug_class_valid  (core_debug_class_valid),
+        .debug_class_pass   (core_debug_class_pass),
+        .debug_feature_window_ready(core_debug_feature_window_ready),
+        .debug_capture_active(core_debug_capture_active),
+        .debug_score_busy   (core_debug_score_busy)
     );
 
     always_ff @(posedge clk) begin
@@ -266,6 +307,7 @@ module voxel_bin_top #(
             cmd_echo_pending    <= 1'b0;
             cmd_status_pending  <= 1'b0;
             cmd_config_pending  <= 1'b0;
+            cmd_diag_pending    <= 1'b0;
             gesture_pkt_pending <= 1'b0;
             gesture_pkt_code    <= '0;
             gesture_pkt_conf    <= '0;
@@ -277,12 +319,32 @@ module voxel_bin_top #(
             gesture_led_ctr     <= '0;
             activity_led_ctr    <= '0;
             last_gesture        <= 2'd0;
+            diag_seen_capture         <= 1'b0;
+            diag_seen_feature_window  <= 1'b0;
+            diag_seen_score_busy      <= 1'b0;
+            diag_seen_class_valid     <= 1'b0;
+            diag_seen_class_pass      <= 1'b0;
+            diag_seen_gesture_valid   <= 1'b0;
         end else begin
             word_fifo_in_valid <= 1'b0;
             tx_fifo_in_valid   <= 1'b0;
             tx_byte_valid      <= 1'b0;
             tx_fifo_out_ready  <= 1'b0;
             soft_rst_cmd_pulse <= 1'b0;
+
+            // Sticky stage diagnostics.
+            if (core_debug_capture_active)
+                diag_seen_capture <= 1'b1;
+            if (core_debug_feature_window_ready)
+                diag_seen_feature_window <= 1'b1;
+            if (core_debug_score_busy)
+                diag_seen_score_busy <= 1'b1;
+            if (core_debug_class_valid)
+                diag_seen_class_valid <= 1'b1;
+            if (core_debug_class_pass)
+                diag_seen_class_pass <= 1'b1;
+            if (core_gesture_valid)
+                diag_seen_gesture_valid <= 1'b1;
 
             // UART RX packet/command parsing.
             if (rx_byte_valid) begin
@@ -296,6 +358,8 @@ module voxel_bin_top #(
                             cmd_status_pending <= 1'b1;
                         end else if (rx_byte == CMD_CONFIG) begin
                             cmd_config_pending <= 1'b1;
+                        end else if (rx_byte == CMD_DIAG) begin
+                            cmd_diag_pending <= 1'b1;
                         end else if (rx_byte == CMD_SOFT_RESET) begin
                             soft_rst_cmd_pulse <= 1'b1;
                         end else begin
@@ -361,6 +425,12 @@ module voxel_bin_top #(
                     second_byte_pending <= 1'b1;
                     second_byte_data    <= CONFIG_BYTE1;
                     cmd_config_pending  <= 1'b0;
+                end else if (cmd_diag_pending) begin
+                    tx_fifo_in_valid    <= 1'b1;
+                    tx_fifo_in_data     <= core_debug_event_count;
+                    second_byte_pending <= 1'b1;
+                    second_byte_data    <= diag_byte1;
+                    cmd_diag_pending    <= 1'b0;
                 end else if (gesture_pkt_pending) begin
                     tx_fifo_in_valid    <= 1'b1;
                     tx_fifo_in_data     <= 8'hA0 | gesture_pkt_code;

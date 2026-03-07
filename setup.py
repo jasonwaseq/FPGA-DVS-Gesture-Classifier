@@ -677,7 +677,7 @@ def _synthesize(top_module, rtl_files, pcf_name, label="", arch_dir=None, allow_
 
     print(f"\nRunning Yosys synthesis (top={top_module})...")
     yosys_cmd = (
-        f"read_verilog -sv {' '.join(sources)}; "
+        f"read_verilog -sv -D SYNTHESIS {' '.join(sources)}; "
         f"synth_ice40 -dsp -top {top_module} -json {output_json}"
     )
     result = subprocess.run(["yosys", "-p", yosys_cmd], env=env, cwd=SYNTH_DIR)
