@@ -1,5 +1,6 @@
 {
   "build": { "dockerfile": "Dockerfile" },
+  "postCreateCommand": "make setup SKIP_FPGA=1",
   "features": {
     "ghcr.io/devcontainers/features/desktop-lite:1": {}
   },

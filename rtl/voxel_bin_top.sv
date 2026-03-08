@@ -18,7 +18,7 @@
 module voxel_bin_top #(
     parameter int CLK_FREQ_HZ         = 12_000_000,
     parameter int CLK_FREQ            = CLK_FREQ_HZ, // compatibility alias
-    parameter int BAUD_RATE           = 115200,
+    parameter int BAUD_RATE           = 1_000_000,
     parameter int WINDOW_MS           = 1000,
     parameter int CYCLES_PER_BIN      = 0,
     parameter int GRID_SIZE           = 8,

@@ -646,7 +646,7 @@ def run_tests(target="all"):
     return rc
 
 
-def _synthesize(top_module, rtl_files, pcf_name, label="", arch_dir=None, allow_unconstrained=False):
+def _synthesize(top_module, rtl_files, pcf_name, label="", allow_unconstrained=False):
     display = label or top_module
     print_header(f"Synthesizing {display} for iCE40 UP5K")
 
@@ -662,12 +662,11 @@ def _synthesize(top_module, rtl_files, pcf_name, label="", arch_dir=None, allow_
 
     sources = [str(RTL_DIR / f) for f in rtl_files]
 
-    output_root = SYNTH_DIR / arch_dir if arch_dir else SYNTH_DIR
-    output_root.mkdir(parents=True, exist_ok=True)
+    SYNTH_DIR.mkdir(parents=True, exist_ok=True)
 
-    output_json = output_root / f"{top_module}.json"
-    output_asc = output_root / f"{top_module}.asc"
-    output_bit = output_root / f"{top_module}.bit"
+    output_json = SYNTH_DIR / f"{top_module}.json"
+    output_asc = SYNTH_DIR / f"{top_module}.asc"
+    output_bit = SYNTH_DIR / f"{top_module}.bit"
 
     pcf_file = SYNTH_DIR / pcf_name
 
@@ -723,34 +722,11 @@ def _synthesize(top_module, rtl_files, pcf_name, label="", arch_dir=None, allow_
     return 0
 
 
-ARCH_SYNTH_CONFIG = {
-    "voxel_bin": (
-        "voxel_bin_top",
-        RTL_FILES,
-        "icebreaker.pcf",
-        "Voxel-bin UART (voxel_bin_top)",
-        "voxel_bin",
-        False,
-    ),
-}
-
-
-def run_synthesis(arch):
-    if arch not in ARCH_SYNTH_CONFIG:
-        print_error(
-            f"Unknown architecture: {arch}. "
-            "Use voxel_bin."
-        )
-        return 1
-
-    top_module, rtl_files, pcf_name, label, subdir, allow_unconstrained = ARCH_SYNTH_CONFIG[arch]
+def run_synthesis():
     return _synthesize(
-        top_module=top_module,
-        rtl_files=rtl_files,
-        pcf_name=pcf_name,
-        label=label,
-        arch_dir=subdir,
-        allow_unconstrained=allow_unconstrained,
+        top_module="voxel_bin_top",
+        rtl_files=RTL_FILES,
+        pcf_name="icebreaker.pcf",
     )
 
 def list_ftdi_devices():
@@ -791,30 +767,15 @@ def find_ftdi_device(preferred_port=None, preferred_serial=None, preferred_vid=N
 
     return devices[0] if devices else None
 
-def flash_fpga(port=None, serial=None, vid=None, pid=None, bitfile_name=None, arch=None):
+def flash_fpga(port=None, serial=None, vid=None, pid=None):
     print_header("Flashing FPGA")
 
-    if bitfile_name is None and arch is not None:
-        if arch in ARCH_SYNTH_CONFIG:
-            top_module = ARCH_SYNTH_CONFIG[arch][0]
-            bitfile_name = f"{top_module}.bit"
-        else:
-            bitfile_name = f"{arch}.bit"
-    if bitfile_name is None:
-        bitfile_name = "voxel_bin_top.bit"
+    bitfile = SYNTH_DIR / "voxel_bin_top.bit"
 
     oss_root = get_oss_cad_bin()
     if oss_root is None:
         print_error("OSS CAD Suite not found")
         return 1
-    
-    if arch is not None and arch in ARCH_SYNTH_CONFIG:
-        _, _, _, _, subdir, _ = ARCH_SYNTH_CONFIG[arch]
-        bitfile_dir = SYNTH_DIR / subdir
-    else:
-        bitfile_dir = SYNTH_DIR
-
-    bitfile = bitfile_dir / bitfile_name
     if not bitfile.exists():
         print_error(f"Bitstream not found: {bitfile}")
         print("  Run 'make synth' first")
@@ -884,7 +845,6 @@ def clean():
         TB_DIR / "__pycache__",
         TB_DIR / "util" / "__pycache__",
         PROJECT_ROOT / "__pycache__",
-        SYNTH_DIR / "voxel_bin",
     ]
     
     files_to_clean = [
@@ -1136,24 +1096,13 @@ def main():
     if command in ["test", "verify", "sim"]:
         return run_tests(target or "all")
     if command in ["synth", "synthesis", "build"]:
-        arch = target or "voxel_bin"
-        if arch not in ARCH_SYNTH_CONFIG:
-            valid = ", ".join(ARCH_SYNTH_CONFIG.keys())
-            print_error(f"Unknown synthesis target: {arch}. Use one of: {valid}")
-            return 1
-        return run_synthesis(arch)
+        return run_synthesis()
     if command in ["flash", "program", "prog"]:
-        arch = target or "voxel_bin"
-        if arch not in ARCH_SYNTH_CONFIG:
-            valid = ", ".join(ARCH_SYNTH_CONFIG.keys())
-            print_error(f"Unknown flash target: {arch}. Use one of: {valid}")
-            return 1
         return flash_fpga(
             port=options["port"],
             serial=options["serial"],
             vid=options["vid"],
             pid=options["pid"],
-            arch=arch,
         )
     if command == "clean":
         return clean()

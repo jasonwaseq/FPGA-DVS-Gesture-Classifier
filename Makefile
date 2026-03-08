@@ -41,7 +41,7 @@ help:
 	@echo   make synth
 	@echo   make flash [PORT=COMx] [SERIAL=id] [VID=0x0403] [PID=0x6010]
 	@echo   make clean
-	@echo.
+	@echo
 	@echo Examples:
 	@echo   make setup
 	@echo   make setup SKIP_FPGA=1

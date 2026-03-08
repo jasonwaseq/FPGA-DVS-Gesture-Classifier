@@ -1,5 +1,40 @@
 # FPGA DVS Gesture Classifier
 
+Real-time  gesture classification running on a Lattice iCE40UP5K FPGA. A Prophesee GenX320 event camera streams pixel-change events over UART; the FPGA classifies them into one of four gestures (Down, Left, Right, Up) and reports the result back. 
+
+## Architecture and Dataflow
+
+```
+Camera (EVT2.0 over USB)
+  └─► evt_stream_to_fpga.py  ← host-side relay script
+        └─► UART (115200 baud)
+              └─► voxel_bin_top  ← synthesis top-level
+                    ├─ uart_rx + 4-byte assembler
+                    └─► input_fifo
+                          └─► evt2_decoder       (decode + 320×320 → 8×8)
+                                └─► voxel_binning (4 bins × 8×8 counters → 256 features)
+                                      └─► systolic_array  (4×4 tiled GEMV × 64 tiles)
+                                            ├─ weight RAMs (4 classes × 256 weights)
+                                            └─► gesture_classifier  (argmax + persistence)
+                                                  └─► uart_tx + LEDs
+```
+
+**`input_fifo`** — Buffers decoded words between the UART assembler and the decoder with a valid/ready handshake.
+
+**`evt2_decoder`** — Parses 32-bit EVT2.0 words from the camera. Pixel events (`CD_ON`/`CD_OFF`) extract `(x, y, polarity)`; `TIME_HIGH` words update the timestamp. Compresses the 320×320 sensor down to an 8×8 grid.
+
+**`voxel_binning`** — Accumulates events into a ring of 4 time bins, each 250 ms wide (1 s total window). Each bin is an 8×8 grid of 4-bit saturating counters. When a bin expires, all 4 bins are read out as a flat 256-element feature vector.
+
+**`systolic_array`** — A 4×4 array of multiply-accumulate processing elements. Computes a dot product of 4 features against 4 weights per invocation in 10 clock cycles.
+
+**`gesture_classifier`** — Takes the 4 scores, picks the highest (argmax), and requires 2 consecutive windows with the same winner before declaring a gesture valid.
+
+**`voxel_bin_core`** — Wires the pipeline together and runs a tiled GEMV loop: multiplies the 256-feature vector against a 4×256 weight matrix (one row per gesture class) using the systolic array in 64 tiles of 4, accumulating 4 class scores.
+
+**`voxel_bin_top`** — Synthesis top-level. Wraps the core with UART RX/TX, a power-on reset, LEDs, and a single-byte command parser (ping, status, config, diagnostics, soft reset).
+
+---
+
 Cross-platform workflow for setup, verification, synthesis, and flash using a top-level `Makefile`.
 
 ## Top-level workflow
@@ -103,7 +138,7 @@ make synth
 ```
 
 Output:
-- `synth/voxel_bin/voxel_bin_top.bit`
+- `synth/voxel_bin_top.bit`
 
 ## Flash
 
@@ -127,7 +162,3 @@ Notes:
 ```bash
 make clean
 ```
-
-## Notes
-
-- The top-level workflow is intentionally `make`-first for consistency across setup, verification, synthesis, and flashing.
