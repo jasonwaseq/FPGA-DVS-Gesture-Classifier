@@ -10,7 +10,7 @@ from cocotb.triggers import ClockCycles, NextTimeStep, ReadOnly, RisingEdge
 
 N = 4
 DATA_BITS = 16
-ACC_BITS = (2 * DATA_BITS) + (N - 1).bit_length() + 1
+ACC_BITS = (2 * DATA_BITS) + (N - 1).bit_length()
 TOTAL_CYCLES = (3 * N) - 1
 DATA_MASK = (1 << DATA_BITS) - 1
 ACC_MASK = (1 << ACC_BITS) - 1

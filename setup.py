@@ -79,6 +79,7 @@ TEST_TARGETS = {
     "evt2_decoder": {"toplevel": "evt2_decoder", "test_module": "test_evt2_decoder"},
     "gesture_classifier": {"toplevel": "gesture_classifier", "test_module": "test_gesture_classifier"},
     "input_fifo": {"toplevel": "input_fifo", "test_module": "test_input_fifo"},
+    "matmul": {"toplevel": "systolic_array", "test_module": "MatMul_tb"},
     "ram_1r1w_sync": {"toplevel": "ram_1r1w_sync", "test_module": "test_ram_1r1w_sync"},
     "systolic_array": {"toplevel": "systolic_array", "test_module": "test_systolic_array"},
     "uart_rx": {"toplevel": "uart_rx", "test_module": "test_uart_rx"},
