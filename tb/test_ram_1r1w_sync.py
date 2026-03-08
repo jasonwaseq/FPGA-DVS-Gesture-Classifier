@@ -3,6 +3,7 @@
 import random
 
 import cocotb
+from util.test_logging import logged_test
 from cocotb.clock import Clock
 from cocotb.triggers import ClockCycles, NextTimeStep, ReadOnly, RisingEdge
 
@@ -68,7 +69,7 @@ async def drive_and_check(dut, model, reset_i, wr_valid_i, wr_data_i, wr_addr_i,
     await NextTimeStep()
 
 
-@cocotb.test()
+@logged_test()
 async def test_default_init_all_zeros(dut):
     """Unwritten RAM locations must read back as 0 (default filename_p="" initialises to zero).
     MUST run first — before any other test writes to the RAM."""
@@ -88,7 +89,7 @@ async def test_default_init_all_zeros(dut):
         assert got == 0, f"Unwritten addr {addr}: expected 0, got 0x{got:02X}"
 
 
-@cocotb.test()
+@logged_test()
 async def test_reset_and_basic_read_write(dut):
     await setup(dut)
     model = Ram1R1WSyncModel()
@@ -103,7 +104,7 @@ async def test_reset_and_basic_read_write(dut):
     assert int(dut.rd_data_o.value) == 0xEF
 
 
-@cocotb.test()
+@logged_test()
 async def test_read_before_write_same_cycle_same_addr(dut):
     await setup(dut)
     model = Ram1R1WSyncModel()
@@ -125,7 +126,7 @@ async def test_read_before_write_same_cycle_same_addr(dut):
     assert int(dut.rd_data_o.value) == 0x22
 
 
-@cocotb.test()
+@logged_test()
 async def test_write_during_reset(dut):
     """RTL keeps writes active during reset; verify this edge behavior."""
     await setup(dut)
@@ -139,7 +140,7 @@ async def test_write_during_reset(dut):
     assert int(dut.rd_data_o.value) == 0xA5
 
 
-@cocotb.test()
+@logged_test()
 async def test_randomized_golden_scoreboard(dut):
     await setup(dut)
     model = Ram1R1WSyncModel()
@@ -172,7 +173,7 @@ async def test_randomized_golden_scoreboard(dut):
         )
 
 
-@cocotb.test()
+@logged_test()
 async def test_rd_valid_low_holds_output(dut):
     """When rd_valid_i=0, rd_data_o must hold its previously latched value."""
     await setup(dut)
@@ -197,7 +198,7 @@ async def test_rd_valid_low_holds_output(dut):
             f"rd_data_o changed while rd_valid_i=0 (addr={addr})"
 
 
-@cocotb.test()
+@logged_test()
 async def test_boundary_addresses(dut):
     """Write then read at address 0, DEPTH-1, and DEPTH//2."""
     await setup(dut)
@@ -221,7 +222,7 @@ async def test_boundary_addresses(dut):
             f"Addr {addr}: expected 0x{data:02X}, got 0x{got:02X}"
 
 
-@cocotb.test()
+@logged_test()
 async def test_all_ones_data(dut):
     """All-ones data word (DATA_MASK) stored and read back intact."""
     await setup(dut)
@@ -238,7 +239,7 @@ async def test_all_ones_data(dut):
     assert got == DATA_MASK, f"All-ones data corrupted: 0x{got:08X}"
 
 
-@cocotb.test()
+@logged_test()
 async def test_overwrite_same_address(dut):
     """Overwriting the same address multiple times; final value must be last write."""
     await setup(dut)

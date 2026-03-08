@@ -3,6 +3,7 @@
 import random
 
 import cocotb
+from util.test_logging import logged_test
 from cocotb.clock import Clock
 from cocotb.triggers import ClockCycles, NextTimeStep, ReadOnly, RisingEdge
 
@@ -179,14 +180,14 @@ async def rotate_and_check(dut, model, tag):
     await wait_for_state(dut, ST_ACCUM)
 
 
-@cocotb.test()
+@logged_test()
 async def test_reset_and_event_ready(dut):
     await setup(dut)
     assert int(dut.event_ready.value) == 1
     assert int(dut.readout_valid.value) == 0
 
 
-@cocotb.test()
+@logged_test()
 async def test_known_events_then_readout(dut):
     await setup(dut)
     model = VoxelBinningModel()
@@ -199,7 +200,7 @@ async def test_known_events_then_readout(dut):
         await rotate_and_check(dut, model, f"known-{i}")
 
 
-@cocotb.test()
+@logged_test()
 async def test_wait_rd_backpressure(dut):
     await setup(dut)
     model = VoxelBinningModel()
@@ -231,7 +232,7 @@ async def test_wait_rd_backpressure(dut):
     await wait_for_state(dut, ST_ACCUM)
 
 
-@cocotb.test()
+@logged_test()
 async def test_counter_saturation(dut):
     await setup(dut)
     model = VoxelBinningModel()
@@ -250,7 +251,7 @@ async def test_counter_saturation(dut):
         await rotate_and_check(dut, model, f"sat-{i}")
 
 
-@cocotb.test()
+@logged_test()
 async def test_events_ignored_when_not_accum(dut):
     await setup(dut)
     model = VoxelBinningModel()
@@ -280,7 +281,7 @@ async def test_events_ignored_when_not_accum(dut):
     await wait_for_state(dut, ST_ACCUM)
 
 
-@cocotb.test()
+@logged_test()
 async def test_randomized_multibin_scoreboard(dut):
     await setup(dut)
     model = VoxelBinningModel()
@@ -297,7 +298,7 @@ async def test_randomized_multibin_scoreboard(dut):
         await rotate_and_check(dut, model, f"rnd-{bin_idx}")
 
 
-@cocotb.test()
+@logged_test()
 async def test_corner_coordinates_binned_correctly(dut):
     """Events at all four grid corners and centre are stored in the right cells."""
     await setup(dut)
@@ -318,7 +319,7 @@ async def test_corner_coordinates_binned_correctly(dut):
         await rotate_and_check(dut, model, f"corner-{i}")
 
 
-@cocotb.test()
+@logged_test()
 async def test_readout_index_monotonically_increasing(dut):
     """readout_index must count from 0 to FEATURE_COUNT-1 with no gaps or repeats."""
     await setup(dut)
@@ -358,7 +359,7 @@ async def test_readout_index_monotonically_increasing(dut):
         f"readout_index sequence wrong: first={indices[:5]}... last={indices[-5:]}"
 
 
-@cocotb.test()
+@logged_test()
 async def test_clear_zeros_old_bin_data(dut):
     """After rotation, the newly cleared bin must read back as zero in the next window."""
     await setup(dut)
@@ -380,7 +381,7 @@ async def test_clear_zeros_old_bin_data(dut):
         f"Model hot cell not zeroed after full rotation: {model.mem[hot_cell]}"
 
 
-@cocotb.test()
+@logged_test()
 async def test_high_event_rate_multi_bin_accuracy(dut):
     """Dense event stream across many bins; compare each readout against golden model."""
     await setup(dut)
@@ -397,7 +398,7 @@ async def test_high_event_rate_multi_bin_accuracy(dut):
         await rotate_and_check(dut, model, f"dense-{bin_idx}")
 
 
-@cocotb.test()
+@logged_test()
 async def test_stale_bins_preserved_after_reset(dut):
     """After reset only bin 0 is cleared; bins 1..NUM_BINS-1 retain their pre-reset contents."""
     await setup(dut)

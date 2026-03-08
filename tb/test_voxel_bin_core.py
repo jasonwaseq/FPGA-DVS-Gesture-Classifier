@@ -5,6 +5,7 @@ from pathlib import Path
 import random
 
 import cocotb
+from util.test_logging import logged_test
 from cocotb.clock import Clock
 from cocotb.triggers import ClockCycles, NextTimeStep, ReadOnly, RisingEdge
 
@@ -152,8 +153,12 @@ class ScoreModel:
 def load_quantized_weights():
     """Load and quantize weights to match RTL ram_1r1w_sync init (init_scale_p=WEIGHT_SCALE,
     init_signed_p=0, stride=FEATURE_COUNT per class).  Matches gesture_weights file layout."""
-    weights_path = (Path(__file__).resolve().parents[1] /
-                    "gesture_weights_down_left_right_up_8x8_4bins.txt")
+    repo_root = Path(__file__).resolve().parents[1]
+    candidates = [
+        repo_root / "weights" / "gesture_weights_down_left_right_up_8x8_4bins.txt",
+        repo_root / "gesture_weights_down_left_right_up_8x8_4bins.txt",
+    ]
+    weights_path = next((p for p in candidates if p.exists()), candidates[0])
     lines = weights_path.read_text(encoding="ascii").splitlines()
 
     max_unsigned = (1 << WEIGHT_BITS) - 1
@@ -391,7 +396,7 @@ async def drive_bin_traffic(h, rng, region, events=28):
             await h.send_word(bad)
 
 
-@cocotb.test()
+@logged_test()
 async def test_voxel_bin_core_end_to_end_golden(dut):
     rng = random.Random(0xC011E0)
     h = CoreHarness(dut)
@@ -423,7 +428,7 @@ async def test_voxel_bin_core_end_to_end_golden(dut):
         "debug_event_count mismatch"
 
 
-@cocotb.test()
+@logged_test()
 async def test_empty_window_produces_no_gesture(dut):
     """No CD events → all-zero features → all scores zero → no gesture fires.
 
@@ -449,7 +454,7 @@ async def test_empty_window_produces_no_gesture(dut):
         "Model/DUT disagree on empty-input gesture output"
 
 
-@cocotb.test()
+@logged_test()
 async def test_reset_mid_pipeline_recovers_cleanly(dut):
     """Assert rst while the binner/scorer pipeline is active; verify clean restart."""
     rng = random.Random(0xDEAD_F00D)
@@ -490,7 +495,7 @@ async def test_reset_mid_pipeline_recovers_cleanly(dut):
         "evt_word_ready not asserted after reset"
 
 
-@cocotb.test()
+@logged_test()
 async def test_debug_event_count_tracks_accepted_words(dut):
     """debug_event_count must equal (accepted_words mod 256)."""
     h = CoreHarness(dut)
@@ -514,7 +519,7 @@ async def test_debug_event_count_tracks_accepted_words(dut):
          f"expected={h.accepted_words & 0xFF}")
 
 
-@cocotb.test()
+@logged_test()
 async def test_fifo_backpressure_no_lost_events(dut):
     """Burst of events: even if FIFO momentarily fills, no accepted events are lost."""
     rng = random.Random(0xF00B_A400)
@@ -545,7 +550,7 @@ async def test_fifo_backpressure_no_lost_events(dut):
          f"DUT:   {h.observed_gestures}\nMODEL: {h.expected_gestures}")
 
 
-@cocotb.test()
+@logged_test()
 async def test_sustained_region_fires_gesture(dut):
     """Drive a single spatial region for many bins; classifier must eventually fire."""
     rng = random.Random(0x1234_5678)
@@ -570,7 +575,7 @@ async def test_sustained_region_fires_gesture(dut):
     assert h.completed_windows > 0, "No completed windows observed"
 
 
-@cocotb.test()
+@logged_test()
 async def test_decoder_events_match_model_exactly(dut):
     """Verify that every decoded (x, y, polarity, timestamp) tuple matches the model."""
     rng = random.Random(0xABCD_1234)
@@ -595,7 +600,7 @@ async def test_decoder_events_match_model_exactly(dut):
     await h.wait_quiet(quiet_cycles=500)
 
 
-@cocotb.test()
+@logged_test()
 async def test_score_model_validates_classifications(dut):
     """ScoreModel independently verifies every DUT class_gesture/class_pass output."""
     weights = load_quantized_weights()

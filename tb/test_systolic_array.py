@@ -4,6 +4,7 @@ import math
 import random
 
 import cocotb
+from util.test_logging import logged_test
 from cocotb.clock import Clock
 from cocotb.triggers import ClockCycles, NextTimeStep, ReadOnly, RisingEdge
 
@@ -122,14 +123,14 @@ async def run_mul(dut, a, b, tag):
     await NextTimeStep()
 
 
-@cocotb.test()
+@logged_test()
 async def test_reset_defaults(dut):
     await setup(dut)
     assert int(dut.busy.value) == 0
     assert int(dut.done.value) == 0
 
 
-@cocotb.test()
+@logged_test()
 async def test_zero_matrices(dut):
     await setup(dut)
     a = [[0 for _ in range(N)] for _ in range(N)]
@@ -137,7 +138,7 @@ async def test_zero_matrices(dut):
     await run_mul(dut, a, b, "zeros")
 
 
-@cocotb.test()
+@logged_test()
 async def test_identity_times_random(dut):
     await setup(dut)
     rng = random.Random(0x1D31F17)
@@ -148,7 +149,7 @@ async def test_identity_times_random(dut):
     await run_mul(dut, a, b, "identity")
 
 
-@cocotb.test()
+@logged_test()
 async def test_start_ignored_while_running(dut):
     await setup(dut)
 
@@ -182,7 +183,7 @@ async def test_start_ignored_while_running(dut):
     assert got == exp, "Unexpected restart/perturbation from mid-run start pulse"
 
 
-@cocotb.test()
+@logged_test()
 async def test_randomized_golden(dut):
     await setup(dut)
     rng = random.Random(0x5A57A11C)
@@ -194,7 +195,7 @@ async def test_randomized_golden(dut):
         await ClockCycles(dut.clk, 2)
 
 
-@cocotb.test()
+@logged_test()
 async def test_back_to_back_runs(dut):
     """Start a new multiply immediately after done pulses; no idle gap between runs."""
     await setup(dut)
@@ -227,7 +228,7 @@ async def test_back_to_back_runs(dut):
         # No gap: next trial's start fires next cycle (loop continues immediately)
 
 
-@cocotb.test()
+@logged_test()
 async def test_identity_times_identity(dut):
     """I × I = I: verify every element explicitly."""
     await setup(dut)
@@ -244,7 +245,7 @@ async def test_identity_times_identity(dut):
                 f"I*I mismatch at [{i}][{j}]: DUT={got[i][j]} expected={exp_val}"
 
 
-@cocotb.test()
+@logged_test()
 async def test_single_nonzero_element(dut):
     """A[0][0]=k, B[0][0]=k, all others 0 → Out[0][0]=k*k, rest 0."""
     await setup(dut)
@@ -264,7 +265,7 @@ async def test_single_nonzero_element(dut):
                 assert got[i][j] == 0, f"Expected 0 at [{i}][{j}], got {got[i][j]}"
 
 
-@cocotb.test()
+@logged_test()
 async def test_all_negative_values(dut):
     """neg × neg = positive accumulation; every output element must be >= 0."""
     await setup(dut)
@@ -283,7 +284,7 @@ async def test_all_negative_values(dut):
                 f"Expected non-negative at [{i}][{j}], got {got[i][j]}"
 
 
-@cocotb.test()
+@logged_test()
 async def test_accumulator_does_not_persist_across_runs(dut):
     """Accumulators must zero at the start of each run; no bleed from a prior result."""
     await setup(dut)
@@ -305,7 +306,7 @@ async def test_accumulator_does_not_persist_across_runs(dut):
                 f"Accumulator bleed at [{i}][{j}]: {got[i][j]} (expected 0)"
 
 
-@cocotb.test()
+@logged_test()
 async def test_mixed_sign_stress(dut):
     """High-range mixed-sign values; golden comparison over 15 trials."""
     await setup(dut)
@@ -317,7 +318,7 @@ async def test_mixed_sign_stress(dut):
         await run_mul(dut, a, b, f"mix-{trial}")
 
 
-@cocotb.test()
+@logged_test()
 async def test_done_fires_at_exact_cycle(dut):
     """done must assert at exactly cycle TOTAL_CYCLES-1 (0-indexed) after the start edge."""
     await setup(dut)

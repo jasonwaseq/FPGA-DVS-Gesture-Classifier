@@ -3,6 +3,7 @@
 import random
 
 import cocotb
+from util.test_logging import logged_test
 from cocotb.clock import Clock
 from cocotb.triggers import ClockCycles, RisingEdge
 
@@ -80,13 +81,13 @@ async def trigger_gesture(dut, gesture_class, confidence=0x5A):
     dut.gesture_valid.value = 0
 
 
-@cocotb.test()
+@logged_test()
 async def test_reset_idle_high(dut):
     await setup(dut)
     assert int(dut.uart_tx.value) == 1
 
 
-@cocotb.test()
+@logged_test()
 async def test_all_gesture_messages(dut):
     await setup(dut)
     model = UartDebugModel()
@@ -99,7 +100,7 @@ async def test_all_gesture_messages(dut):
         await ClockCycles(dut.clk, CLKS_PER_BIT * 2)
 
 
-@cocotb.test()
+@logged_test()
 async def test_unknown_class_maps_to_right(dut):
     await setup(dut)
     model = UartDebugModel()
@@ -110,7 +111,7 @@ async def test_unknown_class_maps_to_right(dut):
     assert got == exp, f"RIGHT class message mismatch, got {got}"
 
 
-@cocotb.test()
+@logged_test()
 async def test_busy_rejects_new_gesture(dut):
     await setup(dut)
 
@@ -127,7 +128,7 @@ async def test_busy_rejects_new_gesture(dut):
     assert got[:4] == exp, f"Expected first message to be UP, got {got}"
 
 
-@cocotb.test()
+@logged_test()
 async def test_randomized_gesture_sequence(dut):
     await setup(dut)
     model = UartDebugModel()

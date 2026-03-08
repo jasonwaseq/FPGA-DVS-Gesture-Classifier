@@ -3,13 +3,14 @@
 import random
 
 import cocotb
+from util.test_logging import logged_test
 from cocotb.clock import Clock
 from cocotb.triggers import ClockCycles, ReadOnly, RisingEdge
 
 CLK_FREQ_HZ = 12_000_000
-BAUD_RATE = 115200
+BAUD_RATE = 1_000_000
 CLKS_PER_BIT = CLK_FREQ_HZ // BAUD_RATE
-DRIVE_CLKS_PER_BIT = CLKS_PER_BIT + 2
+DRIVE_CLKS_PER_BIT = CLKS_PER_BIT
 
 EVT_CD_OFF = 0x0
 EVT_CD_ON = 0x1
@@ -133,6 +134,33 @@ async def await_tx_idle(dut, stable_cycles=CLKS_PER_BIT * 3, timeout_cycles=5000
     raise AssertionError("Timed out waiting for TX path to become idle")
 
 
+async def issue_soft_reset(dut, timeout_cycles=CLKS_PER_BIT * 400):
+    async def _await_rst():
+        for _ in range(timeout_cycles):
+            await RisingEdge(dut.clk)
+            await ReadOnly()
+            if int(dut.rst.value):
+                return True
+        return False
+
+    rst_task = cocotb.start_soon(_await_rst())
+    await uart_drive_byte(dut, 0xFC)
+    saw_rst = await rst_task
+    assert saw_rst, "Soft reset command did not assert rst"
+
+    # Wait for rst to deassert.
+    for _ in range(timeout_cycles):
+        await RisingEdge(dut.clk)
+        await ReadOnly()
+        if not int(dut.rst.value):
+            break
+    else:
+        raise AssertionError("Soft reset did not deassert in time")
+
+    await ClockCycles(dut.clk, CLKS_PER_BIT * 2)
+    await await_tx_idle(dut)
+
+
 async def send_evt2_word_uart(dut, word):
     b0 = (word >> 24) & 0xFF
     assert b0 not in (0xFC, 0xFD, 0xFE, 0xFF), f"Word starts with command byte 0x{b0:02X}"
@@ -181,7 +209,7 @@ def region_points(name):
     return pts
 
 
-@cocotb.test()
+@logged_test()
 async def test_uart_commands_and_word_assembly(dut):
     await setup(dut)
 
@@ -219,33 +247,21 @@ async def test_uart_commands_and_word_assembly(dut):
     assert (s & 0xF0) == 0xB0, f"Status high nibble mismatch: 0x{s:02X}"
     assert (s & 0x01) == 0, f"Status bit0 should be 0: 0x{s:02X}"
 
-    # Soft reset command should assert internal rst pulse.
-    # rst de-asserts only SOFT_RESET_CYCLES (64) clks after rx_byte_valid fires,
-    # which is before uart_drive_byte returns — monitor concurrently.
-    async def _await_rst(timeout=CLKS_PER_BIT * 200):
-        for _ in range(timeout):
-            await RisingEdge(dut.clk)
-            await ReadOnly()
-            if int(dut.rst.value):
-                return True
-        return False
-
-    rst_task = cocotb.start_soon(_await_rst())
-    await uart_drive_byte(dut, 0xFC)
-    saw_rst = await rst_task
-    assert saw_rst, "Soft reset command did not assert rst"
+    # Soft reset command should assert internal rst pulse and fully recover.
+    await issue_soft_reset(dut)
 
     # Word assembly path: send one EVT2 word and verify it reaches core word stream.
     word = build_evt2_time_high(0x123456)
-    collector = cocotb.start_soon(collect_core_words(dut, cycles=50000))
+    collector = cocotb.start_soon(collect_core_words(dut, cycles=80000))
     await send_evt2_word_uart(dut, word)
     words = await collector
     assert word in words, f"Assembled word 0x{word:08X} not observed on core_evt_word"
 
 
-@cocotb.test()
+@logged_test()
 async def test_gesture_uart_packet_stream_matches_core(dut):
     await setup(dut)
+    await issue_soft_reset(dut)
 
     produced_bytes = []
     dequeued_bytes = []
@@ -262,10 +278,10 @@ async def test_gesture_uart_packet_stream_matches_core(dut):
             if int(dut.rst.value):
                 prev_valid = 0
                 continue
-            if prev_valid:
+            cur_valid = int(dut.u_core.gesture_valid.value)
+            if cur_valid and not prev_valid:
                 core_gesture_count += 1
-
-            prev_valid = int(dut.u_core.gesture_valid.value)
+            prev_valid = cur_valid
 
     async def uart_tx_monitor():
         while not stop["flag"]:
@@ -291,7 +307,7 @@ async def test_gesture_uart_packet_stream_matches_core(dut):
 
     for region in script:
         pts = region_points(region)
-        for i in range(10):
+        for i in range(12):
             gx, gy = rng.choice(pts)
             x_s = sensor_from_grid(gx)
             y_s = sensor_from_grid(gy)
@@ -318,32 +334,14 @@ async def test_gesture_uart_packet_stream_matches_core(dut):
         f"UART packet stream mismatch\nTX_DEQ: {dequeued_bytes}\nTX_IN:  {produced_bytes}"
 
 
-@cocotb.test()
+@logged_test()
 async def test_diag_command(dut):
     """0xFB diagnostic command returns 2 bytes: event_count and sticky debug flags."""
     await setup(dut)
     await await_tx_idle(dut)
 
-    # Issue soft reset (0xFC) to clear debug_event_count and sticky flags accumulated by
-    # earlier tests that ran in the same simulation instance.
-    async def _await_rst(timeout=CLKS_PER_BIT * 200):
-        for _ in range(timeout):
-            await RisingEdge(dut.clk)
-            await ReadOnly()
-            if int(dut.rst.value):
-                return True
-        return False
-
-    rst_task = cocotb.start_soon(_await_rst())
-    await uart_drive_byte(dut, 0xFC)
-    await rst_task
-    # Wait for rst to deassert and pipeline to settle.
-    for _ in range(200):
-        await RisingEdge(dut.clk)
-        if not int(dut.rst.value):
-            break
-    await ClockCycles(dut.clk, 10)
-    await await_tx_idle(dut)
+    # Clear debug/sticky state accumulated by earlier tests in this module.
+    await issue_soft_reset(dut)
 
     diag_task = cocotb.start_soon(await_tx_bytes(dut, 2))
     rx_task   = cocotb.start_soon(await_rx_byte(dut, timeout_cycles=CLKS_PER_BIT * 200))
@@ -366,7 +364,7 @@ async def test_diag_command(dut):
         f"Diag byte1 upper 7 bits should be 0 after soft reset with no events, got 0x{d[1]:02X}"
 
 
-@cocotb.test()
+@logged_test()
 async def test_gesture_packet_byte_content(dut):
     """Verify that each UART gesture packet encodes class and confidence correctly.
 

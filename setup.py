@@ -5,10 +5,12 @@ import os
 import sys
 import platform
 import subprocess
+import signal
 import shutil
 import urllib.request
 import tarfile
 import tempfile
+import xml.etree.ElementTree as ET
 from pathlib import Path
 
 PROJECT_ROOT = Path(__file__).parent.resolve()
@@ -101,6 +103,17 @@ OSS_CAD_URLS = {
     ("Darwin", "x86_64"): "https://github.com/YosysHQ/oss-cad-suite-build/releases/download/2024-11-21/oss-cad-suite-darwin-x64-20241121.tgz",
     ("Darwin", "arm64"): "https://github.com/YosysHQ/oss-cad-suite-build/releases/download/2024-11-21/oss-cad-suite-darwin-arm64-20241121.tgz",
 }
+
+ANSI_RESET = "\033[0m"
+ANSI_RED = "\033[31m"
+ANSI_GREEN = "\033[32m"
+ANSI_YELLOW = "\033[33m"
+
+
+def colorize(msg, color):
+    if sys.stdout.isatty():
+        return f"{color}{msg}{ANSI_RESET}"
+    return msg
 
 
 def print_header(msg):
@@ -245,6 +258,54 @@ def run_cmd(cmd, env=None, cwd=None, check=True):
         print(result.stderr)
         return None
     return result
+
+
+def _terminate_process(proc):
+    if proc.poll() is not None:
+        return
+
+    try:
+        if sys.platform == "win32":
+            proc.send_signal(signal.CTRL_BREAK_EVENT)
+        else:
+            proc.terminate()
+        proc.wait(timeout=2)
+    except Exception:
+        pass
+
+    if proc.poll() is None:
+        proc.kill()
+        try:
+            proc.wait(timeout=2)
+        except Exception:
+            pass
+
+
+def _run_streaming_process(cmd, env=None, cwd=None):
+    popen_kwargs = {
+        "env": env,
+        "cwd": cwd,
+        "stdout": subprocess.PIPE,
+        "stderr": subprocess.STDOUT,
+        "text": True,
+        "bufsize": 1,
+    }
+
+    if sys.platform == "win32":
+        popen_kwargs["creationflags"] = subprocess.CREATE_NEW_PROCESS_GROUP
+
+    proc = subprocess.Popen(cmd, **popen_kwargs)
+
+    try:
+        assert proc.stdout is not None
+        for line in proc.stdout:
+            print(line, end="")
+    except KeyboardInterrupt:
+        _terminate_process(proc)
+        # Do not print child traceback/noise after Ctrl+C; exit cleanly via main().
+        raise
+
+    return proc.wait()
 
 def download_with_progress(url, dest):
     print(f"  Downloading from: {url}")
@@ -517,6 +578,52 @@ def _get_cocotb_libs(python_cmd, env):
     return cocotb_libs, chosen_module
 
 
+def _collect_testcase_results(results_file):
+    passed = []
+    failed = []
+
+    if not results_file.exists():
+        return passed, failed
+
+    try:
+        root = ET.parse(results_file).getroot()
+    except ET.ParseError as exc:
+        print_warning(f"Unable to parse cocotb results file {results_file}: {exc}")
+        return passed, failed
+
+    for testcase in root.findall(".//testcase"):
+        name = testcase.attrib.get("name", "<unnamed>")
+        has_failure = testcase.find("failure") is not None or testcase.find("error") is not None
+        if has_failure:
+            failed.append(name)
+        else:
+            passed.append(name)
+
+    return passed, failed
+
+
+def _print_testbench_summary(target_name, results_file):
+    passed, failed = _collect_testcase_results(results_file)
+    total = len(passed) + len(failed)
+
+    if total == 0:
+        print_warning(f"[SUMMARY] {target_name}: no testcase results found")
+        return passed, failed
+
+    headline = f"[SUMMARY] {target_name}: {len(passed)}/{total} passed"
+    if failed:
+        print(colorize(headline, ANSI_YELLOW))
+    else:
+        print(colorize(headline, ANSI_GREEN))
+
+    for name in passed:
+        print(f"  {colorize('PASS', ANSI_GREEN)} {name}")
+    for name in failed:
+        print(f"  {colorize('FAIL', ANSI_RED)} {name}")
+
+    return passed, failed
+
+
 def _run_single_test(target_name):
     cfg = TEST_TARGETS[target_name]
     toplevel = cfg["toplevel"]
@@ -554,11 +661,15 @@ def _run_single_test(target_name):
     env["PYGPI_PYTHON_BIN"] = str(python)
     env["COCOTB_TEST_MODULES"] = test_module
     env["TOPLEVEL"] = toplevel
+    env["COCOTB_TOPLEVEL"] = toplevel
     env["TOPLEVEL_LANG"] = "verilog"
     env["PYTHONPATH"] = str(TB_DIR)
-    env.setdefault("WAVES", "0")
-    env.setdefault("COCOTB_LOG_LEVEL", "WARNING")
-    env.setdefault("COCOTB_REDUCED_LOG_FMT", "1")
+    env["WAVES"] = "1"
+    # Keep cocotb/GPI framework noise quiet; test progress is printed by tb/util/test_logging.py.
+    env["COCOTB_LOG_LEVEL"] = "ERROR"
+    env["COCOTB_REDUCED_LOG_FMT"] = "1"
+    env["GPI_LOG_LEVEL"] = "ERROR"
+    env["PYGPI_LOG_LEVEL"] = "ERROR"
 
     if sys.platform == "win32":
         python_version = f"{sys.version_info.major}{sys.version_info.minor}"
@@ -571,13 +682,33 @@ def _run_single_test(target_name):
     sim_build = TB_DIR / f"sim_build_{target_name}"
     sim_build.mkdir(parents=True, exist_ok=True)
     vvp_file = sim_build / "sim.vvp"
+    wave_file = sim_build / f"{toplevel}.fst"
+    dump_stub_file = sim_build / "cocotb_iverilog_dump.v"
     sources = [str(RTL_DIR / f) for f in RTL_FILES]
+
+    # Always emit a waveform per testbench run.
+    dump_stub_file.write_text(
+        "\n".join(
+            [
+                "module cocotb_iverilog_dump();",
+                "initial begin",
+                f'    $dumpfile("{wave_file.as_posix()}");',
+                f"    $dumpvars(0, {toplevel});",
+                "end",
+                "endmodule",
+                "",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    sources.append(str(dump_stub_file))
 
     print(f"\n[TEST] {target_name}")
     compile_cmd = [
         iverilog_cmd,
     ] + iverilog_args + [
         "-g2012",
+        "-s", "cocotb_iverilog_dump",
         "-s", toplevel,
         "-o", str(vvp_file),
     ] + sources
@@ -595,7 +726,8 @@ def _run_single_test(target_name):
         vvp_cmd,
         "-M", str(cocotb_libs),
         "-m", cocotb_vpi_module,
-        str(vvp_file)
+        str(vvp_file),
+        "-fst",
     ]
     results_file = sim_build / "results.xml"
     if results_file.exists():
@@ -604,18 +736,30 @@ def _run_single_test(target_name):
 
     # Run from project root so relative data files used by RTL init blocks
     # (e.g. 8192weights.txt) resolve consistently.
-    result = subprocess.run(sim_cmd, env=env, cwd=PROJECT_ROOT, capture_output=True, text=True)
-    if result.stdout:
-        print(result.stdout, end="")
-    if result.stderr:
-        print(result.stderr, end="")
+    result_rc = _run_streaming_process(sim_cmd, env=env, cwd=PROJECT_ROOT)
 
-    if result.returncode != 0:
-        return result.returncode
+    passed_tests = []
+    failed_tests = []
+    if results_file.exists():
+        passed_tests, failed_tests = _print_testbench_summary(target_name, results_file)
+
+    if result_rc != 0:
+        print_error(colorize(f"[TESTBENCH FAIL] {target_name}", ANSI_RED))
+        return result_rc
     if not results_file.exists():
         print_error("cocotb did not produce results.xml; simulator likely failed to load VPI module.")
         return 1
 
+    if failed_tests:
+        print_error(colorize(f"[TESTBENCH FAIL] {target_name}", ANSI_RED))
+        return 1
+
+    if wave_file.exists():
+        print_success(f"[WAVEFORM] {wave_file}")
+    else:
+        print_warning(f"[WAVEFORM] missing expected file: {wave_file}")
+
+    print_success(colorize(f"[TESTBENCH PASS] {target_name}", ANSI_GREEN))
     return 0
 
 
@@ -1076,40 +1220,44 @@ def parse_args(raw_args):
     return positional, options
 
 def main():
-    args = sys.argv[1:]
-    
-    if "--help" in args or "-h" in args or "help" in args:
+    try:
+        args = sys.argv[1:]
+
+        if "--help" in args or "-h" in args or "help" in args:
+            print_usage()
+            return 0
+
+        args, options = parse_args(args)
+        if args is None:
+            return 1
+
+        command = args[0].lower() if args else "setup"
+        target = args[1] if len(args) > 1 else None
+
+        if command == "setup":
+            return run_setup(skip_fpga=options["skip_fpga"])
+        if command == "doctor":
+            return doctor()
+        if command in ["test", "verify", "sim"]:
+            return run_tests(target or "all")
+        if command in ["synth", "synthesis", "build"]:
+            return run_synthesis()
+        if command in ["flash", "program", "prog"]:
+            return flash_fpga(
+                port=options["port"],
+                serial=options["serial"],
+                vid=options["vid"],
+                pid=options["pid"],
+            )
+        if command == "clean":
+            return clean()
+
+        print(f"Unknown command: {command}")
         print_usage()
-        return 0
-    
-    args, options = parse_args(args)
-    if args is None:
         return 1
-
-    command = args[0].lower() if args else "setup"
-    target = args[1] if len(args) > 1 else None
-
-    if command == "setup":
-        return run_setup(skip_fpga=options["skip_fpga"])
-    if command == "doctor":
-        return doctor()
-    if command in ["test", "verify", "sim"]:
-        return run_tests(target or "all")
-    if command in ["synth", "synthesis", "build"]:
-        return run_synthesis()
-    if command in ["flash", "program", "prog"]:
-        return flash_fpga(
-            port=options["port"],
-            serial=options["serial"],
-            vid=options["vid"],
-            pid=options["pid"],
-        )
-    if command == "clean":
-        return clean()
-
-    print(f"Unknown command: {command}")
-    print_usage()
-    return 1
+    except KeyboardInterrupt:
+        print_warning("Interrupted by user (Ctrl+C).")
+        return 130
 
 if __name__ == "__main__":
     sys.exit(main())

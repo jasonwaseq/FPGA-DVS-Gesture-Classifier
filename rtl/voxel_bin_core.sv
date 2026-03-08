@@ -262,10 +262,10 @@ module voxel_bin_core #(
     logic [WEIGHT_BITS-1:0] weight_mem_c3 [0:FEATURE_COUNT-1];
 
     initial begin
-        $readmemh("../256weights_q8_c0.mem", weight_mem_c0);
-        $readmemh("../256weights_q8_c1.mem", weight_mem_c1);
-        $readmemh("../256weights_q8_c2.mem", weight_mem_c2);
-        $readmemh("../256weights_q8_c3.mem", weight_mem_c3);
+        $readmemh("../weights/256weights_q8_c0.mem", weight_mem_c0);
+        $readmemh("../weights/256weights_q8_c1.mem", weight_mem_c1);
+        $readmemh("../weights/256weights_q8_c2.mem", weight_mem_c2);
+        $readmemh("../weights/256weights_q8_c3.mem", weight_mem_c3);
     end
 
     always_ff @(posedge clk) begin
@@ -289,7 +289,7 @@ module voxel_bin_core #(
             ram_1r1w_sync #(
                 .width_p        (WEIGHT_BITS),
                 .depth_p        (FEATURE_COUNT),
-                .filename_p     ("gesture_weights_down_left_right_up_8x8_4bins.txt"),
+                .filename_p     ("weights/gesture_weights_down_left_right_up_8x8_4bins.txt"),
                 .init_offset_p  (g * WEIGHT_FILE_CLASS_STRIDE),
                 .init_count_p   (FEATURE_COUNT),
                 .init_is_float_p(1'b1),

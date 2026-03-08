@@ -3,6 +3,7 @@
 import random
 
 import cocotb
+from util.test_logging import logged_test
 from cocotb.clock import Clock
 from cocotb.triggers import ClockCycles, NextTimeStep, ReadOnly, RisingEdge
 
@@ -108,14 +109,14 @@ async def setup(dut):
     await ClockCycles(dut.clk, 2)
 
 
-@cocotb.test()
+@logged_test()
 async def test_reset_defaults(dut):
     await setup(dut)
     assert int(dut.tx.value) == 1
     assert int(dut.busy.value) == 0
 
 
-@cocotb.test()
+@logged_test()
 async def test_single_byte_transmit(dut):
     await setup(dut)
 
@@ -129,7 +130,7 @@ async def test_single_byte_transmit(dut):
     assert got == 0xA5, f"Expected 0xA5, got {got}"
 
 
-@cocotb.test()
+@logged_test()
 async def test_ignore_valid_while_busy(dut):
     await setup(dut)
 
@@ -160,7 +161,7 @@ async def test_ignore_valid_while_busy(dut):
     assert got == 0x33, f"Expected 0x33 after busy clear, got {got}"
 
 
-@cocotb.test()
+@logged_test()
 async def test_randomized_cycle_scoreboard(dut):
     await setup(dut)
     model = UartTxModel(CLKS_PER_BIT)

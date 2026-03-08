@@ -3,6 +3,7 @@
 import random
 
 import cocotb
+from util.test_logging import logged_test
 from cocotb.clock import Clock
 from cocotb.triggers import ClockCycles, NextTimeStep, ReadOnly, RisingEdge
 
@@ -139,14 +140,14 @@ async def drive_and_check(dut, model, reset_i, valid_i, data_i, ready_i, tag):
     await NextTimeStep()
 
 
-@cocotb.test()
+@logged_test()
 async def test_reset_and_empty_flags(dut):
     await setup(dut)
     assert int(dut.valid_o.value) == 0
     assert int(dut.ready_o.value) == 1
 
 
-@cocotb.test()
+@logged_test()
 async def test_basic_ordering(dut):
     await setup(dut)
     model = InputFifoModel()
@@ -174,7 +175,7 @@ async def test_basic_ordering(dut):
     assert observed[:4] == payload, f"FIFO ordering mismatch: {observed[:4]} vs {payload}"
 
 
-@cocotb.test()
+@logged_test()
 async def test_full_and_overflow_drop(dut):
     await setup(dut)
     model = InputFifoModel()
@@ -207,7 +208,7 @@ async def test_full_and_overflow_drop(dut):
     assert drained == list(range(DEPTH)), "Overflow attempts corrupted FIFO content"
 
 
-@cocotb.test()
+@logged_test()
 async def test_randomized_cycle_scoreboard(dut):
     await setup(dut)
     model = InputFifoModel()
@@ -225,7 +226,7 @@ async def test_randomized_cycle_scoreboard(dut):
         await drive_and_check(dut, model, 0, valid_i, data_i, ready_i, f"rnd-{cycle}")
 
 
-@cocotb.test()
+@logged_test()
 async def test_simultaneous_read_write_stress(dut):
     await setup(dut)
     model = InputFifoModel()
@@ -243,7 +244,7 @@ async def test_simultaneous_read_write_stress(dut):
         await drive_and_check(dut, model, 0, 1, 0x2000 + cycle, 1, f"rw-{cycle}")
 
 
-@cocotb.test()
+@logged_test()
 async def test_single_element_round_trip(dut):
     """Write one item, then read it back; FIFO must go empty→non-empty→empty."""
     await setup(dut)
@@ -273,7 +274,7 @@ async def test_single_element_round_trip(dut):
     assert int(dut.valid_o.value) == 0, "FIFO should be empty after reading the only item"
 
 
-@cocotb.test()
+@logged_test()
 async def test_fill_drain_cycle(dut):
     """Fill FIFO to capacity, drain it completely, fill again; verify both drains match."""
     await setup(dut)
@@ -315,7 +316,7 @@ async def test_fill_drain_cycle(dut):
     assert int(dut.valid_o.value) == 0, "FIFO not empty after second full drain"
 
 
-@cocotb.test()
+@logged_test()
 async def test_mid_reset_clears_pending_data(dut):
     """Write several items, assert reset mid-stream, verify FIFO is empty after reset."""
     await setup(dut)
@@ -345,7 +346,7 @@ async def test_mid_reset_clears_pending_data(dut):
     await drive_and_check(dut, model, 0, 0, 0, 1, "post-rst-rd")
 
 
-@cocotb.test()
+@logged_test()
 async def test_rd_pending_then_push(dut):
     """Push a new item while a RAM read is pending (rd_pending=1); both items preserved in order."""
     await setup(dut)

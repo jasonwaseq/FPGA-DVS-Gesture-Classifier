@@ -3,6 +3,7 @@
 import random
 
 import cocotb
+from util.test_logging import logged_test
 from cocotb.clock import Clock
 from cocotb.triggers import ClockCycles, NextTimeStep, ReadOnly, RisingEdge
 
@@ -115,7 +116,7 @@ async def drive_and_check(dut, model, rst, data_in, data_valid, event_ready_i, t
     await NextTimeStep()
 
 
-@cocotb.test()
+@logged_test()
 async def test_reset_defaults(dut):
     await setup(dut)
     assert int(dut.event_valid.value) == 0
@@ -123,7 +124,7 @@ async def test_reset_defaults(dut):
     assert int(dut.y_out.value) == 0
 
 
-@cocotb.test()
+@logged_test()
 async def test_cd_requires_time_high(dut):
     await setup(dut)
     model = Evt2DecoderModel()
@@ -143,7 +144,7 @@ async def test_cd_requires_time_high(dut):
     assert int(dut.event_valid.value) == 1
 
 
-@cocotb.test()
+@logged_test()
 async def test_backpressure_on_cd_only(dut):
     await setup(dut)
     model = Evt2DecoderModel()
@@ -166,7 +167,7 @@ async def test_backpressure_on_cd_only(dut):
     assert int(dut.event_valid.value) == 1
 
 
-@cocotb.test()
+@logged_test()
 async def test_coordinate_clamp_and_timestamp(dut):
     await setup(dut)
     model = Evt2DecoderModel()
@@ -186,7 +187,7 @@ async def test_coordinate_clamp_and_timestamp(dut):
     assert int(dut.timestamp.value) == exp_ts
 
 
-@cocotb.test()
+@logged_test()
 async def test_randomized_golden_scoreboard(dut):
     await setup(dut)
     model = Evt2DecoderModel()
@@ -212,7 +213,7 @@ async def test_randomized_golden_scoreboard(dut):
         await drive_and_check(dut, model, 0, word, dv, ready, f"rnd-{cycle}")
 
 
-@cocotb.test()
+@logged_test()
 async def test_polarity_off_vs_on(dut):
     """CD_OFF → polarity=0; CD_ON → polarity=1."""
     await setup(dut)
@@ -236,7 +237,7 @@ async def test_polarity_off_vs_on(dut):
     assert int(dut.polarity.value) == 1, "CD_ON should set polarity=1"
 
 
-@cocotb.test()
+@logged_test()
 async def test_grid_coordinate_lower_boundaries(dut):
     """Sensor coordinate at exact lower boundary of each grid cell maps to correct cell."""
     await setup(dut)
@@ -259,7 +260,7 @@ async def test_grid_coordinate_lower_boundaries(dut):
             f"x_sensor={x_sensor} should map to grid {g}, got {int(dut.x_out.value)}"
 
 
-@cocotb.test()
+@logged_test()
 async def test_unknown_packet_types_no_event(dut):
     """Packet types other than 0x0, 0x1, 0x8 must not emit event_valid."""
     await setup(dut)
@@ -279,7 +280,7 @@ async def test_unknown_packet_types_no_event(dut):
             f"Packet type 0x{pkt_type:X} should not emit event_valid"
 
 
-@cocotb.test()
+@logged_test()
 async def test_consecutive_cd_events_all_valid(dut):
     """Back-to-back CD events (no stall) all produce event_valid on successive cycles."""
     await setup(dut)
@@ -302,7 +303,7 @@ async def test_consecutive_cd_events_all_valid(dut):
         assert int(dut.y_out.value) == gy, f"y_out mismatch at event {i}"
 
 
-@cocotb.test()
+@logged_test()
 async def test_time_high_updates_timestamp_correctly(dut):
     """Multiple TIME_HIGH words update the timestamp base; CD event picks up the latest."""
     await setup(dut)
@@ -327,7 +328,7 @@ async def test_time_high_updates_timestamp_correctly(dut):
         f"Timestamp mismatch: DUT=0x{int(dut.timestamp.value):X} expected=0x{exp_ts:X}"
 
 
-@cocotb.test()
+@logged_test()
 async def test_reset_clears_time_high_requirement(dut):
     """After reset, REQUIRE_TIME_HIGH blocks events again until a new TIME_HIGH arrives."""
     await setup(dut)
@@ -362,7 +363,7 @@ async def test_reset_clears_time_high_requirement(dut):
     assert int(dut.event_valid.value) == 1
 
 
-@cocotb.test()
+@logged_test()
 async def test_grid_coordinate_upper_boundaries(dut):
     """Sensor coordinate at the upper boundary of each grid cell maps to that cell, not the next."""
     await setup(dut)

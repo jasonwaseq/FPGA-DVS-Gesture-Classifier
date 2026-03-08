@@ -13,10 +13,11 @@ synth/**/*.v
 *.sv2v.v
 
 # ── Python ───────────────────────────────────────────────────────────────────
-*.venv-win
-*.venv-wsl
-*.venv-mac
-*.venv-linux
+.venv-win/
+.venv-wsl/
+.venv-mac/
+.venv-linux/
+.venv/
 __pycache__/
 *.pyc
 *.pyo
@@ -33,8 +34,12 @@ oss-cad-suite/
 # ── Cocotb / Icarus simulation ───────────────────────────────────────────────
 **/sim_build/
 **/sim_build_gesture/
+tb/sim_build_*/
+tb/run/
+tb/build/
 **/results.xml
 *.vvp
+*.fst
 dump.vcd
 *.vcd
 
@@ -60,6 +65,3 @@ desktop.ini
 # ── Generated activation scripts (created by setup.py) ───────────────────────
 activate.ps1
 activate.sh
-
-*.txt
-*.bin

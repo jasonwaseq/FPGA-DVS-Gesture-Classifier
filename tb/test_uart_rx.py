@@ -3,6 +3,7 @@
 import random
 
 import cocotb
+from util.test_logging import logged_test
 from cocotb.clock import Clock
 from cocotb.triggers import ClockCycles, NextTimeStep, ReadOnly, RisingEdge
 
@@ -116,14 +117,14 @@ async def setup(dut):
     await ClockCycles(dut.clk, 2)
 
 
-@cocotb.test()
+@logged_test()
 async def test_reset_defaults(dut):
     await setup(dut)
     assert int(dut.data.value) == 0
     assert int(dut.valid.value) == 0
 
 
-@cocotb.test()
+@logged_test()
 async def test_single_byte(dut):
     await setup(dut)
     wait_task = cocotb.start_soon(expect_valid_byte(dut, 0xA5, CLKS_PER_BIT * 14))
@@ -131,7 +132,7 @@ async def test_single_byte(dut):
     await wait_task
 
 
-@cocotb.test()
+@logged_test()
 async def test_framing_error_rejected(dut):
     await setup(dut)
 
@@ -150,7 +151,7 @@ async def test_framing_error_rejected(dut):
         assert int(dut.valid.value) == 0, "Framing-error byte should be dropped"
 
 
-@cocotb.test()
+@logged_test()
 async def test_all_byte_values(dut):
     await setup(dut)
     for val in range(256):
@@ -159,7 +160,7 @@ async def test_all_byte_values(dut):
         await wait_task
 
 
-@cocotb.test()
+@logged_test()
 async def test_randomized_golden_waveform(dut):
     await setup(dut)
     model = UartRxModel(CLKS_PER_BIT)

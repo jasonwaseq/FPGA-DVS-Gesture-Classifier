@@ -3,6 +3,7 @@
 import random
 
 import cocotb
+from util.test_logging import logged_test
 from cocotb.clock import Clock
 from cocotb.triggers import ClockCycles, NextTimeStep, ReadOnly, RisingEdge
 
@@ -161,7 +162,7 @@ async def drive_and_check(dut, model, scores, valid, tag):
     await NextTimeStep()
 
 
-@cocotb.test()
+@logged_test()
 async def test_reset_defaults(dut):
     await setup(dut)
     assert int(dut.class_valid.value) == 0
@@ -170,7 +171,7 @@ async def test_reset_defaults(dut):
     assert int(dut.debug_state.value) == 0
 
 
-@cocotb.test()
+@logged_test()
 async def test_tie_break_and_threshold(dut):
     await setup(dut)
     model = GestureClassifierModel()
@@ -188,7 +189,7 @@ async def test_tie_break_and_threshold(dut):
     assert int(dut.class_pass.value) == 1
 
 
-@cocotb.test()
+@logged_test()
 async def test_persistence_and_class_change(dut):
     await setup(dut)
     model = GestureClassifierModel()
@@ -206,7 +207,7 @@ async def test_persistence_and_class_change(dut):
     assert int(dut.gesture_valid.value) == 1
 
 
-@cocotb.test()
+@logged_test()
 async def test_confidence_edges(dut):
     await setup(dut)
     model = GestureClassifierModel()
@@ -226,7 +227,7 @@ async def test_confidence_edges(dut):
     assert int(dut.gesture_confidence.value) == prev
 
 
-@cocotb.test()
+@logged_test()
 async def test_randomized_golden_scoreboard(dut):
     await setup(dut)
     model = GestureClassifierModel()
@@ -238,7 +239,7 @@ async def test_randomized_golden_scoreboard(dut):
         await drive_and_check(dut, model, scores, valid, f"rnd-{cycle}")
 
 
-@cocotb.test()
+@logged_test()
 async def test_all_negative_scores(dut):
     """All-negative scores: argmax finds the least-negative class correctly."""
     await setup(dut)
@@ -253,7 +254,7 @@ async def test_all_negative_scores(dut):
         f"Expected class 2 (least negative), got {int(dut.class_gesture.value)}"
 
 
-@cocotb.test()
+@logged_test()
 async def test_rapid_class_switch_never_fires_gesture(dut):
     """Alternating classes each cycle must never accumulate a streak."""
     await setup(dut)
@@ -267,7 +268,7 @@ async def test_rapid_class_switch_never_fires_gesture(dut):
             f"gesture_valid unexpectedly asserted at cycle {cycle}"
 
 
-@cocotb.test()
+@logged_test()
 async def test_invalid_cycles_do_not_break_streak(dut):
     """scores_valid=0 cycles between two passing windows must not reset the streak."""
     await setup(dut)
@@ -288,7 +289,7 @@ async def test_invalid_cycles_do_not_break_streak(dut):
     assert int(dut.gesture.value) == 3, "Expected gesture class 3"
 
 
-@cocotb.test()
+@logged_test()
 async def test_large_score_no_overflow(dut):
     """Near-maximum score values must not overflow the confidence computation."""
     await setup(dut)
@@ -305,7 +306,7 @@ async def test_large_score_no_overflow(dut):
         f"Confidence should saturate at {CONF_MAX}, got {int(dut.gesture_confidence.value)}"
 
 
-@cocotb.test()
+@logged_test()
 async def test_fail_then_pass_resets_streak(dut):
     """A non-passing window resets the streak; subsequent passes start fresh."""
     await setup(dut)
@@ -327,7 +328,7 @@ async def test_fail_then_pass_resets_streak(dut):
     assert int(dut.gesture_valid.value) == 1
 
 
-@cocotb.test()
+@logged_test()
 async def test_each_class_can_win(dut):
     """Exercise each of the four classes as the winner; golden model tracks all."""
     await setup(dut)
@@ -345,7 +346,7 @@ async def test_each_class_can_win(dut):
         assert int(dut.gesture_valid.value) == 1
 
 
-@cocotb.test()
+@logged_test()
 async def test_debug_state_transitions(dut):
     """Explicit check of all three debug_state values: 0=fail, 1=accumulating, 2=gesture valid."""
     await setup(dut)
