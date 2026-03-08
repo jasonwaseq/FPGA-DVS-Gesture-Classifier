@@ -234,11 +234,17 @@ def main():
             "Max EVT2 words/sec forwarded to FPGA (default: auto = fpga_baud/10/4*0.90). "
             "Excess CD events are dropped uniformly, preserving spatial pattern and "
             "real-time gesture timing. Set to 0 to disable. "
-            "TIME_HIGH words are never forwarded (FPGA ignores them)."
+            "The first TIME_HIGH in each stream pass is forwarded to prime the decoder."
         ),
     )
     parser.add_argument("--no-echo-check", action="store_true", default=False,
                         help="Skip the 0xFF echo check on the FPGA port (use if FPGA is already running)")
+    parser.add_argument("--pre-sync", action="store_true", default=False,
+                        help=(
+                            "Send soft reset (0xFC) and wait 1s before replay to synchronize FPGA bin timer. "
+                            "Required for correct LEFT/RIGHT classification: their weights peak in bins 0+1, "
+                            "so gesture data must land in the right phase of the 1-second window."
+                        ))
     parser.add_argument("--debug", action="store_true",
                         help="Print gesture detections and extra diagnostics")
     parser.add_argument(
@@ -279,7 +285,8 @@ def main():
               f"  flip_x={'YES' if args.flip_x else 'no'}"
               f"  flip_y={'YES' if args.flip_y else 'no'}"
               f"  loop={'YES' if args.loop else 'no'}"
-              f"  replay_rate={args.replay_rate}")
+              f"  replay_rate={args.replay_rate}"
+              f"  pre_sync={'YES' if args.pre_sync else 'no'}")
         try:
             file_bytes = open(args.file, "rb").read()
         except OSError as e:
@@ -311,6 +318,7 @@ def main():
         return 1
 
     # ------------------------------------------------------------------ FPGA echo check
+    time.sleep(0.15)  # let FT2232H / FPGA UART settle after port open
     parser_rx = FPGAResponseParser()
     if not args.no_echo_check:
         if not verify_fpga_connection(fpga):
@@ -321,18 +329,27 @@ def main():
     if save_f:
         print(f"[SAVE] Capturing live DVS stream -> {args.save_raw}")
 
+    # ------------------------------------------------------------------ pre-sync (bin timer alignment)
+    if args.pre_sync:
+        fpga.write(b"\xFC")  # soft reset → FPGA bin timer resets to bin 0
+        print("[SYNC] Soft reset sent, waiting 1s for stale bins 1-3 to flush...")
+        time.sleep(1.0)
+        fpga.reset_input_buffer()  # discard any spurious bytes from warmup period
+        print("[SYNC] Done — FPGA bin timer aligned, sending gesture data now.")
+
     # ------------------------------------------------------------------ rate limiter setup
     # Auto-compute from baud rate if not specified: leave 10% headroom for UART framing overhead.
-    # TIME_HIGH words are never sent to the FPGA, so the budget applies only to CD/other words.
+    # One TIME_HIGH is forwarded per stream pass to prime decoder state; the rate budget
+    # is intended for CD/other traffic.
     if args.rate_limit < 0:
         word_rate_limit = (args.fpga_baud / 10 / 4) * 0.90   # e.g. 2592 words/sec at 115200
     else:
         word_rate_limit = args.rate_limit   # 0 = disabled
     if word_rate_limit > 0:
         print(f"[RATE] Limiting to {word_rate_limit:.0f} words/sec "
-              f"({'auto' if args.rate_limit < 0 else 'manual'}); TIME_HIGH not forwarded.")
+              f"({'auto' if args.rate_limit < 0 else 'manual'}); first TIME_HIGH forwarded per pass.")
     else:
-        print("[RATE] Rate limiting disabled; TIME_HIGH not forwarded.")
+        print("[RATE] Rate limiting disabled; first TIME_HIGH forwarded per pass.")
 
     # ------------------------------------------------------------------ byte-alignment probe
     if file_bytes is not None:
@@ -360,9 +377,11 @@ def main():
     cd_words = 0
     time_high_words = 0
     sent_words = 0
+    sent_words_rate_epoch = 0
     dropped_words = 0
     write_errors = 0
     evt_type_counts = Counter()
+    decoder_primed = False
 
     # Real-time pacing for file replay.
     # TIME_HIGH words carry bits [33:6] of the µs timestamp (1 increment = 64 µs).
@@ -371,6 +390,7 @@ def main():
     replay_wall_start = None
     replay_sensor_start_us = None   # set on first TIME_HIGH seen
     last_sensor_us = None           # most recent TIME_HIGH value seen in current pass
+    rate_epoch_start = time.time()
 
     start = time.time()
     last_report = start
@@ -390,6 +410,9 @@ def main():
                         replay_sensor_start_us = None
                         replay_wall_start = None
                         last_sensor_us = None
+                        sent_words_rate_epoch = 0
+                        rate_epoch_start = time.time()
+                        decoder_primed = False
                         print("[FILE] Looping playback.")
                         continue
                     else:
@@ -438,8 +461,18 @@ def main():
                             if replay_sensor_start_us is None:
                                 replay_sensor_start_us = sensor_us_val
                                 replay_wall_start = time.time()  # sync wall clock to first event
+                                rate_epoch_start = replay_wall_start
+                                sent_words_rate_epoch = 0
                             last_sensor_us = sensor_us_val
-                        # TIME_HIGH not forwarded — FPGA does not use event timestamps
+                        # Forward one TIME_HIGH per pass so decoder accepts CD events.
+                        if not decoder_primed:
+                            tx_batch.extend(word.to_bytes(4, "big"))
+                            decoder_primed = True
+                        continue
+
+                    # Decoder requires at least one TIME_HIGH after reset.
+                    if not decoder_primed:
+                        dropped_words += 1
                         continue
 
                     # Rate limiter: drop excess events when UART would be saturated.
@@ -447,8 +480,8 @@ def main():
                     # For file replay, align to replay_wall_start (synced to first TIME_HIGH)
                     # so the budget clock matches the pacing clock.
                     if word_rate_limit > 0:
-                        words_in_flight = sent_words + len(tx_batch) // 4
-                        rate_clock = replay_wall_start if replay_wall_start is not None else start
+                        words_in_flight = sent_words_rate_epoch + len(tx_batch) // 4
+                        rate_clock = replay_wall_start if replay_wall_start is not None else rate_epoch_start
                         budget = (time.time() - rate_clock) * word_rate_limit
                         if words_in_flight >= budget:
                             dropped_words += 1
@@ -472,7 +505,9 @@ def main():
                             except Exception:
                                 pass
                             break
-                    sent_words += sent_now // 4
+                    sent_now_words = sent_now // 4
+                    sent_words += sent_now_words
+                    sent_words_rate_epoch += sent_now_words
 
                 del buf[:full_len]
 
