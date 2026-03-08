@@ -22,25 +22,25 @@ module systolic_array #(
     output logic done
 );
 
-    logic signed [DATA_BIT_SIZE-1:0] A_matrix [0:N-1][0:N-1];
-    logic signed [DATA_BIT_SIZE-1:0] B_matrix [0:N-1][0:N-1];
+    logic [DATA_BIT_SIZE-1:0] A_matrix [0:N-1][0:N-1];
+    logic [DATA_BIT_SIZE-1:0] B_matrix [0:N-1][0:N-1];
 
     // Internal pipes for A and B
-    logic signed [DATA_BIT_SIZE-1:0] a_pipe [0:N-1][0:N-1];
-    logic signed [DATA_BIT_SIZE-1:0] b_pipe [0:N-1][0:N-1];
+    logic [DATA_BIT_SIZE-1:0] a_pipe [0:N-1][0:N-1];
+    logic [DATA_BIT_SIZE-1:0] b_pipe [0:N-1][0:N-1];
 
     // Accumulators
-    logic signed [ACC_BIT_SIZE-1:0] acc [0:N-1][0:N-1];
+    logic [ACC_BIT_SIZE-1:0] acc [0:N-1][0:N-1];
 
     // Current diagonal inputs for this cycle
-    logic signed [DATA_BIT_SIZE-1:0] a_in [0:N-1];
-    logic signed [DATA_BIT_SIZE-1:0] b_in [0:N-1];
+    logic [DATA_BIT_SIZE-1:0] a_in [0:N-1];
+    logic [DATA_BIT_SIZE-1:0] b_in [0:N-1];
 
     // PE combinatorial inputs
-    logic signed [DATA_BIT_SIZE-1:0]    pe_a    [0:N-1][0:N-1];
-    logic signed [DATA_BIT_SIZE-1:0]    pe_b    [0:N-1][0:N-1];
-    logic signed [PRODUCT_BIT_SIZE-1:0] pe_prod [0:N-1][0:N-1];
-    logic signed [PRODUCT_BIT_SIZE-1:0] pe_prod_r [0:N-1][0:N-1];
+    logic [DATA_BIT_SIZE-1:0]    pe_a    [0:N-1][0:N-1];
+    logic [DATA_BIT_SIZE-1:0]    pe_b    [0:N-1][0:N-1];
+    logic [PRODUCT_BIT_SIZE-1:0] pe_prod [0:N-1][0:N-1];
+    logic [PRODUCT_BIT_SIZE-1:0] pe_prod_r [0:N-1][0:N-1];
 
     // Sequencing
     logic [T_BITS-1:0] t;
@@ -135,7 +135,7 @@ module systolic_array #(
                         b_pipe[r][c] <= pe_b[r][c];
                         pe_prod_r[r][c] <= pe_prod[r][c];
                         acc[r][c] <= acc[r][c] +
-                            {{(ACC_BIT_SIZE - PRODUCT_BIT_SIZE){pe_prod_r[r][c][PRODUCT_BIT_SIZE-1]}}, pe_prod_r[r][c]};
+                            {{(ACC_BIT_SIZE - PRODUCT_BIT_SIZE){1'b0}}, pe_prod_r[r][c]};
                     end
                 end
 

@@ -1,4 +1,4 @@
-"""Robust cocotb testbench for systolic_array with signed matmul golden model."""
+"""Robust cocotb testbench for systolic_array with unsigned matmul golden model."""
 
 import math
 import random
@@ -10,7 +10,7 @@ from cocotb.triggers import ClockCycles, NextTimeStep, ReadOnly, RisingEdge
 
 N = 4
 DATA_BITS = 16
-ACC_BITS = (2 * DATA_BITS) + 2 + 1
+ACC_BITS = (2 * DATA_BITS) + (N - 1).bit_length() + 1
 TOTAL_CYCLES = (3 * N) - 1
 DATA_MASK = (1 << DATA_BITS) - 1
 ACC_MASK = (1 << ACC_BITS) - 1
@@ -31,14 +31,7 @@ def configure_from_dut(dut):
     ACC_MASK = (1 << ACC_BITS) - 1
 
 
-def to_signed(v, bits):
-    v &= (1 << bits) - 1
-    if v & (1 << (bits - 1)):
-        return v - (1 << bits)
-    return v
-
-
-def from_signed(v, bits):
+def to_unsigned(v, bits):
     return v & ((1 << bits) - 1)
 
 
@@ -47,7 +40,7 @@ def pack_matrix(mat, bits):
     idx = 0
     for i in range(N):
         for j in range(N):
-            packed |= from_signed(mat[i][j], bits) << (idx * bits)
+            packed |= to_unsigned(mat[i][j], bits) << (idx * bits)
             idx += 1
     return packed
 
@@ -58,7 +51,7 @@ def unpack_matrix(packed, bits):
     for i in range(N):
         for j in range(N):
             raw = (packed >> (idx * bits)) & ((1 << bits) - 1)
-            mat[i][j] = to_signed(raw, bits)
+            mat[i][j] = raw
             idx += 1
     return mat
 
@@ -70,7 +63,7 @@ def golden_matmul(a, b):
             acc = 0
             for k in range(N):
                 acc += int(a[i][k]) * int(b[k][j])
-            out[i][j] = to_signed(acc, ACC_BITS)
+            out[i][j] = acc & ACC_MASK
     return out
 
 
@@ -144,7 +137,7 @@ async def test_identity_times_random(dut):
     rng = random.Random(0x1D31F17)
 
     a = [[1 if i == j else 0 for j in range(N)] for i in range(N)]
-    b = [[rng.randint(-200, 200) for _ in range(N)] for _ in range(N)]
+    b = [[rng.randint(0, 200) for _ in range(N)] for _ in range(N)]
 
     await run_mul(dut, a, b, "identity")
 
@@ -189,8 +182,8 @@ async def test_randomized_golden(dut):
     rng = random.Random(0x5A57A11C)
 
     for trial in range(10):
-        a = [[rng.randint(-300, 300) for _ in range(N)] for _ in range(N)]
-        b = [[rng.randint(-300, 300) for _ in range(N)] for _ in range(N)]
+        a = [[rng.randint(0, 300) for _ in range(N)] for _ in range(N)]
+        b = [[rng.randint(0, 300) for _ in range(N)] for _ in range(N)]
         await run_mul(dut, a, b, f"rnd-{trial}")
         await ClockCycles(dut.clk, 2)
 
@@ -203,8 +196,8 @@ async def test_back_to_back_runs(dut):
 
     for trial in range(5):
         await NextTimeStep()
-        a = [[rng.randint(-100, 100) for _ in range(N)] for _ in range(N)]
-        b = [[rng.randint(-100, 100) for _ in range(N)] for _ in range(N)]
+        a = [[rng.randint(0, 100) for _ in range(N)] for _ in range(N)]
+        b = [[rng.randint(0, 100) for _ in range(N)] for _ in range(N)]
 
         dut.A_matrix_flat.value = pack_matrix(a, DATA_BITS)
         dut.B_matrix_flat.value = pack_matrix(b, DATA_BITS)
@@ -266,22 +259,21 @@ async def test_single_nonzero_element(dut):
 
 
 @logged_test()
-async def test_all_negative_values(dut):
-    """neg × neg = positive accumulation; every output element must be >= 0."""
+async def test_all_max_values(dut):
+    """Max unsigned values on both inputs should match golden accumulation."""
     await setup(dut)
-    rng = random.Random(0xABCDEF01)
-
-    a = [[-rng.randint(1, 50) for _ in range(N)] for _ in range(N)]
-    b = [[-rng.randint(1, 50) for _ in range(N)] for _ in range(N)]
-    await run_mul(dut, a, b, "neg*neg")
+    max_val = (1 << DATA_BITS) - 1
+    a = [[max_val for _ in range(N)] for _ in range(N)]
+    b = [[max_val for _ in range(N)] for _ in range(N)]
+    await run_mul(dut, a, b, "max*max")
 
     got = unpack_matrix(int(dut.Out_matrix_flat.value), ACC_BITS)
     exp = golden_matmul(a, b)
-    assert got == exp, "neg*neg matrix mismatch"
+    assert got == exp, "max*max matrix mismatch"
     for i in range(N):
         for j in range(N):
-            assert got[i][j] >= 0, \
-                f"Expected non-negative at [{i}][{j}], got {got[i][j]}"
+            assert got[i][j] > 0, \
+                f"Expected positive at [{i}][{j}], got {got[i][j]}"
 
 
 @logged_test()
@@ -307,15 +299,15 @@ async def test_accumulator_does_not_persist_across_runs(dut):
 
 
 @logged_test()
-async def test_mixed_sign_stress(dut):
-    """High-range mixed-sign values; golden comparison over 15 trials."""
+async def test_high_range_stress(dut):
+    """High-range unsigned values; golden comparison over 15 trials."""
     await setup(dut)
     rng = random.Random(0xFACEFEED)
 
     for trial in range(15):
-        a = [[rng.randint(-500, 500) for _ in range(N)] for _ in range(N)]
-        b = [[rng.randint(-500, 500) for _ in range(N)] for _ in range(N)]
-        await run_mul(dut, a, b, f"mix-{trial}")
+        a = [[rng.randint(0, 500) for _ in range(N)] for _ in range(N)]
+        b = [[rng.randint(0, 500) for _ in range(N)] for _ in range(N)]
+        await run_mul(dut, a, b, f"hi-{trial}")
 
 
 @logged_test()

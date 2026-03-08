@@ -100,7 +100,7 @@ module voxel_bin_core #(
 
     logic [LOAD_BITS-1:0] load_cycle;
     logic [TILE_BITS-1:0] tile_idx;
-    logic signed [SA_DATA_BITS-1:0] a_row [0:N-1];
+    logic [SA_DATA_BITS-1:0] a_row [0:N-1];
     logic [WEIGHT_BITS-1:0]  weight_tile [0:N-1][0:NUM_CLASSES-1];
 
     logic [N*N*SA_DATA_BITS-1:0] sa_a_flat;
@@ -110,7 +110,7 @@ module voxel_bin_core #(
     logic                        sa_busy;
     logic                        sa_done;
 
-    logic signed [SCORE_BITS-1:0] score_acc [0:NUM_CLASSES-1];
+    logic [SCORE_BITS-1:0] score_acc [0:NUM_CLASSES-1];
     int cap_idx;
     logic [NUM_CLASSES*SCORE_BITS-1:0] scores_flat;
     logic scores_valid;
@@ -405,7 +405,7 @@ module voxel_bin_core #(
 
                 SC_ACCUM: begin
                     for (int c = 0; c < NUM_CLASSES; c = c + 1) begin
-                        score_acc[c] <= score_acc[c] + $signed(sa_out_flat[(0*N + c)*SA_ACC_BITS +: SA_ACC_BITS]);
+                        score_acc[c] <= score_acc[c] + sa_out_flat[(0*N + c)*SA_ACC_BITS +: SA_ACC_BITS];
                     end
 
                     if (tile_idx == TILES - 1) begin
