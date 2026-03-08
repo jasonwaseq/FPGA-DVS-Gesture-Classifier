@@ -315,3 +315,34 @@ async def test_mixed_sign_stress(dut):
         a = [[rng.randint(-500, 500) for _ in range(N)] for _ in range(N)]
         b = [[rng.randint(-500, 500) for _ in range(N)] for _ in range(N)]
         await run_mul(dut, a, b, f"mix-{trial}")
+
+
+@cocotb.test()
+async def test_done_fires_at_exact_cycle(dut):
+    """done must assert at exactly cycle TOTAL_CYCLES-1 (0-indexed) after the start edge."""
+    await setup(dut)
+    configure_from_dut(dut)
+
+    # Use identity matrices so the result is predictable.
+    a = [[1 if i == j else 0 for j in range(N)] for i in range(N)]
+    b = [[1 if i == j else 0 for j in range(N)] for i in range(N)]
+    dut.A_matrix_flat.value = pack_matrix(a, DATA_BITS)
+    dut.B_matrix_flat.value = pack_matrix(b, DATA_BITS)
+
+    dut.start.value = 1
+    await RisingEdge(dut.clk)  # start sampled on this edge
+    dut.start.value = 0
+
+    done_cycle = None
+    for cyc in range(TOTAL_CYCLES + 10):
+        await RisingEdge(dut.clk)
+        await ReadOnly()
+        if int(dut.done.value):
+            done_cycle = cyc
+            break
+
+    assert done_cycle is not None, "done never fired within timeout"
+    assert done_cycle == TOTAL_CYCLES - 1, (
+        f"done fired at cycle {done_cycle} (0-indexed after start), "
+        f"expected TOTAL_CYCLES-1={TOTAL_CYCLES - 1}"
+    )

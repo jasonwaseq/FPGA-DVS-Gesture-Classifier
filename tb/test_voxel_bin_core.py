@@ -16,6 +16,8 @@ PASS_MARGIN = 64
 PERSISTENCE_COUNT = 2
 CONF_BITS = 4
 CONF_SHIFT = 4
+WEIGHT_BITS = 8
+WEIGHT_SCALE = 1024  # matches RTL init_scale_p
 
 CLK_FREQ_HZ = 12_000_000
 WINDOW_MS = 400
@@ -148,19 +150,24 @@ class ScoreModel:
 
 
 def load_quantized_weights():
-    weights_path = Path(__file__).resolve().parents[1] / "8192weights.txt"
+    """Load and quantize weights to match RTL ram_1r1w_sync init (init_scale_p=WEIGHT_SCALE,
+    init_signed_p=0, stride=FEATURE_COUNT per class).  Matches gesture_weights file layout."""
+    weights_path = (Path(__file__).resolve().parents[1] /
+                    "gesture_weights_down_left_right_up_8x8_4bins.txt")
     lines = weights_path.read_text(encoding="ascii").splitlines()
+
+    max_unsigned = (1 << WEIGHT_BITS) - 1
 
     def quantize(line):
         try:
             f = float(line.strip())
         except ValueError:
             return 0
-        q = int(f * 1024)  # $rtoi-style trunc toward zero
-        if q < 0:
+        q = int(f * WEIGHT_SCALE)  # $rtoi-style truncation toward zero
+        if q < 0:          # init_signed_p=0: clamp negative to 0
             q = 0
-        if q > 255:
-            q = 255
+        if q > max_unsigned:
+            q = max_unsigned
         return q
 
     qvals = [quantize(line) for line in lines]
@@ -170,13 +177,14 @@ def load_quantized_weights():
 
     weights = []
     for c in range(4):
+        # WEIGHT_FILE_CLASS_STRIDE = 256 = FEATURE_COUNT; class c starts at c*256.
         start = c * FEATURE_COUNT
         weights.append(qvals[start:start + FEATURE_COUNT])
     return weights
 
 
 class CoreHarness:
-    def __init__(self, dut):
+    def __init__(self, dut, score_model=None):
         self.dut = dut
         self.decoder = Evt2DecoderModel()
 
@@ -191,6 +199,10 @@ class CoreHarness:
 
         self.last_pass_class = 0
         self.pass_streak = 0
+
+        # Optional independent score verification.
+        self.score_model = score_model
+        self.pending_score_checks = deque()  # (exp_class, exp_pass) from ScoreModel
 
     async def setup(self):
         cocotb.start_soon(Clock(self.dut.clk, 10, unit="ns").start())
@@ -222,12 +234,24 @@ class CoreHarness:
             if int(self.dut.u_voxel_binning.readout_last.value):
                 assert len(self.current_window) == FEATURE_COUNT, \
                     f"Feature window length {len(self.current_window)} != {FEATURE_COUNT}"
+                if self.score_model is not None:
+                    exp_cls, exp_pass, _ = self.score_model.classify(self.current_window)
+                    self.pending_score_checks.append((exp_cls, exp_pass))
                 self.current_window = []
                 self.completed_windows += 1
 
         if int(self.dut.class_valid.value):
             class_id = int(self.dut.class_gesture.value)
             class_pass = int(self.dut.class_pass.value)
+
+            if self.score_model is not None and self.pending_score_checks:
+                exp_cls, exp_pass = self.pending_score_checks.popleft()
+                assert class_id == exp_cls, (
+                    f"ScoreModel class mismatch: DUT={class_id} model={exp_cls}"
+                )
+                assert class_pass == exp_pass, (
+                    f"ScoreModel pass mismatch: DUT={class_pass} model={exp_pass}"
+                )
 
             if class_pass:
                 if class_id == self.last_pass_class:
@@ -569,6 +593,36 @@ async def test_decoder_events_match_model_exactly(dut):
     # Force one rollover so the pipeline drains any pending decoded events.
     await h.force_bin_rollover()
     await h.wait_quiet(quiet_cycles=500)
+
+
+@cocotb.test()
+async def test_score_model_validates_classifications(dut):
+    """ScoreModel independently verifies every DUT class_gesture/class_pass output."""
+    weights = load_quantized_weights()
+    score_model = ScoreModel(weights)
+
+    rng = random.Random(0xBEEF_CAFE)
+    h = CoreHarness(dut, score_model=score_model)
+    await h.setup()
+
+    await h.send_word(build_evt2_time_high(0xABCDE))
+
+    # Drive a varied sequence of regions so multiple distinct feature windows are generated.
+    script = [
+        "bottom", "bottom", "top", "top",
+        "right", "right", "left", "left",
+        "bottom", "top", "right", "left",
+    ]
+    for region in script:
+        await drive_bin_traffic(h, rng, region, events=30)
+        await h.force_bin_rollover()
+
+    await h.wait_quiet()
+
+    assert h.completed_windows > 0, "No completed windows observed"
+    # All class_valid outputs were independently checked against ScoreModel inline.
+    assert not h.pending_score_checks, \
+        f"{len(h.pending_score_checks)} feature windows never produced a class_valid"
 
     assert not h.expected_decoded, \
         (f"{len(h.expected_decoded)} decoded events unmatched by DUT")

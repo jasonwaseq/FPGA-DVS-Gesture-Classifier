@@ -69,6 +69,26 @@ async def drive_and_check(dut, model, reset_i, wr_valid_i, wr_data_i, wr_addr_i,
 
 
 @cocotb.test()
+async def test_default_init_all_zeros(dut):
+    """Unwritten RAM locations must read back as 0 (default filename_p="" initialises to zero).
+    MUST run first — before any other test writes to the RAM."""
+    await setup(dut)
+    model = Ram1R1WSyncModel()
+
+    for _ in range(5):
+        model.step(1, 0, 0, 0, 0, 0)
+    for _ in range(2):
+        model.step(0, 0, 0, 0, 0, 0)
+
+    # Sample a spread of addresses that were never written.
+    sample_addrs = [0, 1, DEPTH // 4, DEPTH // 2, DEPTH // 2 + 1, DEPTH - 2, DEPTH - 1]
+    for addr in sample_addrs:
+        await drive_and_check(dut, model, 0, 0, 0, 0, 1, addr, f"init-zero-{addr}")
+        got = int(dut.rd_data_o.value)
+        assert got == 0, f"Unwritten addr {addr}: expected 0, got 0x{got:02X}"
+
+
+@cocotb.test()
 async def test_reset_and_basic_read_write(dut):
     await setup(dut)
     model = Ram1R1WSyncModel()

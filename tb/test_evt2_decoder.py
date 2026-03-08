@@ -360,3 +360,37 @@ async def test_reset_clears_time_high_requirement(dut):
     await drive_and_check(dut, model, 0, build_evt2_time_high(0x66), 1, 1, "th2")
     await drive_and_check(dut, model, 0, cd, 1, 1, "cd2")
     assert int(dut.event_valid.value) == 1
+
+
+@cocotb.test()
+async def test_grid_coordinate_upper_boundaries(dut):
+    """Sensor coordinate at the upper boundary of each grid cell maps to that cell, not the next."""
+    await setup(dut)
+    model = Evt2DecoderModel()
+
+    for _ in range(5):
+        await drive_and_check(dut, model, 1, 0, 0, 1, "rst")
+    for _ in range(2):
+        await drive_and_check(dut, model, 0, 0, 0, 1, "idle")
+
+    await drive_and_check(dut, model, 0, build_evt2_time_high(0x2), 1, 1, "th")
+
+    step = SENSOR_WIDTH // GRID_SIZE  # = 20
+    for g in range(GRID_SIZE - 1):
+        # Upper boundary of cell g is one pixel below the start of cell g+1.
+        x_upper = g * step + step - 1
+        word = build_evt2_cd(EVT_CD_ON, x_upper, 0, g & 0x3F)
+        await drive_and_check(dut, model, 0, word, 1, 1, f"x-ub-{g}")
+        assert int(dut.event_valid.value) == 1
+        got = int(dut.x_out.value)
+        assert got == g, \
+            f"x_sensor={x_upper} (upper bound of cell {g}) mapped to {got}, expected {g}"
+
+        # First pixel of the next cell must map to g+1.
+        x_next = (g + 1) * step
+        word = build_evt2_cd(EVT_CD_ON, x_next, 0, g & 0x3F)
+        await drive_and_check(dut, model, 0, word, 1, 1, f"x-next-{g}")
+        assert int(dut.event_valid.value) == 1
+        got_next = int(dut.x_out.value)
+        assert got_next == g + 1, \
+            f"x_sensor={x_next} (start of cell {g+1}) mapped to {got_next}, expected {g+1}"

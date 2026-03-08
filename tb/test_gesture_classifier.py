@@ -343,3 +343,41 @@ async def test_each_class_can_win(dut):
         assert int(dut.gesture.value) == cls, \
             f"Expected gesture class {cls}, got {int(dut.gesture.value)}"
         assert int(dut.gesture_valid.value) == 1
+
+
+@cocotb.test()
+async def test_debug_state_transitions(dut):
+    """Explicit check of all three debug_state values: 0=fail, 1=accumulating, 2=gesture valid."""
+    await setup(dut)
+    model = GestureClassifierModel()
+
+    # debug_state=0: margin <= PASS_MARGIN (fails threshold).
+    await drive_and_check(dut, model, [100, 64, 64, 64], 1, "fail")
+    assert int(dut.debug_state.value) == 0, \
+        f"Expected debug_state=0 on fail, got {int(dut.debug_state.value)}"
+    assert int(dut.gesture_valid.value) == 0
+
+    # debug_state=1: first passing window — streak=1 < PERSISTENCE_COUNT=2.
+    await drive_and_check(dut, model, [300, 0, 0, 0], 1, "pass-1")
+    assert int(dut.debug_state.value) == 1, \
+        f"Expected debug_state=1 on first pass, got {int(dut.debug_state.value)}"
+    assert int(dut.gesture_valid.value) == 0
+
+    # debug_state=2: second consecutive passing window — streak reaches PERSISTENCE_COUNT.
+    await drive_and_check(dut, model, [300, 0, 0, 0], 1, "pass-2")
+    assert int(dut.debug_state.value) == 2, \
+        f"Expected debug_state=2 on gesture valid, got {int(dut.debug_state.value)}"
+    assert int(dut.gesture_valid.value) == 1
+    assert int(dut.gesture.value) == 0
+
+    # Fail resets streak → debug_state=0, gesture_valid deasserts.
+    await drive_and_check(dut, model, [100, 64, 64, 64], 1, "fail-2")
+    assert int(dut.debug_state.value) == 0
+    assert int(dut.gesture_valid.value) == 0
+
+    # Class change on first pass: streak restarts at 1 → debug_state=1.
+    await drive_and_check(dut, model, [0, 400, 0, 0], 1, "class-change")
+    assert int(dut.debug_state.value) == 1, \
+        f"Expected debug_state=1 after class change pass, got {int(dut.debug_state.value)}"
+    assert int(dut.class_gesture.value) == 1
+    assert int(dut.gesture_valid.value) == 0

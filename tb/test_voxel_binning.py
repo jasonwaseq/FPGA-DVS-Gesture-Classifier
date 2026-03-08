@@ -395,3 +395,36 @@ async def test_high_event_rate_multi_bin_accuracy(dut):
             await inject_event(dut, model, x, y, rng.randint(0, 1))
 
         await rotate_and_check(dut, model, f"dense-{bin_idx}")
+
+
+@cocotb.test()
+async def test_stale_bins_preserved_after_reset(dut):
+    """After reset only bin 0 is cleared; bins 1..NUM_BINS-1 retain their pre-reset contents."""
+    await setup(dut)
+
+    # Plant a known sentinel value in a sample of cells across bins 1..NUM_BINS-1.
+    stale_val = 77
+    cells_to_check = 4  # check 4 cells per bin
+    for b in range(1, NUM_BINS):
+        for cell in range(cells_to_check):
+            addr = b * CELLS_PER_BIN + cell
+            dut.mem[addr].value = stale_val
+
+    # Assert reset — DUT only clears bin 0 during the post-reset ST_CLEAR.
+    dut.rst.value = 1
+    await ClockCycles(dut.clk, 5)
+    dut.rst.value = 0
+    await wait_for_state(dut, ST_ACCUM, timeout=5000)
+
+    # Bin 0 cells must be zeroed by the post-reset clear.
+    for cell in range(cells_to_check):
+        got = int(dut.mem[cell].value)  # bin 0 base = 0
+        assert got == 0, f"Bin 0 cell {cell} should be 0 after reset, got {got}"
+
+    # Bins 1..NUM_BINS-1 must still hold the stale sentinel.
+    for b in range(1, NUM_BINS):
+        for cell in range(cells_to_check):
+            addr = b * CELLS_PER_BIN + cell
+            got = int(dut.mem[addr].value)
+            assert got == stale_val, \
+                f"Bin {b} cell {cell} (addr={addr}) expected stale {stale_val}, got {got}"

@@ -47,7 +47,7 @@ module voxel_bin_core #(
     localparam int FEATURE_COUNT = READOUT_BINS * GRID_SIZE * GRID_SIZE;
     localparam int FEATURE_BITS  = $clog2(FEATURE_COUNT);
     localparam int GRID_BITS     = $clog2(GRID_SIZE);
-    localparam int WEIGHT_FILE_CLASS_STRIDE = 2048;
+    localparam int WEIGHT_FILE_CLASS_STRIDE = 256;
     localparam int WEIGHT_ADDR_BITS = $clog2(FEATURE_COUNT);
     localparam int TILES         = FEATURE_COUNT / N;
     localparam int SA_DATA_BITS  = ((COUNTER_BITS > WEIGHT_BITS) ? COUNTER_BITS : WEIGHT_BITS) + 1;
@@ -249,10 +249,13 @@ module voxel_bin_core #(
         end
     end
 
+    // Weight ROMs.
+    // Synthesis: inline arrays with literal $readmemh paths. A dummy write port (if(1'b0))
+    //   is required so Yosys infers SB_RAM40_4K and propagates INIT_* attributes.
+    //   Yosys does NOT evaluate $readmemh when the filename comes from a module parameter,
+    //   so ram_1r1w_sync cannot be used for synthesis weight init.
+    // Simulation: ram_1r1w_sync with float init from 8192weights.txt.
 `ifdef SYNTHESIS
-    // Synthesis path: weight RAMs with pre-quantized hex init files.
-    // Dummy write port (wr_en=0) is required so Yosys infers SB_RAM40_4K instead of registers.
-    // $readmemh init is then propagated into BRAM INIT_* attributes by memory_bram.
     logic [WEIGHT_BITS-1:0] weight_mem_c0 [0:FEATURE_COUNT-1];
     logic [WEIGHT_BITS-1:0] weight_mem_c1 [0:FEATURE_COUNT-1];
     logic [WEIGHT_BITS-1:0] weight_mem_c2 [0:FEATURE_COUNT-1];
@@ -266,8 +269,7 @@ module voxel_bin_core #(
     end
 
     always_ff @(posedge clk) begin
-        // Dummy write port: never fires, but required for BRAM inference.
-        if (1'b0) begin
+        if (1'b0) begin  // Dummy write: required for Yosys SB_RAM40_4K inference.
             weight_mem_c0[0] <= '0;
             weight_mem_c1[0] <= '0;
             weight_mem_c2[0] <= '0;
@@ -285,14 +287,14 @@ module voxel_bin_core #(
         genvar g;
         for (g = 0; g < NUM_CLASSES; g = g + 1) begin : gen_weight_rams
             ram_1r1w_sync #(
-                .width_p       (WEIGHT_BITS),
-                .depth_p       (FEATURE_COUNT),
-                .filename_p    ("8192weights.txt"),
-                .init_offset_p (g * WEIGHT_FILE_CLASS_STRIDE),
-                .init_count_p  (FEATURE_COUNT),
+                .width_p        (WEIGHT_BITS),
+                .depth_p        (FEATURE_COUNT),
+                .filename_p     ("gesture_weights_down_left_right_up_8x8_4bins.txt"),
+                .init_offset_p  (g * WEIGHT_FILE_CLASS_STRIDE),
+                .init_count_p   (FEATURE_COUNT),
                 .init_is_float_p(1'b1),
-                .init_scale_p  (WEIGHT_SCALE),
-                .init_signed_p (1'b0)
+                .init_scale_p   (WEIGHT_SCALE),
+                .init_signed_p  (1'b0)
             ) u_weight_ram (
                 .clk_i      (clk),
                 .reset_i    (rst),

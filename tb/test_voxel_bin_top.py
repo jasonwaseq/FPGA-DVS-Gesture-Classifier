@@ -18,7 +18,7 @@ EVT_TIME_HIGH = 0x8
 ST_ACCUM = 0
 GRID_SIZE = 8
 READOUT_BINS = 4
-WINDOW_MS = 400
+WINDOW_MS = 1000
 BIN_DURATION_MS = WINDOW_MS // READOUT_BINS
 CYCLES_PER_BIN_SAFE = (CLK_FREQ_HZ // 1000) * BIN_DURATION_MS
 SENSOR_DIM = 320
@@ -316,3 +316,127 @@ async def test_gesture_uart_packet_stream_matches_core(dut):
          f"for {core_gesture_count} gestures")
     assert dequeued_bytes == produced_bytes, \
         f"UART packet stream mismatch\nTX_DEQ: {dequeued_bytes}\nTX_IN:  {produced_bytes}"
+
+
+@cocotb.test()
+async def test_diag_command(dut):
+    """0xFB diagnostic command returns 2 bytes: event_count and sticky debug flags."""
+    await setup(dut)
+    await await_tx_idle(dut)
+
+    # Issue soft reset (0xFC) to clear debug_event_count and sticky flags accumulated by
+    # earlier tests that ran in the same simulation instance.
+    async def _await_rst(timeout=CLKS_PER_BIT * 200):
+        for _ in range(timeout):
+            await RisingEdge(dut.clk)
+            await ReadOnly()
+            if int(dut.rst.value):
+                return True
+        return False
+
+    rst_task = cocotb.start_soon(_await_rst())
+    await uart_drive_byte(dut, 0xFC)
+    await rst_task
+    # Wait for rst to deassert and pipeline to settle.
+    for _ in range(200):
+        await RisingEdge(dut.clk)
+        if not int(dut.rst.value):
+            break
+    await ClockCycles(dut.clk, 10)
+    await await_tx_idle(dut)
+
+    diag_task = cocotb.start_soon(await_tx_bytes(dut, 2))
+    rx_task   = cocotb.start_soon(await_rx_byte(dut, timeout_cycles=CLKS_PER_BIT * 200))
+    await uart_drive_byte(dut, 0xFB)
+
+    rx = await rx_task
+    assert rx == 0xFB, f"Diag command RX decode: expected 0xFB, got 0x{(rx or 0):02X}"
+
+    d = await diag_task
+    assert len(d) == 2, f"Expected 2 diag bytes, got {d}"
+
+    # Byte 0: debug_event_count — must be 0 after soft reset with no subsequent EVT2 words.
+    assert d[0] == 0, f"debug_event_count should be 0 after soft reset, got {d[0]}"
+
+    # Byte 1: sticky diagnostic flags.
+    # Bits [7:2] are sticky pipeline-seen flags — all should be 0 after reset.
+    # Bit [1]: core_gesture_valid (live) — 0
+    # Bit [0]: core_debug_temporal_phase (live binner phase)
+    assert (d[1] & 0xFE) == 0, \
+        f"Diag byte1 upper 7 bits should be 0 after soft reset with no events, got 0x{d[1]:02X}"
+
+
+@cocotb.test()
+async def test_gesture_packet_byte_content(dut):
+    """Verify that each UART gesture packet encodes class and confidence correctly.
+
+    Packet format (RTL): byte0 = 0xA0|class, byte1 = {conf[3:0], evtcnt[7:4]}.
+    """
+    await setup(dut)
+
+    # Capture (gesture, confidence, event_count) when core fires gesture_valid,
+    # and concurrently capture TX bytes as they enter the TX FIFO.
+    core_records = []
+    tx_bytes = []
+
+    async def monitors():
+        prev_valid = 0
+        while True:
+            await RisingEdge(dut.clk)
+            await ReadOnly()
+            if int(dut.rst.value):
+                prev_valid = 0
+                continue
+            # Capture gesture_valid rising edge.
+            cur_valid = int(dut.u_core.gesture_valid.value)
+            if cur_valid and not prev_valid:
+                core_records.append((
+                    int(dut.u_core.gesture.value),
+                    int(dut.u_core.gesture_confidence.value),
+                    int(dut.u_core.debug_event_count.value),
+                ))
+            prev_valid = cur_valid
+            # Capture bytes as they enter the TX FIFO (before serialization drains them).
+            if int(dut.tx_fifo_in_valid.value) and int(dut.tx_fifo_in_ready.value):
+                tx_bytes.append(int(dut.tx_fifo_in_data.value))
+
+    mon = cocotb.start_soon(monitors())
+
+    rng = random.Random(0x1A2B_3C4D)
+    await send_evt2_word_uart(dut, build_evt2_time_high(0x99999))
+
+    script = [
+        "bottom", "bottom", "top", "top",
+        "right", "right", "left", "left",
+        "bottom", "bottom", "top", "top",
+    ]
+    for region in script:
+        pts = region_points(region)
+        for i in range(12):
+            gx, gy = rng.choice(pts)
+            word = build_evt2_cd(EVT_CD_ON if (i & 1) else EVT_CD_OFF,
+                                 sensor_from_grid(gx), sensor_from_grid(gy), i & 0x3F)
+            await send_evt2_word_uart(dut, word)
+        await force_core_bin_rollover(dut)
+
+    # Wait for pipeline and TX FIFO to flush.
+    await ClockCycles(dut.clk, 200000)
+    mon.cancel()
+
+    assert len(core_records) > 0, "No core gesture_valid pulses observed"
+    assert len(tx_bytes) == 2 * len(core_records), (
+        f"Expected {2*len(core_records)} TX bytes, got {len(tx_bytes)}"
+    )
+
+    for i, (cls, conf, evtcnt) in enumerate(core_records):
+        b0 = tx_bytes[2 * i]
+        b1 = tx_bytes[2 * i + 1]
+        exp_b0 = 0xA0 | (cls & 0x3)
+        exp_b1 = ((conf & 0xF) << 4) | ((evtcnt >> 4) & 0xF)
+        assert b0 == exp_b0, (
+            f"Packet {i}: byte0 DUT=0x{b0:02X} expected=0x{exp_b0:02X} (class={cls})"
+        )
+        assert b1 == exp_b1, (
+            f"Packet {i}: byte1 DUT=0x{b1:02X} expected=0x{exp_b1:02X} "
+            f"(conf={conf}, evtcnt={evtcnt})"
+        )

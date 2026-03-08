@@ -204,7 +204,7 @@ async def test_full_and_overflow_drop(dut):
             break
 
     assert len(drained) >= DEPTH, f"Timed out draining full FIFO, drained={len(drained)}"
-    assert drained[:8] == list(range(8)), "Overflow attempts corrupted FIFO head"
+    assert drained == list(range(DEPTH)), "Overflow attempts corrupted FIFO content"
 
 
 @cocotb.test()
@@ -343,3 +343,49 @@ async def test_mid_reset_clears_pending_data(dut):
     assert int(dut.data_o.value) == 0xFACE_CAFE, \
         f"Post-reset data mismatch: 0x{int(dut.data_o.value):08X}"
     await drive_and_check(dut, model, 0, 0, 0, 1, "post-rst-rd")
+
+
+@cocotb.test()
+async def test_rd_pending_then_push(dut):
+    """Push a new item while a RAM read is pending (rd_pending=1); both items preserved in order."""
+    await setup(dut)
+    model = InputFifoModel()
+
+    for _ in range(5):
+        model.step(1, 0, 0, 0)
+    for _ in range(2):
+        model.step(0, 0, 0, 0)
+
+    # Push A: empty FIFO → A bypasses to out_reg.
+    await drive_and_check(dut, model, 0, 1, 0xAAAA_0001, 0, "push-A")
+    assert int(dut.valid_o.value) == 1
+    assert int(dut.data_o.value) == 0xAAAA_0001
+
+    # Push B: out_reg occupied → B goes to RAM tail.
+    await drive_and_check(dut, model, 0, 1, 0xBBBB_0002, 0, "push-B")
+
+    # Simultaneously pop A (ready_i=1) and push C (valid_i=1):
+    # - rd_en fires → tail_count=1>0 so rd_pending=1, last_rd_data=B
+    # - C cannot bypass (rd_pending=1) → goes to RAM tail
+    await drive_and_check(dut, model, 0, 1, 0xCCCC_0003, 1, "pop-A-push-C")
+    # valid_o must be 0 while rd_pending resolves.
+    assert int(dut.valid_o.value) == 0, "valid_o should be 0 while rd_pending"
+
+    # Next cycle: rd_pending resolves → B appears at output.
+    await drive_and_check(dut, model, 0, 0, 0, 0, "resolve-B")
+    assert int(dut.valid_o.value) == 1, "B should appear after rd_pending resolves"
+    assert int(dut.data_o.value) == 0xBBBB_0002, \
+        f"Expected B (0xBBBB0002), got 0x{int(dut.data_o.value):08X}"
+
+    # Pop B; C is still in tail → triggers another rd_pending.
+    await drive_and_check(dut, model, 0, 0, 0, 1, "pop-B")
+
+    # Resolve C.
+    await drive_and_check(dut, model, 0, 0, 0, 0, "resolve-C")
+    assert int(dut.valid_o.value) == 1, "C should appear after second rd_pending resolves"
+    assert int(dut.data_o.value) == 0xCCCC_0003, \
+        f"Expected C (0xCCCC0003), got 0x{int(dut.data_o.value):08X}"
+
+    # Pop C; FIFO should be empty.
+    await drive_and_check(dut, model, 0, 0, 0, 1, "pop-C")
+    assert int(dut.valid_o.value) == 0, "FIFO should be empty after all items drained"
