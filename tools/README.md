@@ -2,7 +2,25 @@
 
 This directory contains four tools for working with the FPGA gesture classification pipeline.
 
+python capture_evt_stream.py /dev/ttyACM0 gesture_down.bin --baud 12000000 --duration 3
+
+python evt_stream_to_fpga.py \
+  --file gesture_left.bin \
+  --fpga /dev/ttyUSB1 --fpga-baud 1000000 \
+  --swap-xy --flip-x \
+  --rate-limit 2000 --motion-gate 0.20 --chunk 512 \
+  --pre-sync --no-echo-check
+
 python tools/dvs_camera_emulator.py --port COM3 --baud 115200 --preview --no-noise --contrast 0.20 --max-events 86
+
+python evt_stream_to_fpga.py \
+  --fpga /dev/ttyUSB1 --fpga-baud 1000000 \
+  --dvs /dev/ttyACM0 --dvs-baud 12000000 \
+  --swap-xy --flip-x \
+  --rate-limit 2000 \
+  --motion-gate 0.20 \
+  --chunk 512 \
+  --pre-sync --no-echo-check
 
 ## Tools at a Glance
 
@@ -203,6 +221,7 @@ Run `evt2_layout_probe.py` first to confirm the axis layout before using this fl
 | `--loop` | — | Loop file replay continuously |
 | `--save-raw FILE` | — | Save live DVS stream to file while relaying |
 | `--swap-xy` | — | Swap X/Y fields in CD words (for 90°-rotated camera) |
+| `--no-auto-realign` | — | Disable automatic live-stream byte realignment (enabled by default) |
 | `--duration F` | `0` | Stop after N seconds (0 = run until Ctrl+C) |
 | `--chunk N` | `4096` | Read chunk size in bytes |
 | `--probe-bytes N` | `8192` | Bytes used for byte-alignment auto-detection |
@@ -393,6 +412,8 @@ emulator tools perform the swap automatically before writing to the FPGA port.
 **Low EVT2 valid ratio warning in `evt_stream_to_fpga.py`:**
 - Check `--dvs-baud` matches the STM32 CDC output rate (typically 2–5 Mbps).
 - The GenX320 default is 3 Mbps — use `--dvs-baud 3000000`.
+- Keep live auto-realign enabled (default). If your host drops a byte mid-stream, the relay
+  now re-locks word alignment automatically and reports `auto_realign_count` in summary.
 
 **File replay completes instantly without FPGA responding:**
 - Add `--replay-rate 1.0` (default) to pace replay using TIME_HIGH timestamps.

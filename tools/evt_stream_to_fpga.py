@@ -32,6 +32,16 @@ VALID_EVT2_TYPES = {0x0, 0x1, 0x8, 0xA, 0xE, 0xF}
 # FPGA gesture encoding: 0=Down, 1=Left, 2=Right, 3=Up
 GESTURE_NAMES = {0: "Down", 1: "Left", 2: "Right", 3: "Up"}
 
+# Spatial motion gate constants (FPGA grid: 8×8 cells over 320×320 sensor)
+_GATE_GRID_SIZE  = 8
+_GATE_CELL_STEP  = 320 // 8   # 40 pixels per cell
+_GATE_TOP_K      = 4          # evaluate top 4 of 64 cells (uniform background → ~6.25%)
+_GATE_MIN_EVENTS = 32         # min CD events in chunk before gate fires
+_REALIGN_SAMPLE_WORDS = 4096
+_REALIGN_MIN_WORDS = 256
+_REALIGN_TRIGGER_RATIO = 0.80
+_REALIGN_MIN_IMPROVEMENT = 0.15
+
 # EVT2.0 CD event field masks / shifts
 _EVT2_TYPE_MASK   = 0xF0000000
 _EVT2_TS_MASK     = 0x0FC00000
@@ -63,21 +73,31 @@ _SENSOR_MAX = 319
 
 
 def flip_x_in_evt2_word(word):
-    """Invert x: x_new = 319 - x_old.  Non-CD events returned unchanged."""
+    """Invert x: x_new = 319 - x_old.  Non-CD events returned unchanged.
+
+    Out-of-range coordinates (x > 319, e.g. from malformed STM32 events) are
+    clamped to 0 instead of producing a negative value that would crash
+    word.to_bytes(4, 'big').
+    """
     evt_type = (word >> 28) & 0xF
     if evt_type not in (0x0, 0x1):
         return word
     x_val = (word >> 11) & 0x7FF
-    return (word & ~_EVT2_X_MASK) | ((_SENSOR_MAX - x_val) << 11)
+    flipped = max(0, _SENSOR_MAX - x_val)
+    return (word & ~_EVT2_X_MASK) | (flipped << 11)
 
 
 def flip_y_in_evt2_word(word):
-    """Invert y: y_new = 319 - y_old.  Non-CD events returned unchanged."""
+    """Invert y: y_new = 319 - y_old.  Non-CD events returned unchanged.
+
+    Out-of-range coordinates (y > 319) are clamped to 0.
+    """
     evt_type = (word >> 28) & 0xF
     if evt_type not in (0x0, 0x1):
         return word
     y_val = word & 0x7FF
-    return (word & ~_EVT2_Y_MASK) | (_SENSOR_MAX - y_val)
+    flipped = max(0, _SENSOR_MAX - y_val)
+    return (word & ~_EVT2_Y_MASK) | flipped
 
 
 def detect_alignment_offset(data, sample_words=20000):
@@ -100,6 +120,23 @@ def detect_alignment_offset(data, sample_words=20000):
         if ratio > best[1]:
             best = (off, ratio, counts)
     return best
+
+
+def valid_ratio_at_offset(data, off=0, sample_words=20000):
+    """Return (valid_ratio, counts) for EVT2 parsing at a fixed byte offset."""
+    n = (len(data) - off) // 4
+    if n <= 0:
+        return 0.0, Counter()
+    n = min(n, sample_words)
+    valid = 0
+    counts = Counter()
+    for i in range(n):
+        word = int.from_bytes(data[off + 4 * i: off + 4 * i + 4], "little")
+        evt_type = (word >> 28) & 0xF
+        counts[evt_type] += 1
+        if evt_type in VALID_EVT2_TYPES:
+            valid += 1
+    return valid / n, counts
 
 
 class FPGAResponseParser:
@@ -248,6 +285,13 @@ def main():
     parser.add_argument("--debug", action="store_true",
                         help="Print gesture detections and extra diagnostics")
     parser.add_argument(
+        "--no-auto-realign", action="store_true", default=False,
+        help=(
+            "Disable live-stream auto realignment. By default, the relay re-checks "
+            "EVT2 word alignment when valid-ratio drops and re-synchronizes if needed."
+        ),
+    )
+    parser.add_argument(
         "--swap-xy", action="store_true", default=False,
         help=(
             "Swap x[21:11] and y[10:0] in every CD word before sending to the FPGA. "
@@ -269,6 +313,18 @@ def main():
             "Invert y coordinate: y_new = 319 - y_old.  Applied after --swap-xy. "
             "Use when gestures are mirrored up/down (e.g. UP classified as DOWN). "
             "Can be combined with --swap-xy and/or --flip-x."
+        ),
+    )
+    parser.add_argument(
+        "--motion-gate", type=float, default=0.0,
+        help=(
+            "Spatial concentration gate (0.0 = disabled). "
+            "For each chunk of events, compute the fraction held by the top 4 FPGA grid "
+            "cells (8×8 = 64 total). Pure background noise is spatially uniform "
+            "(top-4 ≈ 6%%). A moving hand concentrates events (top-4 ≈ 25-50%%). "
+            "Chunks below this threshold are dropped entirely before rate-limiting. "
+            "Try 0.15–0.25 for a typical bright indoor scene. "
+            "Requires --chunk 256-1024 for good temporal resolution."
         ),
     )
     args = parser.parse_args()
@@ -302,7 +358,8 @@ def main():
         print(f"[OPEN] DVS={args.dvs} @ {args.dvs_baud}  FPGA={args.fpga} @ {args.fpga_baud}"
               f"  swap_xy={'YES' if args.swap_xy else 'no'}"
               f"  flip_x={'YES' if args.flip_x else 'no'}"
-              f"  flip_y={'YES' if args.flip_y else 'no'}")
+              f"  flip_y={'YES' if args.flip_y else 'no'}"
+              f"  motion_gate={args.motion_gate if args.motion_gate > 0 else 'off'}")
         try:
             dvs = serial.Serial(args.dvs, args.dvs_baud, timeout=0.05)
         except serial.SerialException as e:
@@ -382,6 +439,8 @@ def main():
     write_errors = 0
     evt_type_counts = Counter()
     decoder_primed = False
+    realign_count = 0
+    realign_bytes_dropped = 0
 
     # Real-time pacing for file replay.
     # TIME_HIGH words carry bits [33:6] of the µs timestamp (1 increment = 64 µs).
@@ -433,6 +492,82 @@ def main():
             # ---- process complete words ----
             full_len = (len(buf) // 4) * 4
             if full_len:
+                # Live stream can occasionally slip by 1-3 bytes if the host drops a byte.
+                # Re-evaluate alignment on low-valid chunks and resync to the best offset.
+                if (file_bytes is None and not args.no_auto_realign
+                        and full_len >= (_REALIGN_MIN_WORDS * 4)):
+                    _probe_len = min(full_len, _REALIGN_SAMPLE_WORDS * 4)
+                    _probe = bytes(buf[:_probe_len])
+                    ratio0, counts0 = valid_ratio_at_offset(_probe, off=0,
+                                                            sample_words=_REALIGN_SAMPLE_WORDS)
+                    if ratio0 < _REALIGN_TRIGGER_RATIO:
+                        off_best, ratio_best, counts_best = detect_alignment_offset(
+                            _probe, sample_words=_REALIGN_SAMPLE_WORDS
+                        )
+                        if (off_best != 0
+                                and ratio_best >= _REALIGN_TRIGGER_RATIO
+                                and (ratio_best - ratio0) >= _REALIGN_MIN_IMPROVEMENT):
+                            del buf[:off_best]
+                            realign_count += 1
+                            realign_bytes_dropped += off_best
+                            decoder_primed = False
+                            if args.debug or realign_count <= 5:
+                                print(
+                                    f"[ALIGN] Auto realign +{off_best}B  valid:"
+                                    f" {ratio0:.3f}->{ratio_best:.3f}  "
+                                    f"types0={format_top_types(counts0)}  "
+                                    f"types_best={format_top_types(counts_best)}"
+                                )
+                            full_len = (len(buf) // 4) * 4
+                            if not full_len:
+                                continue
+
+                # Spatial motion gate: drop chunks dominated by uniform background noise.
+                # A moving hand concentrates events in a few FPGA grid cells; background
+                # noise distributes events uniformly (top-4/64 cells ≈ 6.25%).
+                # This pre-scan runs BEFORE rate-limiting so no budget is consumed for
+                # background-dominated chunks.
+                if args.motion_gate > 0.0 and file_bytes is None:
+                    _gc = Counter()   # gate cell counts
+                    _gcd = 0          # gate CD event count
+                    _gth = 0          # gate TIME_HIGH count
+                    _gvalid = 0       # gate valid EVT2 word count
+                    _gt = Counter()   # gate type histogram
+                    for _i in range(0, full_len, 4):
+                        _w = int.from_bytes(buf[_i:_i + 4], "little")
+                        _evt_type = (_w >> 28) & 0xF
+                        _gt[_evt_type] += 1
+                        if _evt_type in VALID_EVT2_TYPES:
+                            _gvalid += 1
+                        if _evt_type == 0x8:
+                            _gth += 1
+                        if _evt_type not in (0x0, 0x1):
+                            continue
+                        _gcd += 1
+                        if args.swap_xy:
+                            _w = swap_xy_in_evt2_word(_w)
+                        if args.flip_x:
+                            _w = flip_x_in_evt2_word(_w)
+                        if args.flip_y:
+                            _w = flip_y_in_evt2_word(_w)
+                        _cx = min((_w >> 11 & 0x7FF) // _GATE_CELL_STEP, _GATE_GRID_SIZE - 1)
+                        _cy = min((_w & 0x7FF) // _GATE_CELL_STEP, _GATE_GRID_SIZE - 1)
+                        _gc[_cy * _GATE_GRID_SIZE + _cx] += 1
+                    if _gcd >= _GATE_MIN_EVENTS:
+                        _top_k = sum(v for _, v in _gc.most_common(_GATE_TOP_K))
+                        if _top_k / _gcd < args.motion_gate:
+                            # Background-dominated chunk — drop without forwarding.
+                            _words = full_len // 4
+                            total_words += _words
+                            valid_words += _gvalid
+                            invalid_words += _words - _gvalid
+                            cd_words += _gcd
+                            time_high_words += _gth
+                            dropped_words += _gvalid
+                            evt_type_counts.update(_gt)
+                            del buf[:full_len]
+                            continue  # back to while True to read next chunk
+
                 tx_batch = bytearray()
                 for i in range(0, full_len, 4):
                     word = int.from_bytes(buf[i:i + 4], "little")
@@ -549,7 +684,8 @@ def main():
                 print(
                     f"{elapsed:7.1f}s  words={total_words}  valid={valid_ratio:.3f}  "
                     f"cd={cd_words}  th={time_high_words}  sent={sent_words}  "
-                    f"dropped={dropped_words}  wr_err={write_errors}  {g_totals}"
+                    f"dropped={dropped_words}  realign={realign_count}  "
+                    f"wr_err={write_errors}  {g_totals}"
                 )
                 last_report = now
 
@@ -577,6 +713,8 @@ def main():
     print(f"  words_time_high={time_high_words}")
     print(f"  words_sent={sent_words}")
     print(f"  words_dropped={dropped_words}")
+    print(f"  auto_realign_count={realign_count}")
+    print(f"  auto_realign_bytes_dropped={realign_bytes_dropped}")
     print(f"  write_errors={write_errors}")
     print(f"  types_top={format_top_types(evt_type_counts, top_n=8)}")
     g_summary = ", ".join(
