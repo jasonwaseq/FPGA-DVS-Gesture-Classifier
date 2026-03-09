@@ -511,7 +511,7 @@ def create_combined_preview(
 class UARTOutputHandler:
     """Sends EVT 2.0 events to the voxel_bin_top FPGA over UART and receives gesture packets."""
 
-    def __init__(self, port: str, baud_rate: int = 115200):
+    def __init__(self, port: str, baud_rate: int = 1_000_000):
         self.port = port
         self.baud_rate = baud_rate
         self.serial: Optional[serial.Serial] = None
@@ -677,21 +677,54 @@ class UARTOutputHandler:
             if self.send_event(event):
                 enqueued += 1
         return enqueued
+
+    def _probe_echo_once(self, timeout_s: float = 0.25) -> bool:
+        if not self.serial or not self.serial.is_open:
+            return False
+        self.serial.reset_input_buffer()
+        self.serial.reset_output_buffer()
+        self.serial.write(bytes([0xFF]))
+        self.serial.flush()
+        deadline = time.time() + timeout_s
+        while time.time() < deadline:
+            waiting = self.serial.in_waiting
+            if waiting > 0:
+                data = self.serial.read(waiting)
+                if 0x55 in data:
+                    return True
+            time.sleep(0.005)
+        return False
     
     def test_connection(self) -> bool:
-        """Send echo command (0xFF) and verify voxel_bin_top responds with 0x55."""
+        """Send echo command (0xFF) and verify voxel_bin_top responds with 0x55.
+
+        If no reply is received at the requested baud, automatically try common
+        bitstream rates (1,000,000 and 115,200) before failing.
+        """
         if not self.serial or not self.serial.is_open:
             return False
         try:
-            self.serial.reset_input_buffer()
-            self.serial.write(bytes([0xFF]))
-            time.sleep(0.1)
-            if self.serial.in_waiting > 0:
-                response = self.serial.read(1)
-                if response[0] == 0x55:
-                    print("FPGA connection verified (echo 0xFF → 0x55)")
-                    return True
-            print("WARNING: echo test did not return 0x55 — check bitstream and baud rate")
+            baud_candidates: List[int] = []
+            for baud in (self.baud_rate, 1_000_000, 115200):
+                if baud > 0 and baud not in baud_candidates:
+                    baud_candidates.append(baud)
+
+            for baud in baud_candidates:
+                if self.serial.baudrate != baud:
+                    self.serial.baudrate = baud
+                    time.sleep(0.05)
+
+                for _ in range(2):
+                    if self._probe_echo_once(timeout_s=0.25):
+                        self.baud_rate = int(baud)
+                        print(f"FPGA connection verified (echo 0xFF -> 0x55) @ {self.baud_rate} baud")
+                        return True
+
+            print(
+                "WARNING: echo test did not return 0x55 at any tried baud "
+                f"({', '.join(str(b) for b in baud_candidates)}). "
+                "Check bitstream, port, and wiring."
+            )
             return False
         except Exception as e:
             print(f"Connection test failed: {e}")
@@ -768,8 +801,8 @@ def main():
                         help='Simulate gestures without camera (for testing)')
     parser.add_argument('--port', type=str, default=None,
                         help='Serial port for UART output (e.g., /dev/ttyUSB0, COM3)')
-    parser.add_argument('--baud', type=int, default=115200,
-                        help='UART baud rate (default: 115200)')
+    parser.add_argument('--baud', type=int, default=1_000_000,
+                        help='UART baud rate (default: 1000000)')
     parser.add_argument('--contrast', type=float, default=DEFAULT_CONTRAST_THRESHOLD,
                         help=f'Contrast threshold: log-intensity change per event (default: {DEFAULT_CONTRAST_THRESHOLD}, ~15%% change)')
     parser.add_argument('--refractory', type=int, default=DEFAULT_REFRACTORY_US,

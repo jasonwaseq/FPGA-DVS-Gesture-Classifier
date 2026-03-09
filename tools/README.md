@@ -11,7 +11,7 @@ python evt_stream_to_fpga.py \
   --rate-limit 2000 --motion-gate 0.20 --chunk 512 \
   --pre-sync --no-echo-check
 
-python tools/dvs_camera_emulator.py --port COM3 --baud 115200 --preview --no-noise --contrast 0.20 --max-events 86
+python tools/dvs_camera_emulator.py --port COM3 --baud 1000000 --preview --no-noise --contrast 0.20 --max-events 86
 
 python evt_stream_to_fpga.py \
   --fpga /dev/ttyUSB1 --fpga-baud 1000000 \
@@ -73,7 +73,7 @@ python tools/dvs_camera_emulator.py --simulate --preview
 
 **Camera → FPGA (Windows):**
 ```bash
-python tools/dvs_camera_emulator.py --port COM3 --baud 115200 --preview --flip-both
+python tools/dvs_camera_emulator.py --port COM3 --baud 1000000 --preview --flip-both
 ```
 
 **Camera → save to file:**
@@ -83,7 +83,7 @@ python tools/dvs_camera_emulator.py --save recording.raw --preview --flip-both
 
 **Video file → FPGA:**
 ```bash
-python tools/dvs_camera_emulator.py --video myvideo.mp4 --port COM3 --baud 115200 --preview
+python tools/dvs_camera_emulator.py --video myvideo.mp4 --port COM3 --baud 1000000 --preview
 ```
 
 ### Axis Orientation
@@ -105,7 +105,7 @@ python tools/dvs_camera_emulator.py --port COM3 --preview --flip-both
 | `--video FILE` | — | Use video file instead of camera |
 | `--simulate` | — | Synthetic gesture mode (no camera) |
 | `--port PORT` | — | FPGA serial port (e.g. `COM3`, `/dev/ttyUSB0`) |
-| `--baud N` | `115200` | FPGA UART baud rate |
+| `--baud N` | `1000000` | FPGA UART baud rate |
 | `--contrast F` | `0.15` | Log-domain contrast threshold per event (~15% intensity change) |
 | `--refractory N` | `200` | Refractory period in µs (GenX320 spec: ~200 µs) |
 | `--fps N` | `30` | Camera/simulation frame rate |
