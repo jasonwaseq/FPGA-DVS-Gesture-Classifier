@@ -16,3 +16,6 @@ opencv-python
 
 # UART communication with the FPGA
 pyserial
+
+#plotting
+matplotlib

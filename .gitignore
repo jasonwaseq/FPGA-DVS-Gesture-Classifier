@@ -61,7 +61,6 @@ desktop.ini
 # ── Temporary / backup files ─────────────────────────────────────────────────
 *.tmp
 *.bak
-*.bin
 
 # ── Generated activation scripts (created by setup.py) ───────────────────────
 activate.ps1

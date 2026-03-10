@@ -59,6 +59,7 @@ PYTHON_PACKAGES = [
     "numpy",
     "opencv-python",
     "pyserial",
+    "matplotlib",
 ]
 
 RTL_FILES = [
@@ -1130,7 +1131,7 @@ def doctor():
             print("  Fix: make setup")
             failures += 1
         else:
-            print_success("Python packages: cocotb, cocotb-test, pytest, gitpython, numpy, opencv-python, pyserial")
+            print_success("Python packages: cocotb, cocotb-test, pytest, gitpython, numpy, opencv-python, pyserial, matplotlib")
 
     oss_root = get_oss_cad_bin()
     env = get_oss_cad_env()

@@ -2,14 +2,9 @@
 
 This directory contains four tools for working with the FPGA gesture classification pipeline.
 
-python capture_evt_stream.py /dev/ttyACM0 gesture_down.bin --baud 12000000 --duration 3
+python capture_evt_stream.py /dev/ttyACM0 ../gestures/gesture_down.bin --baud 12000000 
 
-python evt_stream_to_fpga.py \
-  --file gesture_left.bin \
-  --fpga /dev/ttyUSB1 --fpga-baud 1000000 \
-  --swap-xy --flip-x \
-  --rate-limit 2000 --motion-gate 0.20 --chunk 512 \
-  --pre-sync --no-echo-check
+python tools/evt_stream_to_fpga.py --file gestures/wave_left_ba_sun2_trim.bin --fpga COM3 --fpga-baud 1000000 --swap-xy --flip-x --pre-sync
 
 python tools/dvs_camera_emulator.py --port COM3 --baud 1000000 --preview --no-noise --contrast 0.20 --max-events 86
 
